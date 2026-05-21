@@ -20,6 +20,7 @@ def _find_project_root() -> Path:
 PROJECT_ROOT = _find_project_root()
 RESOURCES_DIR = PROJECT_ROOT / "resources"
 API_CONFIG_FILE = PROJECT_ROOT / "api_config.json"
+RSA_KEY_FILE = PROJECT_ROOT / "rsa_private.key"
 
 
 @dataclass
@@ -42,21 +43,28 @@ class AppSettings:
 
     @staticmethod
     def load_api_config(config_path: Path | None = None):
-        """加载 API 配置，不存在则返回 None"""
+        """加载 API 配置，不存在则返回 None。私钥从独立文件加载。"""
         from tuv_tools.core.chapter.models import ApiConfig
         path = config_path or API_CONFIG_FILE
         if not path.exists():
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            return ApiConfig(**{k: v for k, v in data.items()
-                               if k in ApiConfig.__dataclass_fields__})
+            data.pop("rsa_private_key", None)
+            config = ApiConfig(**{k: v for k, v in data.items()
+                                  if k in ApiConfig.__dataclass_fields__})
         except (json.JSONDecodeError, TypeError):
             return None
+        key_path = RSA_KEY_FILE
+        if key_path.exists():
+            config.rsa_private_key = key_path.read_text(encoding="utf-8").strip()
+        return config
 
     @staticmethod
     def save_api_config(config, config_path: Path | None = None) -> None:
-        """保存 API 配置到 JSON 文件"""
+        """保存 API 配置到 JSON 文件（不含私钥）"""
         path = config_path or API_CONFIG_FILE
-        path.write_text(json.dumps(asdict(config), indent=2, ensure_ascii=False),
+        data = asdict(config)
+        data.pop("rsa_private_key", None)
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False),
                         encoding="utf-8")

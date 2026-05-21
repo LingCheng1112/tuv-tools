@@ -143,6 +143,30 @@ class PageResult:
 
 
 @dataclass
+class FolderNode:
+    """目录树节点"""
+
+    id: int = 0
+    pid: int | None = None
+    folder_name: str = ""
+    sub_count: int = 0
+
+    @property
+    def has_children(self) -> bool:
+        return self.sub_count > 0
+
+    @classmethod
+    def from_api_dict(cls, data: dict[str, Any]) -> FolderNode:
+        """从 API 响应反序列化"""
+        return cls(
+            id=data.get("id", 0),
+            pid=data.get("pid"),
+            folder_name=data.get("folderName", ""),
+            sub_count=data.get("subCount", 0),
+        )
+
+
+@dataclass
 class ApiConfig:
     """API 连接配置"""
 
@@ -150,6 +174,6 @@ class ApiConfig:
     username: str = ""
     password: str = ""
     rsa_private_key: str = ""
-    token_cache_file: str = ""
+    token_cache_file: str = ".token_cache"
     token_idle_timeout: int = 1800
     request_timeout: int = 30

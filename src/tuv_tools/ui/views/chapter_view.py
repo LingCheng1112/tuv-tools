@@ -16,19 +16,38 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from tuv_tools.config import AppSettings
-from tuv_tools.core.chapter.api import create_chapter, delete_chapters, get_chapters, update_chapter
+from tuv_tools.core.chapter.api import (
+    create_chapter,
+    delete_chapters,
+    get_chapters,
+    get_folders,
+    update_chapter,
+)
 from tuv_tools.core.chapter.auth import auto_login
 from tuv_tools.core.chapter.client import TuvClient
-from tuv_tools.core.chapter.models import ApiConfig, Chapter, ChapterStatus, PageResult, STATUS_LABELS
+from tuv_tools.core.chapter.models import (
+    ApiConfig,
+    Chapter,
+    ChapterStatus,
+    FolderNode,
+    PageResult,
+    STATUS_LABELS,
+)
+
+# PLACEHOLDER_CONTINUE
+
+CHAPTER_ROOT_FOLDER_ID = 2
 
 
 class ChapterWorker(QThread):
@@ -63,6 +82,7 @@ class ChapterView(QWidget):
         self._page_size = 20
         self._total = 0
         self._connected = False
+        self._selected_folder_id: int | None = None
         self._setup_ui()
 
     def showEvent(self, event):
@@ -87,6 +107,7 @@ class ChapterView(QWidget):
             self._connected = True
             self._status_label.setText("● 已连接")
             self._status_label.setStyleSheet("color: #4caf50; font-weight: bold;")
+            self._load_folder_tree()
             self._fetch_chapters()
         else:
             self._status_label.setText("● 未连接")
@@ -97,10 +118,12 @@ class ChapterView(QWidget):
         self._status_label.setStyleSheet("color: #f44336; font-weight: bold;")
         self._info_label.setText(f"Connection error: {msg}")
 
+# PLACEHOLDER_SETUP_UI
+
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
 
         # 顶部状态栏
         top_row = QHBoxLayout()
@@ -113,12 +136,33 @@ class ChapterView(QWidget):
         top_row.addWidget(self._settings_btn)
         layout.addLayout(top_row)
 
+        # 主体：左侧目录树 + 右侧内容
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # 左侧目录树
+        tree_container = QWidget()
+        tree_layout = QVBoxLayout(tree_container)
+        tree_layout.setContentsMargins(0, 0, 0, 0)
+        tree_layout.setSpacing(4)
+        self._folder_search = QLineEdit()
+        self._folder_search.setPlaceholderText("搜索目录...")
+        self._folder_search.textChanged.connect(self._on_folder_search)
+        tree_layout.addWidget(self._folder_search)
+        self._tree = QTreeWidget()
+        self._tree.setHeaderLabel("条款目录")
+        self._tree.itemClicked.connect(self._on_tree_item_clicked)
+        self._tree.itemExpanded.connect(self._on_tree_item_expanded)
+        tree_layout.addWidget(self._tree)
+        splitter.addWidget(tree_container)
+
+        # 右侧内容区
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
+
         # 查询工具栏
         toolbar = QHBoxLayout()
-        toolbar.addWidget(QLabel("Folder:"))
-        self._folder_edit = QLineEdit()
-        self._folder_edit.setFixedWidth(60)
-        toolbar.addWidget(self._folder_edit)
         toolbar.addWidget(QLabel("条款号:"))
         self._term_edit = QLineEdit()
         self._term_edit.setFixedWidth(80)
@@ -134,7 +178,6 @@ class ChapterView(QWidget):
             self._status_combo.addItem(label, val)
         self._status_combo.setFixedWidth(80)
         toolbar.addWidget(self._status_combo)
-
         self._query_btn = QPushButton("查询")
         self._query_btn.clicked.connect(self._on_query)
         toolbar.addWidget(self._query_btn)
@@ -149,7 +192,7 @@ class ChapterView(QWidget):
         )
         self._add_btn.clicked.connect(self._show_create_dialog)
         toolbar.addWidget(self._add_btn)
-        layout.addLayout(toolbar)
+        right_layout.addLayout(toolbar)
 
         # 表格
         self._table = QTableWidget()
@@ -167,7 +210,7 @@ class ChapterView(QWidget):
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        layout.addWidget(self._table)
+        right_layout.addWidget(self._table)
 
         # 分页
         page_row = QHBoxLayout()
@@ -183,13 +226,78 @@ class ChapterView(QWidget):
         self._info_label = QLabel("")
         self._info_label.setStyleSheet("color: #888; font-size: 12px;")
         page_row.addWidget(self._info_label)
-        layout.addLayout(page_row)
+        right_layout.addLayout(page_row)
+
+        splitter.addWidget(right_container)
+        splitter.setSizes([200, 800])
+        layout.addWidget(splitter)
+
+# PLACEHOLDER_TREE_METHODS
+
+    def _load_folder_tree(self):
+        """加载目录树根节点"""
+        self._run_worker(
+            lambda: get_folders(self._client, pid=CHAPTER_ROOT_FOLDER_ID),
+            self._on_root_folders_loaded,
+            self._on_error,
+        )
+
+    def _on_root_folders_loaded(self, folders: list[FolderNode]):
+        self._tree.clear()
+        for folder in folders:
+            item = QTreeWidgetItem([folder.folder_name])
+            item.setData(0, Qt.ItemDataRole.UserRole, folder.id)
+            if folder.has_children:
+                item.setChildIndicatorPolicy(
+                    QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
+                )
+            self._tree.addTopLevelItem(item)
+
+    def _on_tree_item_expanded(self, item: QTreeWidgetItem):
+        """懒加载子节点"""
+        if item.childCount() > 0:
+            return
+        folder_id = item.data(0, Qt.ItemDataRole.UserRole)
+        self._run_worker(
+            lambda: get_folders(self._client, pid=folder_id),
+            lambda folders: self._on_child_folders_loaded(item, folders),
+            self._on_error,
+        )
+
+    def _on_child_folders_loaded(self, parent_item: QTreeWidgetItem, folders: list[FolderNode]):
+        for folder in folders:
+            child = QTreeWidgetItem([folder.folder_name])
+            child.setData(0, Qt.ItemDataRole.UserRole, folder.id)
+            if folder.has_children:
+                child.setChildIndicatorPolicy(
+                    QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
+                )
+            parent_item.addChild(child)
+
+    def _on_tree_item_clicked(self, item: QTreeWidgetItem, column: int):
+        """点击目录节点，按 folderId 过滤条款"""
+        self._selected_folder_id = item.data(0, Qt.ItemDataRole.UserRole)
+        self._current_page = 0
+        self._fetch_chapters()
+
+    def _on_folder_search(self, text: str):
+        """搜索目录"""
+        if not self._client or not text.strip():
+            if not text.strip():
+                self._load_folder_tree()
+            return
+        self._run_worker(
+            lambda: get_folders(self._client, pid=CHAPTER_ROOT_FOLDER_ID, folder_name=text.strip()),
+            self._on_root_folders_loaded,
+            self._on_error,
+        )
+
+# PLACEHOLDER_LOGIC_METHODS
 
     def _build_filters(self) -> dict:
         filters = {}
-        folder_text = self._folder_edit.text().strip()
-        if folder_text:
-            filters["folderId"] = int(folder_text)
+        if self._selected_folder_id is not None:
+            filters["folderId"] = self._selected_folder_id
         term = self._term_edit.text().strip()
         if term:
             filters["term"] = term
@@ -250,10 +358,13 @@ class ChapterView(QWidget):
         self._fetch_chapters()
 
     def _on_clear_filters(self):
-        self._folder_edit.clear()
         self._term_edit.clear()
         self._standard_edit.clear()
         self._status_combo.setCurrentIndex(0)
+        self._selected_folder_id = None
+        self._tree.clearSelection()
+
+# PLACEHOLDER_NAV_AND_DIALOGS
 
     def _prev_page(self):
         if self._current_page > 0:
@@ -304,7 +415,7 @@ class ChapterView(QWidget):
             self._try_connect()
 
     def _show_create_dialog(self):
-        dlg = ChapterDialog(parent=self)
+        dlg = ChapterDialog(folder_id=self._selected_folder_id, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             chapters = dlg.get_chapters()
             if len(chapters) == 1:
@@ -346,14 +457,16 @@ class ChapterView(QWidget):
         QMessageBox.information(self, "批量创建结果", msg)
         self._fetch_chapters()
 
+# PLACEHOLDER_DIALOGS
+
 
 class SettingsDialog(QDialog):
-    """API 设置对话框"""
+    """API 设置对话框（不含私钥，私钥通过 rsa_private.key 文件配置）"""
 
     def __init__(self, config: ApiConfig | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("API 设置")
-        self.setMinimumWidth(450)
+        self.setMinimumWidth(400)
         layout = QFormLayout(self)
 
         self._url_edit = QLineEdit(config.base_url if config else "http://127.0.0.1:8080")
@@ -363,9 +476,10 @@ class SettingsDialog(QDialog):
         self._pass_edit = QLineEdit(config.password if config else "")
         self._pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
         layout.addRow("密码:", self._pass_edit)
-        self._key_edit = QPlainTextEdit(config.rsa_private_key if config else "")
-        self._key_edit.setMaximumHeight(100)
-        layout.addRow("RSA 私钥:", self._key_edit)
+
+        hint = QLabel("RSA 私钥请配置在项目根目录 rsa_private.key 文件中")
+        hint.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addRow(hint)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -379,15 +493,13 @@ class SettingsDialog(QDialog):
             base_url=self._url_edit.text().strip(),
             username=self._user_edit.text().strip(),
             password=self._pass_edit.text(),
-            rsa_private_key=self._key_edit.toPlainText().strip(),
         )
-
 
 
 class ChapterDialog(QDialog):
     """新增/编辑条款对话框"""
 
-    def __init__(self, chapter: Chapter | None = None, parent=None):
+    def __init__(self, chapter: Chapter | None = None, folder_id: int | None = None, parent=None):
         super().__init__(parent)
         self._editing = chapter is not None
         self.setWindowTitle("编辑条款" if self._editing else "新增条款")
@@ -398,7 +510,8 @@ class ChapterDialog(QDialog):
             self._batch_cb = QCheckBox("批量模式（条款号和测试内容用逗号分隔）")
             layout.addRow(self._batch_cb)
 
-        self._folder_edit = QLineEdit(str(chapter.folder_id) if chapter and chapter.folder_id else "")
+        default_folder = str(chapter.folder_id) if chapter and chapter.folder_id else (str(folder_id) if folder_id else "")
+        self._folder_edit = QLineEdit(default_folder)
         layout.addRow("文件夹 ID *:", self._folder_edit)
         self._term_edit = QLineEdit(chapter.term if chapter else "")
         layout.addRow("条款编号 *:", self._term_edit)

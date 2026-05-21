@@ -26,3 +26,4 @@ Thumbs.db
 split_output/
 api_config.json
 .token_cache
+rsa_private.key

@@ -42,19 +42,22 @@ def clear_token_cache(cache_path: str) -> None:
 
 def auto_login(client: TuvClient, config: ApiConfig) -> bool:
     """自动登录流程，成功返回 True"""
+    cache_path = config.token_cache_file
+
     # 尝试从缓存恢复
-    cached = load_token_cache(config.token_cache_file, config.token_idle_timeout)
-    if cached:
-        client.token = cached["token"]
-        try:
-            client.get("/auth/info")
-            return True
-        except requests.HTTPError:
-            clear_token_cache(config.token_cache_file)
-            client.token = ""
-        except (requests.ConnectionError, requests.Timeout):
-            client.token = ""
-            return False
+    if cache_path:
+        cached = load_token_cache(cache_path, config.token_idle_timeout)
+        if cached:
+            client.token = cached["token"]
+            try:
+                client.get("/auth/info")
+                return True
+            except requests.HTTPError:
+                clear_token_cache(cache_path)
+                client.token = ""
+            except (requests.ConnectionError, requests.Timeout):
+                client.token = ""
+                return False
 
     # 完整登录
     if not config.rsa_private_key:
@@ -79,5 +82,6 @@ def auto_login(client: TuvClient, config: ApiConfig) -> bool:
         return False
 
     client.token = token
-    save_token_cache(config.token_cache_file, token, config.username)
+    if cache_path:
+        save_token_cache(cache_path, token, config.username)
     return True

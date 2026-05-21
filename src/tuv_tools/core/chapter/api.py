@@ -3,7 +3,22 @@
 from __future__ import annotations
 
 from .client import TuvClient
-from .models import Chapter, PageResult
+from .models import Chapter, FolderNode, PageResult
+
+
+def get_folders(client: TuvClient, pid: int | None = None, folder_name: str = "") -> list[FolderNode]:
+    """查询目录树节点"""
+    params: dict = {}
+    if pid is not None:
+        params["pid"] = pid
+    else:
+        params["pidIsNull"] = True
+    if folder_name:
+        params["folderName"] = folder_name
+    resp = client.get("/api/folder", params=params)
+    data = resp.json()
+    items = data.get("content", data) if isinstance(data, dict) else data
+    return [FolderNode.from_api_dict(item) for item in items]
 
 
 def get_chapters(client: TuvClient, page: int = 0, size: int = 20, **filters) -> PageResult:
