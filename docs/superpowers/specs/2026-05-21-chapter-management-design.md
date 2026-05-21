@@ -302,3 +302,29 @@ def _register_views(self):
     self._add_view("文档拆分", SplitterView())
     self._add_view("条款管理", ChapterView())
 ```
+
+---
+
+## Eng Review 补充（2026-05-21）
+
+### 安全
+
+- `api_config.json` 和 `.token_cache` 必须加入 `.gitignore`
+- 密码在配置文件中明文存储是已知风险，当前可接受（内部工具），未来可迁移到系统 keyring
+
+### 错误分类
+
+`auth.py` 中 token 验证失败后需区分：
+- **401 Unauthorized** → 清除缓存，走登录流程
+- **ConnectionError / Timeout** → 直接报"网络不可达"，不尝试登录
+- **其他 HTTP 错误** → 报具体错误信息
+
+### 测试补充
+
+- 需要从后端获取一组 RSA 加密/解密测试向量，确保 Python 加密输出与 Java 后端兼容
+- `auth.py` 需测试"网络超时"和"401"两个分支的不同行为
+
+### 并发保护
+
+- Worker 运行期间禁用所有操作按钮，防止重复请求
+- 批量创建每条完成后立即更新 UI 进度（不等全部完成）

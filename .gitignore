@@ -24,3 +24,5 @@ Thumbs.db
 
 # Project
 split_output/
+api_config.json
+.token_cache
