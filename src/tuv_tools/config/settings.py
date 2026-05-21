@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
@@ -19,6 +19,7 @@ def _find_project_root() -> Path:
 
 PROJECT_ROOT = _find_project_root()
 RESOURCES_DIR = PROJECT_ROOT / "resources"
+API_CONFIG_FILE = PROJECT_ROOT / "api_config.json"
 
 
 @dataclass
@@ -38,3 +39,24 @@ class AppSettings:
                 continue
             patterns.append(re.compile(pattern, re.IGNORECASE))
         return patterns
+
+    @staticmethod
+    def load_api_config(config_path: Path | None = None):
+        """加载 API 配置，不存在则返回 None"""
+        from tuv_tools.core.chapter.models import ApiConfig
+        path = config_path or API_CONFIG_FILE
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return ApiConfig(**{k: v for k, v in data.items()
+                               if k in ApiConfig.__dataclass_fields__})
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    @staticmethod
+    def save_api_config(config, config_path: Path | None = None) -> None:
+        """保存 API 配置到 JSON 文件"""
+        path = config_path or API_CONFIG_FILE
+        path.write_text(json.dumps(asdict(config), indent=2, ensure_ascii=False),
+                        encoding="utf-8")
