@@ -1,3 +1,4 @@
+<!-- /autoplan restore point: /c/Users/Admin/.gstack/projects/LingCheng1112-tuv-tools/main-autoplan-restore-20260521-221049.md -->
 # TUV Tools UI 重构设计 — 文档拆分 & 设置统一
 
 日期: 2026-05-21
@@ -232,3 +233,63 @@ class DatabaseManager:
 - 导入去重：同一 file_path 不重复添加
 - QThread + Signal 模式：后台拆分线程，Worker 引用需保持到 finished 信号
 - 设置弹窗使用 `QDialog.exec()` 模态，保存时写入 DB，取消时丢弃
+
+---
+
+## GSTACK REVIEW REPORT
+
+审查日期: 2026-05-21 | 审查方式: /autoplan (CEO + Design + Eng) | Commit: 5eac09d
+
+### CEO Review Summary
+
+**Mode**: SELECTIVE EXPANSION | **Approach**: A (SQLite — 推荐)
+
+**扩展决策**:
+| # | Proposal | Effort | Decision |
+|---|----------|--------|----------|
+| 1 | 最近打开文件列表 | S | Deferred |
+| 2 | 导出结果摘要 | S | Deferred |
+| 3 | 自动检测标准号 (从文件名) | M | **Accepted** |
+| 4 | 拆分历史时间线 | M | Deferred |
+| 5 | 快捷键支持 | S | Deferred |
+
+### Design Review — 6/10
+
+**已明确**: 信息层级、布局 ASCII、右键菜单、拖拽交互
+
+**需补充到设计**:
+- [ ] **空状态**: 文档列表为空时显示引导文案和导入按钮
+- [ ] **加载状态**: 导入大文件夹时的进度指示
+- [ ] **错误状态**: DB 损坏/写入失败时的用户提示
+- [ ] **搜索无结果**: 筛选后无匹配项的空状态
+
+### Eng Review — 关键发现
+
+**Critical**:
+- [ ] **DB 线程安全**: SQLite 连接策略需明确。建议 WAL 模式 + 每线程独立连接，或使用 `check_same_thread=False`
+- [ ] **标准号提取**: `standard_number` 列填充逻辑缺失。建议从文件名用 `IEC\s*\d+[-\d]*` 等正则提取
+
+**Gap**:
+- [ ] `load_clean_patterns()` 返回 `list[re.Pattern]` 但 `save_clean_rules()` 接受 `list[dict]`，输入输出不对称
+- [ ] 大列表性能: 超过 500 行建议虚拟列表
+
+**测试缺口** (约 15-20 新测试):
+- [ ] 迁移逻辑 (旧文件→DB→删除)
+- [ ] 并发访问安全性
+- [ ] 拖拽导入 (不同文件类型)
+- [ ] 批量拆分中途取消
+- [ ] 清洗规则 CRUD + JSON 导入/导出
+- [ ] 设置弹窗保存/取消逻辑
+
+### Deferred to TODOS.md
+
+- 最近打开文件列表 (下拉菜单)
+- 导出结果摘要 (CSV/Markdown)
+- 拆分历史时间线
+- 快捷键支持 (Ctrl+O 等)
+
+### NOT in scope
+
+- SQLAlchemy ORM / Alembic 迁移 (重型依赖，桌面应用不需要)
+- 云同步/多设备同步
+- 协作/多用户支持
