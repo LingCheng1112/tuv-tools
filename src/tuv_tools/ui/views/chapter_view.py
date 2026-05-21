@@ -76,7 +76,7 @@ class ChapterView(QWidget):
         self._settings = AppSettings()
         self._client: TuvClient | None = None
         self._config: ApiConfig | None = None
-        self._worker: ChapterWorker | None = None
+        self._workers: list[ChapterWorker] = []
         self._current_page = 0
         self._page_size = 20
         self._total = 0
@@ -409,13 +409,18 @@ class ChapterView(QWidget):
         self._next_btn.setEnabled(enabled)
 
     def _run_worker(self, func, on_result, on_error):
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.result_ready.disconnect()
-            self._worker.error_occurred.disconnect()
-        self._worker = ChapterWorker(func)
-        self._worker.result_ready.connect(on_result)
-        self._worker.error_occurred.connect(on_error)
-        self._worker.start()
+        worker = ChapterWorker(func)
+        worker.result_ready.connect(on_result)
+        worker.error_occurred.connect(on_error)
+        worker.finished.connect(lambda: self._cleanup_worker(worker))
+        self._workers.append(worker)
+        worker.start()
+
+    def _cleanup_worker(self, worker: ChapterWorker):
+        try:
+            self._workers.remove(worker)
+        except ValueError:
+            pass
 
     def _show_settings_dialog(self):
         dlg = SettingsDialog(self._config, self)
