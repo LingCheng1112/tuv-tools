@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from .views.splitter_view import SplitterView
+from .views.chapter_view import ChapterView
 
 
 class MainWindow(QMainWindow):
@@ -65,6 +66,7 @@ class MainWindow(QMainWindow):
     def _register_views(self):
         """注册所有功能视图（新增功能在此添加）"""
         self._add_view("文档拆分", SplitterView())
+        self._add_view("条款管理", ChapterView())
 
     def _add_view(self, label: str, widget: QWidget):
         item = QListWidgetItem(label)
