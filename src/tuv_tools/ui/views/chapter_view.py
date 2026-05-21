@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtCore import QThread, QTimer, Signal, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -45,7 +45,6 @@ from tuv_tools.core.chapter.models import (
     STATUS_LABELS,
 )
 
-# PLACEHOLDER_CONTINUE
 
 CHAPTER_ROOT_FOLDER_ID = 2
 
@@ -83,6 +82,10 @@ class ChapterView(QWidget):
         self._total = 0
         self._connected = False
         self._selected_folder_id: int | None = None
+        self._search_timer = QTimer()
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(300)
+        self._search_timer.timeout.connect(self._do_folder_search)
         self._setup_ui()
 
     def showEvent(self, event):
@@ -118,7 +121,6 @@ class ChapterView(QWidget):
         self._status_label.setStyleSheet("color: #f44336; font-weight: bold;")
         self._info_label.setText(f"Connection error: {msg}")
 
-# PLACEHOLDER_SETUP_UI
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -232,7 +234,6 @@ class ChapterView(QWidget):
         splitter.setSizes([200, 800])
         layout.addWidget(splitter)
 
-# PLACEHOLDER_TREE_METHODS
 
     def _load_folder_tree(self):
         """加载目录树根节点"""
@@ -281,18 +282,22 @@ class ChapterView(QWidget):
         self._fetch_chapters()
 
     def _on_folder_search(self, text: str):
-        """搜索目录"""
-        if not self._client or not text.strip():
-            if not text.strip():
+        """搜索目录（防抖 300ms）"""
+        self._search_timer.start()
+
+    def _do_folder_search(self):
+        """执行目录搜索"""
+        text = self._folder_search.text().strip()
+        if not self._client or not text:
+            if not text:
                 self._load_folder_tree()
             return
         self._run_worker(
-            lambda: get_folders(self._client, pid=CHAPTER_ROOT_FOLDER_ID, folder_name=text.strip()),
+            lambda: get_folders(self._client, pid=CHAPTER_ROOT_FOLDER_ID, folder_name=text),
             self._on_root_folders_loaded,
             self._on_error,
         )
 
-# PLACEHOLDER_LOGIC_METHODS
 
     def _build_filters(self) -> dict:
         filters = {}
@@ -363,8 +368,9 @@ class ChapterView(QWidget):
         self._status_combo.setCurrentIndex(0)
         self._selected_folder_id = None
         self._tree.clearSelection()
+        self._current_page = 0
+        self._fetch_chapters()
 
-# PLACEHOLDER_NAV_AND_DIALOGS
 
     def _prev_page(self):
         if self._current_page > 0:
@@ -378,6 +384,8 @@ class ChapterView(QWidget):
             self._fetch_chapters()
 
     def _confirm_delete(self, chapter: Chapter):
+        if chapter.id is None:
+            return
         reply = QMessageBox.question(
             self, "确认删除",
             f"确定删除条款 {chapter.term}？\n（只有草稿状态且未被引用的条款可删除）",
@@ -401,6 +409,9 @@ class ChapterView(QWidget):
         self._next_btn.setEnabled(enabled)
 
     def _run_worker(self, func, on_result, on_error):
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.result_ready.disconnect()
+            self._worker.error_occurred.disconnect()
         self._worker = ChapterWorker(func)
         self._worker.result_ready.connect(on_result)
         self._worker.error_occurred.connect(on_error)
@@ -457,7 +468,6 @@ class ChapterView(QWidget):
         QMessageBox.information(self, "批量创建结果", msg)
         self._fetch_chapters()
 
-# PLACEHOLDER_DIALOGS
 
 
 class SettingsDialog(QDialog):
@@ -465,6 +475,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, config: ApiConfig | None = None, parent=None):
         super().__init__(parent)
+        self._existing_config = config
         self.setWindowTitle("API 设置")
         self.setMinimumWidth(400)
         layout = QFormLayout(self)
@@ -489,7 +500,9 @@ class SettingsDialog(QDialog):
         layout.addRow(buttons)
 
     def get_config(self) -> ApiConfig:
-        return ApiConfig(
+        base = self._existing_config or ApiConfig()
+        return replace(
+            base,
             base_url=self._url_edit.text().strip(),
             username=self._user_edit.text().strip(),
             password=self._pass_edit.text(),
@@ -538,12 +551,19 @@ class ChapterDialog(QDialog):
         layout.addRow(buttons)
 
     def get_chapters(self) -> list[Chapter]:
+        def _safe_int(text: str, default: int = 0) -> int:
+            try:
+                return int(text.strip()) if text.strip() else default
+            except ValueError:
+                return default
+
+        folder_val = _safe_int(self._folder_edit.text())
         base = Chapter(
-            folder_id=int(self._folder_edit.text().strip() or "0") or None,
+            folder_id=folder_val or None,
             product_type=self._product_edit.text().strip(),
             plan_sr=self._sr_edit.text().strip(),
             standard=self._standard_edit.text().strip(),
-            version=int(self._version_edit.text().strip() or "0"),
+            version=_safe_int(self._version_edit.text()),
             standard_version=self._std_ver_edit.text().strip(),
             specific_product=self._specific_edit.text().strip(),
         )
