@@ -95,28 +95,23 @@ def clean_table_xml(table_xml: str, patterns: CleanPatterns) -> ET.Element | Non
     table = ET.fromstring(table_xml)
     rows = table.findall("./w:tr", NS)
 
-    original_row_texts: list[str] = []
-    for row in rows:
-        before_cells = []
-        for cell in row.findall("./w:tc", NS):
-            texts = []
-            for paragraph in cell.findall("./w:p", NS):
-                texts.append(paragraph_text(paragraph))
-            before_cells.append(clean_text(" ".join(texts)))
-        original_row_texts.append(
-            clean_text(" | ".join([v for v in before_cells if clean_text(v)]))
-        )
-
-    for cell in table.findall(".//w:tc", NS):
-        for paragraph in cell.findall("./w:p", NS):
-            _clean_paragraph_inline(paragraph, patterns)
-        _remove_empty_paragraphs_from_cell(cell)
-
     kept = 0
-    for row_index, row in enumerate(list(rows)):
-        before_text = original_row_texts[row_index]
-        row_cells = [cell_text(cell) for cell in row.findall("./w:tc", NS)]
-        after_text = clean_text(" | ".join([v for v in row_cells if clean_text(v)]))
+    for row in list(rows):
+        cells = row.findall("./w:tc", NS)
+
+        before_parts: list[str] = []
+        for cell in cells:
+            texts = [paragraph_text(p) for p in cell.findall("./w:p", NS)]
+            before_parts.append(clean_text(" ".join(texts)))
+        before_text = clean_text(" | ".join(v for v in before_parts if v))
+
+        for cell in cells:
+            for paragraph in cell.findall("./w:p", NS):
+                _clean_paragraph_inline(paragraph, patterns)
+            _remove_empty_paragraphs_from_cell(cell)
+
+        after_cells = [cell_text(cell) for cell in cells]
+        after_text = clean_text(" | ".join(v for v in after_cells if clean_text(v)))
 
         if not after_text and before_text and _should_drop_text_by_rules(before_text, patterns):
             table.remove(row)

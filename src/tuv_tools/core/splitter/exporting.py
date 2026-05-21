@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import zipfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -154,13 +154,14 @@ def export_docx_outputs(
     clause_docx_dir = base_dir / "clauses_docx"
     version_docx_dir = base_dir / "versions_docx"
 
+    clause_id_counts = Counter(s.clause_id for s in sections)
     clause_name_counts: dict[str, int] = defaultdict(int)
     for section in sections:
-        base_stem = safe_name(section.clause_id)
         title_slug = slugify(section.title)
-        export_stem = base_stem
-        if sum(1 for s in sections if s.clause_id == section.clause_id) > 1:
+        if clause_id_counts[section.clause_id] > 1:
             export_stem = safe_name(f"{section.clause_id}_{title_slug}")
+        else:
+            export_stem = safe_name(section.clause_id)
         clause_name_counts[export_stem] += 1
         if clause_name_counts[export_stem] > 1:
             export_stem = safe_name(f"{export_stem}_{clause_name_counts[export_stem]}")

@@ -15,7 +15,7 @@ CleanPatterns = list[re.Pattern[str]]
 
 def clean_text(value: str) -> str:
     """合并连续空白为单个空格并去除首尾空白"""
-    return re.sub(r"\s+", " ", value or "").strip()
+    return " ".join((value or "").split())
 
 
 def normalize_clause_leading_text(text: str) -> str:

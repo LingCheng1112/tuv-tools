@@ -67,53 +67,69 @@ def detect_clause_in_text(text: str) -> ClauseMatch | None:
     return _build_clause_match(primary, normalized, secondary_refs)
 
 
+def _try_detect_in_first_cell(first: str) -> ClauseMatch | None:
+    """路径 1：直接对第一格文本做条款号检测"""
+    return detect_clause_in_text(first)
+
+
+def _try_detect_in_segments(first: str) -> ClauseMatch | None:
+    """路径 2：按 | 拆分第一格，逐段检测条款号"""
+    for segment in first.split(" | "):
+        segment_match = detect_clause_in_text(segment.strip())
+        if not segment_match:
+            continue
+        seg_stripped = segment.strip().lstrip(" \t☐☒")
+        if not seg_stripped.startswith(segment_match.clause_id):
+            continue
+        after = seg_stripped[len(segment_match.clause_id):].lstrip(".:|- ")
+        if not re.match(r"[A-Za-z]{2,}", after):
+            continue
+        return _build_clause_match(
+            segment_match.clause_id,
+            first,
+            segment_match.secondary_refs,
+        )
+    return None
+
+
+def _try_detect_across_cells(first: str, second: str) -> ClauseMatch | None:
+    """路径 3+4：首格取条款号（数字或 Annex），次格取标题"""
+    if not second or not has_title_text(second):
+        return None
+
+    normalized = normalize_clause_leading_text(first)
+
+    clause_match = CLAUSE_HEAD_RE.match(normalized)
+    if clause_match:
+        primary = clause_match.group("primary")
+        if "-" in primary:
+            return None
+        secondary = clause_match.group("secondary")
+        secondary_refs = [secondary] if secondary else []
+        return _build_clause_match(primary, f"{normalized} | {second}", secondary_refs)
+
+    annex_match = ANNEX_HEAD_RE.match(normalized)
+    if annex_match:
+        clause_id = f"Annex_{annex_match.group('letter').upper()}"
+        return _build_clause_match(clause_id, f"{normalized} | {second}")
+    return None
+
+
 def detect_clause_in_cells(cells: list[str]) -> ClauseMatch | None:
     """从表格行的单元格列表中检测条款号"""
     if not cells:
         return None
-    first_cell = clean_text(cells[0])
-    if not first_cell:
+    first = clean_text(cells[0])
+    if not first:
         return None
 
-    first_match = detect_clause_in_text(first_cell)
-    if first_match:
-        return first_match
+    if match := _try_detect_in_first_cell(first):
+        return match
+    if match := _try_detect_in_segments(first):
+        return match
 
-    for segment in first_cell.split(" | "):
-        segment_match = detect_clause_in_text(segment.strip())
-        if segment_match:
-            seg_stripped = segment.strip().lstrip(" \t☐☒")
-            if not seg_stripped.startswith(segment_match.clause_id):
-                continue
-            after = seg_stripped[len(segment_match.clause_id):].lstrip(".:|- ")
-            if not re.match(r"[A-Za-z]{2,}", after):
-                continue
-            return _build_clause_match(
-                segment_match.clause_id,
-                first_cell,
-                segment_match.secondary_refs,
-            )
-
-    normalized_first = normalize_clause_leading_text(first_cell)
-    clause_match = CLAUSE_HEAD_RE.match(normalized_first)
-    if clause_match:
-        primary = clause_match.group("primary")
-        # 排除条款号本身含连字符的情况（如 "1-2" 不是合法条款号）
-        if "-" in primary:
-            return None
-        secondary = clause_match.group("secondary")
-        second_cell = next((clean_text(v) for v in cells[1:] if clean_text(v)), "")
-        if has_title_text(second_cell):
-            secondary_refs = [secondary] if secondary else []
-            return _build_clause_match(primary, f"{normalized_first} | {second_cell}", secondary_refs)
-
-    annex_match = ANNEX_HEAD_RE.match(normalized_first)
-    if annex_match:
-        second_cell = next((clean_text(v) for v in cells[1:] if clean_text(v)), "")
-        if has_title_text(second_cell):
-            clause_id = f"Annex_{annex_match.group('letter').upper()}"
-            return _build_clause_match(clause_id, f"{normalized_first} | {second_cell}")
-    return None
+    second = next((clean_text(v) for v in cells[1:] if clean_text(v)), "")
+    return _try_detect_across_cells(first, second)
 
 
 def parse_document(docx_path: Path) -> list[Block]:
@@ -248,37 +264,12 @@ def build_sections(docx_path: Path) -> list[Section]:
                 current.add_paragraph(block.index, block.text, block.element)
             continue
 
-        if _should_ignore_table(block):
-            table_sections = _split_table_into_sections(block)
-            for clause, table_slice in table_sections:
-                if "." not in clause.clause_id:
-                    continue
-                current = Section(
-                    clause_id=clause.clause_id,
-                    major_version=clause.major_version,
-                    source_file=docx_path.name,
-                    title=clause.title_hint or (
-                        table_slice.rows[0][0] if table_slice.rows and table_slice.rows[0] else clause.clause_id
-                    ),
-                    secondary_refs=clause.secondary_refs,
-                )
-                current.add_table_slice(block.index, table_slice)
-                sections.append(current)
-            continue
-
         table_sections = _split_table_into_sections(block)
-        if not table_sections:
-            if current:
-                whole_table = _build_table_slice(
-                    block=block,
-                    row_start=0,
-                    row_end=len(block.element.findall("./w:tr", NS)),
-                    clause_id=current.clause_id,
-                )
-                current.add_table_slice(block.index, whole_table)
-            continue
+        is_ignored = _should_ignore_table(block)
 
         for clause, table_slice in table_sections:
+            if is_ignored and "." not in clause.clause_id:
+                continue
             current = Section(
                 clause_id=clause.clause_id,
                 major_version=clause.major_version,
@@ -290,6 +281,15 @@ def build_sections(docx_path: Path) -> list[Section]:
             )
             current.add_table_slice(block.index, table_slice)
             sections.append(current)
+
+        if not table_sections and not is_ignored and current:
+            whole_table = _build_table_slice(
+                block=block,
+                row_start=0,
+                row_end=len(block.element.findall("./w:tr", NS)),
+                clause_id=current.clause_id,
+            )
+            current.add_table_slice(block.index, whole_table)
 
     sections = [s for s in sections if s.major_version != "1"]
     return _deduplicate_sections(sections)

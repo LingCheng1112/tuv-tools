@@ -9,11 +9,21 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QStackedWidget,
+    QStyle,
+    QStyledItemDelegate,
     QWidget,
 )
 
 from .views.splitter_view import SplitterView
 from .views.chapter_view import ChapterView
+
+
+class NoFocusDelegate(QStyledItemDelegate):
+    """去除列表项选中时的焦点矩形框"""
+
+    def paint(self, painter, option, index):
+        option.state &= ~QStyle.StateFlag.State_HasFocus
+        super().paint(painter, option, index)
 
 
 class MainWindow(QMainWindow):
@@ -33,6 +43,7 @@ class MainWindow(QMainWindow):
 
         self._nav = QListWidget()
         self._nav.setFixedWidth(180)
+        self._nav.setItemDelegate(NoFocusDelegate(self._nav))
         self._nav.setStyleSheet("""
             QListWidget {
                 background-color: #2b2d30;
