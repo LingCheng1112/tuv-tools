@@ -57,10 +57,14 @@ def detect_clause_in_text(text: str) -> ClauseMatch | None:
         return None
 
     primary = clause_match.group("primary")
-    if "." not in primary and len(primary) < 2:
-        return None
+    if "." not in primary:
+        if len(primary) < 2:
+            return None
     secondary = clause_match.group("secondary")
     rest = clean_text((clause_match.group("rest") or "").lstrip(".:|- "))
+    if "." not in primary and rest and not rest[0].isupper():
+        # 裸数字后紧跟小写字母开头的一般是误检（如 "72hours"、"10 times"）
+        return None
     if not has_title_text(rest):
         return None
     secondary_refs = [secondary] if secondary else []
@@ -103,6 +107,8 @@ def _try_detect_across_cells(first: str, second: str) -> ClauseMatch | None:
     if clause_match:
         primary = clause_match.group("primary")
         if "-" in primary:
+            return None
+        if "." not in primary and len(primary) < 2:
             return None
         secondary = clause_match.group("secondary")
         secondary_refs = [secondary] if secondary else []
