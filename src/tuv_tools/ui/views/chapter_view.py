@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from tuv_tools.config import AppSettings
+from tuv_tools.ui.widgets import CHECKBOX_STYLE
 from tuv_tools.core.chapter.api import (
     create_chapter,
     delete_chapters,
@@ -96,8 +97,13 @@ class ChapterView(QWidget):
     def _try_connect(self):
         self._config = self._settings.load_api_config()
         if not self._config:
-            self._show_settings_dialog()
-            return
+            from tuv_tools.ui.views.settings_dialog import SettingsDialog
+            dlg = SettingsDialog(self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            self._config = self._settings.load_api_config()
+            if not self._config:
+                return
         self._client = TuvClient(self._config.base_url, self._config.request_timeout)
         self._run_worker(
             lambda: auto_login(self._client, self._config),
@@ -133,9 +139,6 @@ class ChapterView(QWidget):
         self._status_label.setStyleSheet("color: #888; font-weight: bold;")
         top_row.addWidget(self._status_label)
         top_row.addStretch()
-        self._settings_btn = QPushButton("⚙ 设置")
-        self._settings_btn.clicked.connect(self._show_settings_dialog)
-        top_row.addWidget(self._settings_btn)
         layout.addLayout(top_row)
 
         # 主体：左侧目录树 + 右侧内容
@@ -231,8 +234,12 @@ class ChapterView(QWidget):
         right_layout.addLayout(page_row)
 
         splitter.addWidget(right_container)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 4)
         splitter.setSizes([200, 800])
-        layout.addWidget(splitter)
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, False)
+        layout.addWidget(splitter, stretch=1)
 
 
     def _load_folder_tree(self):
@@ -422,14 +429,6 @@ class ChapterView(QWidget):
         except ValueError:
             pass
 
-    def _show_settings_dialog(self):
-        dlg = SettingsDialog(self._config, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._config = dlg.get_config()
-            self._settings.save_api_config(self._config)
-            self._connected = False
-            self._try_connect()
-
     def _show_create_dialog(self):
         dlg = ChapterDialog(folder_id=self._selected_folder_id, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
@@ -475,45 +474,6 @@ class ChapterView(QWidget):
 
 
 
-class SettingsDialog(QDialog):
-    """API 设置对话框（不含私钥，私钥通过 rsa_private.key 文件配置）"""
-
-    def __init__(self, config: ApiConfig | None = None, parent=None):
-        super().__init__(parent)
-        self._existing_config = config
-        self.setWindowTitle("API 设置")
-        self.setMinimumWidth(400)
-        layout = QFormLayout(self)
-
-        self._url_edit = QLineEdit(config.base_url if config else "http://127.0.0.1:8080")
-        layout.addRow("API URL:", self._url_edit)
-        self._user_edit = QLineEdit(config.username if config else "")
-        layout.addRow("用户名:", self._user_edit)
-        self._pass_edit = QLineEdit(config.password if config else "")
-        self._pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addRow("密码:", self._pass_edit)
-
-        hint = QLabel("RSA 私钥请配置在项目根目录 rsa_private.key 文件中")
-        hint.setStyleSheet("color: #888; font-size: 11px;")
-        layout.addRow(hint)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
-
-    def get_config(self) -> ApiConfig:
-        base = self._existing_config or ApiConfig()
-        return replace(
-            base,
-            base_url=self._url_edit.text().strip(),
-            username=self._user_edit.text().strip(),
-            password=self._pass_edit.text(),
-        )
-
-
 class ChapterDialog(QDialog):
     """新增/编辑条款对话框"""
 
@@ -526,6 +486,7 @@ class ChapterDialog(QDialog):
 
         if not self._editing:
             self._batch_cb = QCheckBox("批量模式（条款号和测试内容用逗号分隔）")
+            self._batch_cb.setStyleSheet(CHECKBOX_STYLE)
             layout.addRow(self._batch_cb)
 
         default_folder = str(chapter.folder_id) if chapter and chapter.folder_id else (str(folder_id) if folder_id else "")

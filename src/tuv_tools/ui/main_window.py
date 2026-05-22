@@ -8,14 +8,17 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QPushButton,
     QStackedWidget,
     QStyle,
     QStyledItemDelegate,
+    QVBoxLayout,
     QWidget,
 )
 
 from .views.splitter_view import SplitterView
 from .views.chapter_view import ChapterView
+from .views.settings_dialog import SettingsDialog
 
 
 class NoFocusDelegate(QStyledItemDelegate):
@@ -41,8 +44,14 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        # 侧边栏容器
+        nav_container = QWidget()
+        nav_container.setFixedWidth(180)
+        nav_layout = QVBoxLayout(nav_container)
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        nav_layout.setSpacing(0)
+
         self._nav = QListWidget()
-        self._nav.setFixedWidth(180)
         self._nav.setItemDelegate(NoFocusDelegate(self._nav))
         self._nav.setStyleSheet("""
             QListWidget {
@@ -65,7 +74,29 @@ class MainWindow(QMainWindow):
                 background-color: #333537;
             }
         """)
-        layout.addWidget(self._nav)
+        nav_layout.addWidget(self._nav)
+
+        # 设置按钮（固定在底部）
+        self._settings_btn = QPushButton("⚙ 设置")
+        self._settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._settings_btn.clicked.connect(self._open_settings)
+        self._settings_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2b2d30;
+                color: #dcdcdc;
+                border: none;
+                border-top: 1px solid #444;
+                font-size: 14px;
+                padding: 12px 16px;
+                text-align: left;
+            }
+            QPushButton:hover {
+                background-color: #333537;
+            }
+        """)
+        nav_layout.addWidget(self._settings_btn)
+
+        layout.addWidget(nav_container)
 
         self._stack = QStackedWidget()
         layout.addWidget(self._stack)
@@ -84,3 +115,7 @@ class MainWindow(QMainWindow):
         item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._nav.addItem(item)
         self._stack.addWidget(widget)
+
+    def _open_settings(self):
+        dlg = SettingsDialog(self)
+        dlg.exec()

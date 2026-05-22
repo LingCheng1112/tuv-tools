@@ -1,0 +1,298 @@
+"""文档列表面板 — QTableWidget 封装，含勾选、右键菜单、拖拽导入"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction
+from . import CHECKBOX_STYLE
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QCheckBox,
+    QHeaderView,
+    QMenu,
+    QMessageBox,
+    QTableWidget,
+    QTableWidgetItem,
+)
+
+STATUS_LABELS: dict[str, str] = {
+    "pending": "◷ 未处理",
+    "completed": "✅ 已拆分",
+    "failed": "✗ 失败",
+    "processing": "⟳ 处理中",
+}
+
+
+class DocumentTable(QTableWidget):
+    """文档列表表格"""
+
+    checked_changed = Signal()  # 勾选变化
+    split_requested = Signal(int)  # 请求拆分单条 (doc_id)
+    open_output_requested = Signal(int)  # 请求打开输出目录 (doc_id)
+    selection_empty = Signal()  # 列表为空时发出
+
+    COL_CHECK = 0
+    COL_FILE = 1
+    COL_STANDARD = 2
+    COL_STATUS = 3
+    COL_COUNT = 4
+    COL_SPLIT_AT = 5
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._data: list[dict] = []
+        self._checked: set[int] = set()
+
+        self.setColumnCount(6)
+        self.setHorizontalHeaderLabels([
+            "", "文件名", "标准号", "状态", "条款数", "拆分时间"
+        ])
+        self.horizontalHeader().setSectionResizeMode(self.COL_FILE, QHeaderView.Stretch)
+        self.setColumnWidth(self.COL_CHECK, 36)
+        self.setColumnWidth(self.COL_STANDARD, 120)
+        self.setColumnWidth(self.COL_STATUS, 130)
+        self.setColumnWidth(self.COL_COUNT, 55)
+        self.setColumnWidth(self.COL_SPLIT_AT, 145)
+
+        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.verticalHeader().setVisible(False)
+        self.setAlternatingRowColors(True)
+        self.setShowGrid(False)
+        self.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+        self._base_style = """
+            QTableWidget {
+                background-color: #2b2d30;
+                alternate-background-color: #303336;
+                color: #dcdcdc;
+                border: none;
+                font-size: 13px;
+                outline: none;
+            }
+            QTableWidget::item {
+                padding: 8px 10px;
+                border: none;
+            }
+            QTableWidget::item:selected {
+                background-color: #3c3f41;
+                color: #ffffff;
+            }
+            QHeaderView::section {
+                background-color: #2b2d30;
+                color: #999;
+                border: none;
+                border-bottom: 2px solid #4a4d50;
+                padding: 8px 10px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+        """
+        self.setStyleSheet(self._base_style)
+
+        # 拖拽支持
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
+        self._drag_files: list[str] = []
+
+    # ---- 数据加载 ----
+
+    def load_documents(self, docs: list[dict]) -> None:
+        """加载文档列表数据"""
+        self._data = docs
+        self._checked.clear()
+        self.setRowCount(len(docs))
+        for row, doc in enumerate(docs):
+            self._build_row(row, doc)
+        self.checked_changed.emit()
+
+    @staticmethod
+    def _make_item(text: str, tooltip: str = "") -> QTableWidgetItem:
+        item = QTableWidgetItem(text)
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        if tooltip:
+            item.setToolTip(tooltip)
+        return item
+
+    def _build_row(self, row: int, doc: dict) -> None:
+        # 勾选框
+        cb = QCheckBox()
+        cb.setStyleSheet(CHECKBOX_STYLE)
+        cb.setChecked(doc["id"] in self._checked)
+        cb.toggled.connect(lambda checked, d=doc: self._on_toggle(d["id"], checked))
+        self.setCellWidget(row, self.COL_CHECK, cb)
+
+        # 文件名
+        file_name = doc["file_name"]
+        file_missing = not os.path.exists(doc["file_path"])
+        display_name = f"⚠ {file_name}" if file_missing else file_name
+        self.setItem(row, self.COL_FILE,
+                     self._make_item(display_name, "原文件不存在" if file_missing else file_name))
+
+        # 标准号
+        std_num = doc.get("standard_number") or "-"
+        self.setItem(row, self.COL_STANDARD, self._make_item(std_num, std_num))
+
+        # 状态
+        status = doc.get("status", "pending")
+        label = STATUS_LABELS.get(status, status)
+        self.setItem(row, self.COL_STATUS, self._make_item(label, label))
+
+        # 条款数
+        count = doc.get("last_section_count")
+        self.setItem(row, self.COL_COUNT, self._make_item(str(count) if count else "-"))
+
+        # 拆分时间
+        split_at = doc.get("last_split_at") or "-"
+        display_time = split_at[:16] if len(split_at) > 16 else split_at
+        self.setItem(row, self.COL_SPLIT_AT,
+                     self._make_item(display_time, split_at if split_at != "-" else ""))
+
+    def _on_toggle(self, doc_id: int, checked: bool) -> None:
+        if checked:
+            self._checked.add(doc_id)
+        else:
+            self._checked.discard(doc_id)
+        self.checked_changed.emit()
+
+    def _delete_doc(self, doc_id: int) -> None:
+        reply = QMessageBox.question(
+            self, "确认删除",
+            "是否删除此导入记录？（不会删除原始文件）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        from tuv_tools.config.database import DatabaseManager
+        DatabaseManager().delete_document(doc_id)
+        self._checked.discard(doc_id)
+        docs = DatabaseManager().get_documents()
+        self.load_documents(docs)
+        if not docs:
+            self.selection_empty.emit()
+
+    # ---- 右键菜单 ----
+
+    def _show_context_menu(self, pos) -> None:
+        row = self.rowAt(pos.y())
+        if row < 0 or row >= len(self._data):
+            return
+        doc = self._data[row]
+        menu = QMenu(self)
+
+        split_action = QAction("拆分此文档", self)
+        split_action.triggered.connect(lambda: self.split_requested.emit(doc["id"]))
+        menu.addAction(split_action)
+
+        open_file_action = QAction("打开文件位置", self)
+        open_file_action.triggered.connect(lambda: self._open_file_location(doc))
+        menu.addAction(open_file_action)
+
+        if doc.get("status") == "completed":
+            open_output_action = QAction("打开输出目录", self)
+            open_output_action.triggered.connect(lambda: self.open_output_requested.emit(doc["id"]))
+            menu.addAction(open_output_action)
+
+        copy_action = QAction("复制文件名", self)
+        copy_action.triggered.connect(lambda: QApplication.clipboard().setText(doc["file_name"]))
+        menu.addAction(copy_action)
+
+        menu.addSeparator()
+        delete_action = QAction("删除记录", self)
+        delete_action.triggered.connect(lambda: self._delete_doc(doc["id"]))
+        menu.addAction(delete_action)
+
+        menu.exec(self.viewport().mapToGlobal(pos))
+
+    def _open_file_location(self, doc: dict) -> None:
+        file_dir = str(Path(doc["file_path"]).parent)
+        if os.path.exists(file_dir):
+            os.startfile(file_dir)
+
+    # ---- 勾选状态 ----
+
+    def checked_ids(self) -> list[int]:
+        return list(self._checked)
+
+    def checked_count(self) -> int:
+        return len(self._checked)
+
+    def total_count(self) -> int:
+        return len(self._data)
+
+    def set_single_checked(self, doc_id: int) -> None:
+        """仅勾选指定文档，取消其余"""
+        self._checked.clear()
+        self._checked.add(doc_id)
+        self._rebuild_checkboxes()
+
+    def set_all_checked(self, checked: bool) -> None:
+        self._checked.clear()
+        if checked:
+            for doc in self._data:
+                self._checked.add(doc["id"])
+        self._rebuild_checkboxes()
+
+    def _rebuild_checkboxes(self) -> None:
+        for row, doc in enumerate(self._data):
+            cb = self.cellWidget(row, self.COL_CHECK)
+            if isinstance(cb, QCheckBox):
+                cb.setChecked(doc["id"] in self._checked)
+
+    # ---- 拖拽导入 ----
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            self.setStyleSheet(self._base_style + """
+                QTableWidget { border: 2px dashed #4a9eff; }
+            """)
+
+    def dragLeaveEvent(self, event) -> None:
+        self.setStyleSheet(self._base_style)
+
+    def dropEvent(self, event) -> None:
+        self.setStyleSheet(self._base_style)
+        urls = event.mimeData().urls() if event.mimeData().hasUrls() else []
+        self._drag_files = []
+        for url in urls:
+            path = url.toLocalFile()
+            if os.path.isdir(path):
+                for root, _dirs, files in os.walk(path):
+                    for f in files:
+                        if f.lower().endswith(".docx"):
+                            self._drag_files.append(os.path.join(root, f))
+            elif path.lower().endswith(".docx"):
+                self._drag_files.append(path)
+
+        if self._drag_files:
+            from tuv_tools.config.database import DatabaseManager
+            db = DatabaseManager()
+            for fp in self._drag_files:
+                try:
+                    db.add_document(fp)
+                except Exception:
+                    pass
+            self.load_documents(db.get_documents())
+
+    # ---- 搜索筛选 ----
+
+    def filter_by_text(self, text: str) -> None:
+        """按文件名/标准号筛选"""
+        for row in range(self.rowCount()):
+            if not text.strip():
+                self.setRowHidden(row, False)
+                continue
+            match = False
+            for col in (self.COL_FILE, self.COL_STANDARD):
+                item = self.item(row, col)
+                if item and text.lower() in item.text().lower():
+                    match = True
+                    break
+            self.setRowHidden(row, not match)
