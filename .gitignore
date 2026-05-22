@@ -29,3 +29,9 @@ api_config.json
 rsa_private.key
 /.superpowers
 /.idea
+/.claude
+/.codex
+/.omx
+/.wolf
+AGENTS.md
+CLAUDE.md

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from tuv_tools.config import AppSettings
 from tuv_tools.core.splitter import build_sections, export_docx_outputs
+from tuv_tools.core.splitter.utils import safe_name
 from tuv_tools.core.splitter.utils import CleanPatterns
 from tuv_tools.ui.widgets import CHECKBOX_STYLE
 from tuv_tools.ui.widgets.clause_panel import ClauseOverlay
@@ -57,13 +58,38 @@ class SplitWorker(QThread):
                     continue
                 sections = build_sections(docx_path)
                 if sections:
-                    output_path = Path(
-                        output_subdir) if output_subdir else Path(self._output_root)
+                    output_path = resolve_output_root(docx_path, self._output_root, output_subdir)
                     export_docx_outputs(docx_path, sections, output_path, self._patterns)
                 self.doc_done.emit(doc_id, "completed", len(sections))
             except Exception as exc:
                 self.doc_error.emit(doc_id, str(exc))
         self.progress.emit(total, total)
+
+
+def resolve_output_root(docx_path: Path, output_root: str, output_subdir: str = "") -> Path:
+    """根据配置解析导出根目录；未配置时回退到原文档所在目录。"""
+    if output_subdir:
+        return Path(output_subdir)
+    if output_root:
+        return Path(output_root)
+    return docx_path.parent
+
+
+class ParseWorker(QThread):
+    """后台解析工作线程（用于条款面板预览）"""
+    result_ready = Signal(list)
+    error_occurred = Signal(str)
+
+    def __init__(self, docx_path: Path):
+        super().__init__()
+        self._docx_path = docx_path
+
+    def run(self):
+        try:
+            sections = build_sections(self._docx_path)
+            self.result_ready.emit(sections)
+        except Exception as exc:
+            self.error_occurred.emit(str(exc))
 
 
 class SplitterView(QWidget):
@@ -73,6 +99,7 @@ class SplitterView(QWidget):
         super().__init__()
         self._settings = AppSettings()
         self._worker: SplitWorker | None = None
+        self._parse_worker: ParseWorker | None = None
         from tuv_tools.config.database import DatabaseManager
         self._db = DatabaseManager()
         self._setup_ui()
@@ -210,8 +237,11 @@ class SplitterView(QWidget):
         added = 0
         for fp in paths:
             try:
+                before = len(db.get_documents())
                 db.add_document(fp)
-                added += 1
+                after = len(db.get_documents())
+                if after > before:
+                    added += 1
             except Exception:
                 pass
         self._load_documents()
@@ -272,6 +302,7 @@ class SplitterView(QWidget):
         self._progress.setMaximum(len(items))
         self._progress.setValue(0)
         self._cancel_btn.setVisible(True)
+        self._cancel_btn.setEnabled(True)
         self._split_btn.setEnabled(False)
 
         self._worker = SplitWorker(items, output_root, patterns)
@@ -283,16 +314,17 @@ class SplitterView(QWidget):
 
     def _on_doc_done(self, doc_id: int, status: str, section_count: int) -> None:
         self._db.update_document_status(doc_id, status, section_count)
-        self._load_documents()
+        self._table.update_row_status(doc_id, status, section_count)
 
     def _on_doc_error(self, doc_id: int, error: str) -> None:
         self._db.update_document_status(doc_id, "failed", error=error)
-        self._load_documents()
+        self._table.update_row_status(doc_id, "failed")
 
     def _on_all_done(self) -> None:
         self._progress.setVisible(False)
         self._cancel_btn.setVisible(False)
         self._split_btn.setEnabled(True)
+        self._load_documents()
         Toast(self, "拆分完成")
 
     def _cancel_split(self) -> None:
@@ -318,11 +350,10 @@ class SplitterView(QWidget):
             self._clause_panel.show_error("原文件不存在")
             return
 
-        try:
-            sections = build_sections(docx_path)
-            self._clause_panel.set_sections(sections)
-        except Exception as exc:
-            self._clause_panel.show_error(str(exc))
+        self._parse_worker = ParseWorker(docx_path)
+        self._parse_worker.result_ready.connect(self._clause_panel.set_sections)
+        self._parse_worker.error_occurred.connect(self._clause_panel.show_error)
+        self._parse_worker.start()
 
     # ---- 输出目录 ----
 
@@ -344,6 +375,15 @@ class SplitterView(QWidget):
             clause_dir = os.path.join(output_root, std_num)
             if os.path.isdir(clause_dir):
                 os.startfile(clause_dir)
+                return
+
+        if not output_root and doc:
+            base_dir = os.path.join(
+                str(Path(doc["file_path"]).parent),
+                safe_name(std_num or Path(doc["file_path"]).stem),
+            )
+            if os.path.isdir(base_dir):
+                os.startfile(base_dir)
                 return
 
         # 回退：output_root 目录
@@ -369,4 +409,6 @@ class SplitterView(QWidget):
         if self._worker and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(3000)
+        if self._parse_worker and self._parse_worker.isRunning():
+            self._parse_worker.wait(3000)
         super().closeEvent(event)

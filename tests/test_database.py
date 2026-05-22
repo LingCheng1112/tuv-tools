@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from tuv_tools.config.database import DatabaseManager, _extract_standard_number
 from tuv_tools.core.chapter.models import ApiConfig
@@ -91,6 +92,15 @@ class TestDatabaseManager:
         patterns = db.load_clean_patterns()
         assert len(patterns) == 1
 
+    def test_save_clean_rules_rejects_invalid_regex(self):
+        db, _ = self._new_db()
+        try:
+            db.save_clean_rules([{"name": "broken", "pattern": "(", "sort_order": 0}])
+        except ValueError as exc:
+            assert "Invalid clean rule regex" in str(exc)
+        else:
+            raise AssertionError("invalid regex should be rejected")
+
     def test_clean_rules_replace_all(self):
         db, _ = self._new_db()
         db.save_clean_rules([{"name": "r1", "pattern": r"\d+", "sort_order": 0}])
@@ -158,6 +168,18 @@ class TestDatabaseManager:
         db.save_rsa_private_key("NEW_KEY")
         assert db.load_rsa_private_key() == "NEW_KEY"
 
+    def test_api_config_can_clear_saved_rsa_key(self):
+        db, _ = self._new_db()
+        db.save_api_config(ApiConfig(username="admin", rsa_private_key="KEY123"))
+        assert db.load_rsa_private_key() == "KEY123"
+
+        db.save_api_config(ApiConfig(username="admin", rsa_private_key=""))
+
+        loaded = db.load_api_config()
+        assert loaded is not None
+        assert loaded.rsa_private_key == ""
+        assert db.load_rsa_private_key() is None
+
     def test_api_config_roundtrip(self):
         db, _ = self._new_db()
         cfg = ApiConfig(
@@ -191,3 +213,33 @@ class TestDatabaseManager:
         assert db2.get_config("persist") == "yes"
         assert len(db2.load_clean_rules()) == 1
         db2.close()
+
+    def test_migration_retries_when_any_legacy_source_fails(self, tmp_path):
+        project_root = tmp_path
+        rules_path = project_root / "resources" / "inline_clean_rules.json"
+        rules_path.parent.mkdir()
+        rules_path.write_text(
+            json.dumps({"inline_clean_rules": [{"name": "digits", "pattern": r"\d+"}]}),
+            encoding="utf-8",
+        )
+        api_path = project_root / "api_config.json"
+        api_path.write_text("{bad json", encoding="utf-8")
+        key_path = project_root / "rsa_private.key"
+        db_path = tmp_path / "test.db"
+
+        with patch("tuv_tools.config.settings.PROJECT_ROOT", project_root), \
+             patch("tuv_tools.config.settings.API_CONFIG_FILE", api_path), \
+             patch("tuv_tools.config.settings.RSA_KEY_FILE", key_path):
+            db = DatabaseManager(db_path)
+
+        assert db.get_config("migrated_from_legacy") is None
+        assert api_path.exists()
+
+        api_path.write_text(json.dumps({"username": "admin"}), encoding="utf-8")
+        with patch("tuv_tools.config.settings.PROJECT_ROOT", project_root), \
+             patch("tuv_tools.config.settings.API_CONFIG_FILE", api_path), \
+             patch("tuv_tools.config.settings.RSA_KEY_FILE", key_path):
+            db._migrate_old_files()
+
+        assert db.get_config("migrated_from_legacy") == "1"
+        assert db.get_config("api.username") == "admin"

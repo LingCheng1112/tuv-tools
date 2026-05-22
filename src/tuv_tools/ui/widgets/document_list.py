@@ -245,6 +245,19 @@ class DocumentTable(QTableWidget):
                 self._checked.add(doc["id"])
         self._rebuild_checkboxes()
 
+    def update_row_status(self, doc_id: int, status: str, section_count: int | None = None) -> None:
+        """就地更新指定文档的状态列和条款数列，避免全量刷新"""
+        for row, doc in enumerate(self._data):
+            if doc["id"] == doc_id:
+                doc["status"] = status
+                if section_count is not None:
+                    doc["last_section_count"] = section_count
+                label = STATUS_LABELS.get(status, status)
+                self.setItem(row, self.COL_STATUS, self._make_item(label, label))
+                count_text = str(section_count) if section_count else "-"
+                self.setItem(row, self.COL_COUNT, self._make_item(count_text))
+                break
+
     def _rebuild_checkboxes(self) -> None:
         for row, doc in enumerate(self._data):
             cb = self.cellWidget(row, self.COL_CHECK)
@@ -272,9 +285,9 @@ class DocumentTable(QTableWidget):
             if os.path.isdir(path):
                 for root, _dirs, files in os.walk(path):
                     for f in files:
-                        if f.lower().endswith(".docx"):
+                        if self._is_importable_docx(f):
                             self._drag_files.append(os.path.join(root, f))
-            elif path.lower().endswith(".docx"):
+            elif self._is_importable_docx(os.path.basename(path)):
                 self._drag_files.append(path)
 
         if self._drag_files:
@@ -286,6 +299,10 @@ class DocumentTable(QTableWidget):
                 except Exception:
                     pass
             self.load_documents(db.get_documents())
+
+    @staticmethod
+    def _is_importable_docx(file_name: str) -> bool:
+        return file_name.lower().endswith(".docx") and not file_name.startswith("~$")
 
     # ---- 搜索筛选 ----
 

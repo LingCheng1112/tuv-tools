@@ -48,16 +48,19 @@ def auto_login(client: TuvClient, config: ApiConfig) -> bool:
     if cache_path:
         cached = load_token_cache(cache_path, config.token_idle_timeout)
         if cached:
-            client.token = cached["token"]
-            try:
-                client.get("/auth/info")
-                return True
-            except requests.HTTPError:
+            if cached.get("username") != config.username:
                 clear_token_cache(cache_path)
-                client.token = ""
-            except (requests.ConnectionError, requests.Timeout):
-                client.token = ""
-                return False
+            else:
+                client.token = cached["token"]
+                try:
+                    client.get("/auth/info")
+                    return True
+                except requests.HTTPError:
+                    clear_token_cache(cache_path)
+                    client.token = ""
+                except (requests.ConnectionError, requests.Timeout):
+                    client.token = ""
+                    return False
 
     # 完整登录
     if not config.rsa_private_key:

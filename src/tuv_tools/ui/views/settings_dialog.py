@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-
 from tuv_tools.ui.widgets import CHECKBOX_STYLE
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -258,6 +257,13 @@ class SettingsDialog(QDialog):
         from dataclasses import replace
         from tuv_tools.core.chapter.models import ApiConfig
 
+        rules = self._collect_rules()
+        try:
+            self._validate_rules(rules)
+        except ValueError as exc:
+            QMessageBox.warning(self, "清洗规则错误", str(exc))
+            return
+
         self._db.set_config("splitter.output_path", self._output_edit.text().strip())
         self._db.set_config("splitter.auto_open",
                             "true" if self._auto_open_cb.isChecked() else "false")
@@ -271,5 +277,11 @@ class SettingsDialog(QDialog):
             rsa_private_key=self._rsa_edit.text().strip(),
         )
         self._db.save_api_config(api_config)
-        self._db.save_clean_rules(self._collect_rules())
+        self._db.save_clean_rules(rules)
         self.accept()
+
+    @staticmethod
+    def _validate_rules(rules: list[dict]) -> None:
+        from tuv_tools.config.database import validate_clean_rules
+
+        validate_clean_rules(rules)

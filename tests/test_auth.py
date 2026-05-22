@@ -75,6 +75,25 @@ class TestAutoLogin:
         assert client.token == "valid_token"
 
     @patch("tuv_tools.core.chapter.auth.encrypt_password")
+    def test_cached_token_for_different_user_is_ignored(self, mock_encrypt, config, tmp_cache):
+        save_token_cache(str(tmp_cache), "old_user_token", "other")
+        client = TuvClient(config.base_url)
+        mock_encrypt.return_value = "encrypted_pw"
+        config.rsa_private_key = "fake_key"
+        login_resp = MagicMock()
+        login_resp.status_code = 200
+        login_resp.json.return_value = {"token": "Bearer new_token"}
+
+        with patch.object(client, "get") as mock_get, \
+             patch.object(client, "post", return_value=login_resp) as mock_post:
+            result = auto_login(client, config)
+
+        assert result is True
+        assert client.token == "new_token"
+        mock_get.assert_not_called()
+        mock_post.assert_called_once()
+
+    @patch("tuv_tools.core.chapter.auth.encrypt_password")
     def test_cached_token_invalid_triggers_login(self, mock_encrypt, config, tmp_cache):
         save_token_cache(str(tmp_cache), "expired_token", "tyler")
         client = TuvClient(config.base_url)

@@ -34,6 +34,19 @@ def _extract_standard_number(file_name: str) -> str | None:
     return None
 
 
+def validate_clean_rules(rules: list[dict[str, Any]]) -> None:
+    """校验用户配置的清洗正则，保存前阻断非法表达式。"""
+    for idx, rule in enumerate(rules):
+        pattern = rule.get("pattern", "").strip()
+        if not pattern:
+            continue
+        try:
+            re.compile(pattern, re.IGNORECASE)
+        except re.error as exc:
+            name = rule.get("name", "") or f"row {idx + 1}"
+            raise ValueError(f"Invalid clean rule regex ({name}): {exc}") from exc
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS config (
     key   TEXT PRIMARY KEY,
@@ -68,13 +81,28 @@ CREATE TABLE IF NOT EXISTS imported_documents (
 
 
 class DatabaseManager:
-    """SQLite 数据管理，线程安全（WAL 模式 + check_same_thread=False）"""
+    """SQLite 数据管理，线程安全（WAL 模式 + 线程局部连接）。模块级单例。"""
+
+    _instance: DatabaseManager | None = None
+    _initialized: bool = False
+
+    def __new__(cls, db_path: Path | None = None):
+        if db_path is not None:
+            instance = super().__new__(cls)
+            return instance
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
 
     def __init__(self, db_path: Path | None = None):
+        if db_path is None and DatabaseManager._initialized:
+            return
         self._db_path = db_path or DB_PATH
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         self._init_db()
+        if db_path is None:
+            DatabaseManager._initialized = True
 
     @property
     def _conn(self) -> sqlite3.Connection:
@@ -104,8 +132,9 @@ class DatabaseManager:
         from tuv_tools.config.settings import API_CONFIG_FILE, PROJECT_ROOT, RSA_KEY_FILE
 
         rules_path = PROJECT_ROOT / "resources" / "inline_clean_rules.json"
+        rules_seen = rules_path.exists()
         rules_ok = False
-        if rules_path.exists():
+        if rules_seen:
             try:
                 data = json.loads(rules_path.read_text(encoding="utf-8"))
                 rules = data.get("inline_clean_rules", [])
@@ -117,19 +146,13 @@ class DatabaseManager:
                             "INSERT INTO clean_rules (name, pattern, sort_order) VALUES (?, ?, ?)",
                             (name, pattern, idx),
                         )
-                if rules:
-                    self._conn.commit()
-                    rules_ok = True
+                rules_ok = True
             except (json.JSONDecodeError, OSError):
                 pass
-            if rules_ok:
-                try:
-                    rules_path.unlink()
-                except OSError:
-                    pass
 
+        api_seen = API_CONFIG_FILE.exists()
         api_ok = False
-        if API_CONFIG_FILE.exists():
+        if api_seen:
             try:
                 data = json.loads(API_CONFIG_FILE.read_text(encoding="utf-8"))
                 for key, value in data.items():
@@ -139,18 +162,13 @@ class DatabaseManager:
                         "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
                         (f"api.{key}", str(value)),
                     )
-                self._conn.commit()
                 api_ok = True
             except (json.JSONDecodeError, OSError):
                 pass
-            if api_ok:
-                try:
-                    API_CONFIG_FILE.unlink()
-                except OSError:
-                    pass
 
+        key_seen = RSA_KEY_FILE.exists()
         key_ok = False
-        if RSA_KEY_FILE.exists():
+        if key_seen:
             try:
                 key_text = RSA_KEY_FILE.read_text(encoding="utf-8").strip()
                 if key_text:
@@ -158,15 +176,36 @@ class DatabaseManager:
                         "INSERT OR REPLACE INTO rsa_key (id, private_key) VALUES (1, ?)",
                         (key_text,),
                     )
-                    self._conn.commit()
-                    key_ok = True
+                key_ok = True
             except OSError:
                 pass
-            if key_ok:
-                try:
-                    RSA_KEY_FILE.unlink()
-                except OSError:
-                    pass
+
+        if not (rules_seen or api_seen or key_seen):
+            self._conn.execute(
+                "INSERT OR REPLACE INTO config (key, value) VALUES ('migrated_from_legacy', '1')"
+            )
+            self._conn.commit()
+            return
+
+        if (rules_seen and not rules_ok) or (api_seen and not api_ok) or (key_seen and not key_ok):
+            self._conn.rollback()
+            return
+
+        if rules_ok:
+            try:
+                rules_path.unlink()
+            except OSError:
+                pass
+        if api_ok:
+            try:
+                API_CONFIG_FILE.unlink()
+            except OSError:
+                pass
+        if key_ok:
+            try:
+                RSA_KEY_FILE.unlink()
+            except OSError:
+                pass
 
         self._conn.execute(
             "INSERT OR REPLACE INTO config (key, value) VALUES ('migrated_from_legacy', '1')"
@@ -197,6 +236,10 @@ class DatabaseManager:
         )
         self._conn.commit()
 
+    def clear_rsa_private_key(self) -> None:
+        self._conn.execute("DELETE FROM rsa_key WHERE id = 1")
+        self._conn.commit()
+
     # ---- 清洗规则 ----
 
     def load_clean_rules(self) -> list[dict[str, Any]]:
@@ -214,6 +257,7 @@ class DatabaseManager:
 
     def save_clean_rules(self, rules: list[dict[str, Any]]) -> None:
         """全量替换清洗规则"""
+        validate_clean_rules(rules)
         self._conn.execute("DELETE FROM clean_rules")
         for idx, rule in enumerate(rules):
             self._conn.execute(
@@ -261,6 +305,8 @@ class DatabaseManager:
             )
         if rsa_key:
             self.save_rsa_private_key(rsa_key)
+        else:
+            self.clear_rsa_private_key()
         self._conn.commit()
 
     # ---- 导入文档 ----

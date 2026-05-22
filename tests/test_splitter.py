@@ -39,6 +39,8 @@ from tuv_tools.core.splitter.exporting import (
     _collapse_sections_for_version,
     _merge_table_slices_xml,
 )
+from tuv_tools.ui.views.splitter_view import resolve_output_root
+from tuv_tools.ui.widgets.document_list import DocumentTable
 
 FIXTURE = Path(__file__).parent / "fixtures" / "Test Plan for IEC 60335-2-24.doc.docx"
 
@@ -483,3 +485,22 @@ class TestExportIntegration:
         for docx_file in clause_dir.glob("*.docx"):
             with zipfile.ZipFile(docx_file) as z:
                 assert "word/document.xml" in z.namelist()
+
+
+class TestSplitterUiHelpers:
+    def test_resolve_output_root_defaults_to_document_directory(self, tmp_path):
+        docx_path = tmp_path / "source" / "sample.docx"
+        docx_path.parent.mkdir()
+
+        assert resolve_output_root(docx_path, "") == docx_path.parent
+
+    def test_resolve_output_root_prefers_configured_output_root(self, tmp_path):
+        docx_path = tmp_path / "source.docx"
+        output_root = tmp_path / "output"
+
+        assert resolve_output_root(docx_path, str(output_root)) == output_root
+
+    def test_document_table_filters_word_lock_files(self):
+        assert DocumentTable._is_importable_docx("sample.docx") is True
+        assert DocumentTable._is_importable_docx("~$sample.docx") is False
+        assert DocumentTable._is_importable_docx("sample.doc") is False
