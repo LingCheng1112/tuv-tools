@@ -28,3 +28,4 @@ api_config.json
 .token_cache
 rsa_private.key
 /.superpowers
+/.idea
