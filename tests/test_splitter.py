@@ -148,7 +148,7 @@ class TestDetectClauseInText:
     def test_ampersand_clause(self):
         result = detect_clause_in_text("8.1.4& 22.42 Test for protective impedance")
         assert result is not None
-        assert result.clause_id == "8.1.4"
+        assert result.clause_id == "8.1.4&22.42"
         assert "22.42" in result.secondary_refs
 
     def test_annex(self):

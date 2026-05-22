@@ -5,10 +5,10 @@ import re
 NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 W = "{%s}" % NS["w"]
 
-# 条款号正则：匹配 "10.2"、"1.2.3" 格式，支持 & 连接的复合引用
+# 条款号正则：匹配 "10.2"、"13.3,16.3,24.5"、"10.2 & 10.3" 等复合引用
 CLAUSE_HEAD_RE = re.compile(
-    r"^(?P<primary>(?:\d+\.)+\d+|\d+)"
-    r"(?:\s*&\s*(?P<secondary>(?:\d+\.)+\d+|\d+))?"
+    r"^(?P<compound>(?:\d+\.)+\d+"
+    r"(?:\s*[,&]\s*(?:\d+\.)+\d+)*)"
     r"(?P<rest>.*)$"
 )
 

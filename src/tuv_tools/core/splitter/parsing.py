@@ -29,6 +29,15 @@ def iter_body_blocks(body: ET.Element) -> Iterable[ET.Element]:
             yield child
 
 
+def _parse_compound_clause(compound: str) -> tuple[str, str, list[str]]:
+    """解析复合条款号 13.3,16.3,24.5 → (primary, clause_id, secondary_refs)"""
+    parts = re.split(r"\s*[,&]\s*", compound)
+    primary = parts[0]
+    secondary_refs = parts[1:] if len(parts) > 1 else []
+    clause_id = re.sub(r"\s*([,&])\s*", r"\1", compound)
+    return primary, clause_id, secondary_refs
+
+
 def _build_clause_match(clause_id: str, title_hint: str, secondary_refs: list[str] | None = None) -> ClauseMatch:
     return ClauseMatch(
         clause_id=clause_id,
@@ -56,19 +65,18 @@ def detect_clause_in_text(text: str) -> ClauseMatch | None:
     if not clause_match:
         return None
 
-    primary = clause_match.group("primary")
+    compound = clause_match.group("compound")
+    primary, clause_id, secondary_refs = _parse_compound_clause(compound)
     if "." not in primary:
         if len(primary) < 2:
             return None
-    secondary = clause_match.group("secondary")
     rest = clean_text((clause_match.group("rest") or "").lstrip(".:|- "))
     if "." not in primary and rest and not rest[0].isupper():
         # 裸数字后紧跟小写字母开头的一般是误检（如 "72hours"、"10 times"）
         return None
     if not has_title_text(rest):
         return None
-    secondary_refs = [secondary] if secondary else []
-    return _build_clause_match(primary, normalized, secondary_refs)
+    return _build_clause_match(clause_id, normalized, secondary_refs)
 
 
 def _try_detect_in_first_cell(first: str) -> ClauseMatch | None:
@@ -105,14 +113,13 @@ def _try_detect_across_cells(first: str, second: str) -> ClauseMatch | None:
 
     clause_match = CLAUSE_HEAD_RE.match(normalized)
     if clause_match:
-        primary = clause_match.group("primary")
+        compound = clause_match.group("compound")
+        primary, clause_id, secondary_refs = _parse_compound_clause(compound)
         if "-" in primary:
             return None
         if "." not in primary and len(primary) < 2:
             return None
-        secondary = clause_match.group("secondary")
-        secondary_refs = [secondary] if secondary else []
-        return _build_clause_match(primary, f"{normalized} | {second}", secondary_refs)
+        return _build_clause_match(clause_id, f"{normalized} | {second}", secondary_refs)
 
     annex_match = ANNEX_HEAD_RE.match(normalized)
     if annex_match:
