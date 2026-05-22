@@ -1,0 +1,203 @@
+"""条款面板 — 浮层叠加式，从右侧滑入覆盖列表"""
+
+from __future__ import annotations
+
+from PySide6.QtCore import QPropertyAnimation, QEasingCurve, Property, Qt, Signal
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+
+class ClauseOverlay(QWidget):
+    """浮层叠加面板：半透明遮罩 + 右侧滑入面板"""
+
+    PANEL_WIDTH = 600
+    ANIM_DURATION = 250
+    closed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._anim = None
+        self._expanded = False
+        self.setVisible(False)
+
+        # 半透明遮罩
+        self._backdrop = QWidget(self)
+        self._backdrop.setStyleSheet("background-color: rgba(0, 0, 0, 80);")
+        self._backdrop.installEventFilter(self)
+
+        # 条款面板本体
+        self._panel = QWidget(self)
+        self._panel.setObjectName("clausePanel")
+        self._panel.setStyleSheet("""
+            #clausePanel {
+                background-color: #2b2d30;
+                border-left: 1px solid #555;
+            }
+        """)
+        panel_layout = QVBoxLayout(self._panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        panel_layout.setSpacing(0)
+
+        # 标题栏
+        header = QHBoxLayout()
+        header.setContentsMargins(12, 10, 8, 10)
+        self._title_label = QLabel("条款列表")
+        self._title_label.setStyleSheet("color: #dcdcdc; font-size: 14px; font-weight: bold;")
+        header.addWidget(self._title_label)
+        header.addStretch()
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(26, 26)
+        close_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #aaa; border: none; }"
+            "QPushButton:hover { color: #fff; }"
+        )
+        close_btn.clicked.connect(self.collapse)
+        header.addWidget(close_btn)
+        panel_layout.addLayout(header)
+
+        # 条款列表
+        self._list = QListWidget()
+        self._list.setStyleSheet("""
+            QListWidget {
+                background-color: #2b2d30; color: #dcdcdc;
+                border: none; border-top: 1px solid #444; font-size: 13px;
+            }
+            QListWidget::item { padding: 8px 12px; border-bottom: 1px solid #3c3f41; }
+            QListWidget::item:hover { background-color: #333537; }
+        """)
+        panel_layout.addWidget(self._list)
+
+        self._empty_label = QLabel("无条款数据")
+        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_label.setStyleSheet("color: #888; padding: 20px;")
+        self._empty_label.setVisible(False)
+        panel_layout.addWidget(self._empty_label)
+
+        self._panel_x = 0
+
+    def set_x(self, x: int) -> None:
+        self._panel_x = x
+        self._panel.move(x, 0)
+
+    def _get_x(self) -> int:
+        return self._panel_x
+
+    _x_prop = Property(int, _get_x, set_x)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._backdrop.setGeometry(0, 0,
+                                   self.width() - self.PANEL_WIDTH,
+                                   self.height())
+        self._panel.setGeometry(self._panel_x, 0, self.PANEL_WIDTH, self.height())
+
+    def _animate_x(self, target: int) -> None:
+        if self._anim and self._anim.state() == QPropertyAnimation.State.Running:
+            self._anim.stop()
+        self._anim = QPropertyAnimation(self, b"_x_prop")
+        self._anim.setDuration(self.ANIM_DURATION)
+        self._anim.setStartValue(self._panel_x)
+        self._anim.setEndValue(target)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.finished.connect(self._on_anim_done)
+        self._anim.start()
+
+    def _on_anim_done(self) -> None:
+        if self._panel_x >= self.width():
+            self.setVisible(False)
+
+    def expand(self) -> None:
+        if self._expanded:
+            return
+        self._expanded = True
+        self.setGeometry(0, 0, self.parent().width(), self.parent().height())
+        start_x = self.width()
+        self._panel.move(start_x, 0)
+        self._panel_x = start_x
+        self.setVisible(True)
+        self.raise_()
+        self._animate_x(self.width() - self.PANEL_WIDTH)
+
+    def collapse(self) -> None:
+        if not self._expanded:
+            return
+        self._expanded = False
+        self._animate_x(self.width())
+        self.closed.emit()
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self._backdrop and event.type() == event.Type.MouseButtonPress:
+            self.collapse()
+            return True
+        return super().eventFilter(obj, event)
+
+    def set_title(self, title: str) -> None:
+        self._title_label.setText(title)
+
+    @staticmethod
+    def _clean_title(raw: str) -> str:
+        import re
+        text = raw
+
+        # 1. 移除模板括号块（含内容）
+        text = re.sub(r"\(Testing equipment[^)]*\)", "", text)
+        text = re.sub(r"\(please specify[^)]*\)", "", text)
+
+        # 2. 移除复选框模板行：☐ Test date : ...  ☐ Ambient temperature : ...  等
+        text = re.sub(r"☐\s*(Test date|Ambient temperature|Equipment ID|Sample ID|Equipment No)\s*:?[^☐|\n]*", "", text)
+        text = re.sub(r"☐+", "", text)
+
+        # 3. 去掉条款号/Annex/TABLE 前缀（已经在 clause_id 中）
+        text = re.sub(r"^[\d.,&\s]+\|?\s*", "", text)
+        text = re.sub(r"^Annex\s+[A-Z]{1,2}\s*[,&]?\s*[\d.]*\s*[-—–]\s*", "", text)
+        text = re.sub(r"^TABLE:\s*", "", text)
+
+        # 4. 按 | 拆分，取首个有效段（跳过纯数字/标点/空白段）
+        for part in text.split("|"):
+            part = part.strip()
+            if part and re.search(r"[A-Za-z]{3,}", part):
+                text = part
+                break
+        else:
+            text = ""
+
+        # 5. 清理残留空白和标点
+        text = re.sub(r"\s+", " ", text).strip(" .:;|-\t")
+
+        if not text or re.match(r"^[\d.,&\s]+$", text):
+            return "(无测试内容)"
+        return text
+
+    def set_sections(self, sections: list) -> None:
+        self._list.clear()
+        if not sections:
+            self._empty_label.setVisible(True)
+            self._list.setVisible(False)
+            return
+        self._empty_label.setVisible(False)
+        self._list.setVisible(True)
+        for s in sections:
+            title = self._clean_title(s.title)
+            text = f"{s.clause_id}: {title[:120]}"
+            item = QListWidgetItem(text)
+            item.setToolTip(title)
+            self._list.addItem(item)
+
+    def show_loading(self) -> None:
+        self._list.clear()
+        self._empty_label.setText("加载中...")
+        self._empty_label.setVisible(True)
+        self._list.setVisible(False)
+
+    def show_error(self, msg: str) -> None:
+        self._list.clear()
+        self._empty_label.setText(f"加载失败: {msg}")
+        self._empty_label.setVisible(True)
+        self._list.setVisible(False)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import zipfile
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -156,10 +157,39 @@ def export_docx_outputs(
 
     clause_id_counts = Counter(s.clause_id for s in sections)
     clause_name_counts: dict[str, int] = defaultdict(int)
+
+    # 为重复条款号预计算差异化后缀
+    _dup_bodies: dict[str, list[str]] = {}
+    for clause_id, count in clause_id_counts.items():
+        if count > 1:
+            bodies = [re.sub(r"^[\d.,&\s]+", "", s.title).strip()
+                      for s in sections if s.clause_id == clause_id]
+            _dup_bodies[clause_id] = bodies
+
+    # 遍历时按出现顺序匹配后缀
+    _dup_index: dict[str, int] = defaultdict(int)
     for section in sections:
-        title_slug = slugify(section.title)
         if clause_id_counts[section.clause_id] > 1:
-            export_stem = safe_name(f"{section.clause_id}_{title_slug}")
+            bodies = _dup_bodies[section.clause_id]
+            cur = _dup_index[section.clause_id]
+            _dup_index[section.clause_id] += 1
+            # 计算差异部分
+            body = re.sub(r"^[\d.,&\s]+", "", section.title).strip()
+            # 找公共前缀
+            min_len = min(len(b) for b in bodies)
+            cp = 0
+            for i in range(min_len):
+                if len({b[i] for b in bodies}) > 1:
+                    break
+                cp = i + 1
+            diff = body[cp:].strip()
+            if diff and diff != body:
+                short_slug = slugify(diff)[:30].strip("-")
+            elif body:
+                short_slug = slugify(body)[:40].strip("-")
+            else:
+                short_slug = "variant"
+            export_stem = safe_name(f"{section.clause_id}_{short_slug or 'variant'}")
         else:
             export_stem = safe_name(section.clause_id)
         clause_name_counts[export_stem] += 1

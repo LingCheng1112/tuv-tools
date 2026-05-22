@@ -34,6 +34,8 @@ def has_title_text(text: str) -> bool:
 def get_major_version(clause_id: str) -> str:
     """从条款 ID 提取主版本号"""
     if clause_id.startswith("Annex_"):
+        if "_TABLE" in clause_id:
+            return "Annex_TABLE"
         return "Annex"
     return clause_id.split(".", 1)[0]
 
@@ -80,6 +82,63 @@ def cell_text(cell: ET.Element) -> str:
         if text:
             values.append(text)
     return clean_text(" | ".join(values))
+
+
+def cell_text_bold_aware(cell: ET.Element) -> str:
+    """提取单元格文本，用 [B]...[/B] 标记加粗 run"""
+    parts: list[str] = []
+    for p in cell.findall(".//w:p", NS):
+        para_parts: list[str] = []
+        for r in p.findall(".//w:r", NS):
+            is_bold = r.find("w:rPr/w:b", NS) is not None
+            t = r.find("w:t", NS)
+            text = (t.text or "") if t is not None else ""
+            if is_bold:
+                para_parts.append(f"[B]{text}[/B]")
+            else:
+                para_parts.append(text)
+        if para_parts:
+            parts.append("".join(para_parts))
+    return clean_text(" | ".join(parts))
+
+
+def clause_title_font_consistent(cell: ET.Element, clause_id: str) -> bool:
+    """条款号与紧随其后的标题是否在同一 Bold run 中（字体一致）"""
+    plain = cell_text(cell)
+    marked = cell_text_bold_aware(cell)
+    pos = plain.find(clause_id)
+    if pos < 0:
+        return True
+    # 去除标记，定位条款号结束位置
+    clean = marked.replace("[B]", "").replace("[/B]", "")
+    clean_end = clean.find(clause_id) + len(clause_id)
+    if clean_end >= len(clean):
+        return True
+    # 条款号后第一个非空白非 Bold 标记的内容如果是 [/B]，说明 Bold 在此结束
+    m_idx = 0
+    c_idx = 0
+    while c_idx < clean_end and m_idx < len(marked):
+        tag3 = marked[m_idx:m_idx+3]
+        tag4 = marked[m_idx:m_idx+4]
+        if tag4 == "[/B]":
+            m_idx += 4
+        elif tag3 == "[B]":
+            m_idx += 3
+        else:
+            m_idx += 1
+            c_idx += 1
+    # 条款号结束后，跳过空白和标签，检查第一个标签是否为 [/B]
+    while m_idx < len(marked):
+        if marked[m_idx:m_idx+4] == "[/B]":
+            return False  # Bold 在条款号后立即结束 → 不一致
+        if marked[m_idx:m_idx+3] == "[B]":
+            m_idx += 3
+            continue
+        if marked[m_idx] in " \t":
+            m_idx += 1
+            continue
+        break  # 遇到非空白非标签内容 → 仍在 Bold 中或已到普通文本
+    return True
 
 
 def run_visible_text(run: ET.Element) -> str:

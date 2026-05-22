@@ -172,34 +172,34 @@ class TestDetectClauseInText:
 
 class TestDetectClauseInCells:
     def test_first_cell_clause(self):
-        result = detect_clause_in_cells(["10.2 Test item description", "extra info"])
-        assert result is not None
-        assert result.clause_id == "10.2"
+        results = detect_clause_in_cells(["10.2 Test item description", "extra info"])
+        assert len(results) == 1
+        assert results[0].clause_id == "10.2"
 
     def test_segmented_cell(self):
         # 第一格有多个用 | 分隔的条目
-        result = detect_clause_in_cells(["10.2 Test | 10.3 Other test", ""])
-        assert result is not None
-        assert result.clause_id == "10.2"
+        results = detect_clause_in_cells(["10.2 Test | 10.3 Other test", ""])
+        assert len(results) == 1
+        assert results[0].clause_id == "10.2"
 
     def test_second_cell_title(self):
         # 第一格只有条款号，第二格有标题文字
-        result = detect_clause_in_cells(["10.2", "Test item description here"])
-        assert result is not None
-        assert result.clause_id == "10.2"
+        results = detect_clause_in_cells(["10.2", "Test item description here"])
+        assert len(results) == 1
+        assert results[0].clause_id == "10.2"
 
     def test_annex_in_cell(self):
-        result = detect_clause_in_cells(["Annex A Normative references", ""])
-        assert result is not None
-        assert result.clause_id == "Annex_A"
+        results = detect_clause_in_cells(["Annex A Normative references", ""])
+        assert len(results) == 1
+        assert results[0].clause_id == "Annex_A"
 
     def test_empty_cells(self):
-        result = detect_clause_in_cells([])
-        assert result is None
+        results = detect_clause_in_cells([])
+        assert results == []
 
     def test_no_match(self):
-        result = detect_clause_in_cells(["No clause here", "Still no clause"])
-        assert result is None
+        results = detect_clause_in_cells(["No clause here", "Still no clause"])
+        assert results == []
 
 
 class TestParseDocument:

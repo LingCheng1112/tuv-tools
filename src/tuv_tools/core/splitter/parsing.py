@@ -55,10 +55,16 @@ def detect_clause_in_text(text: str) -> ClauseMatch | None:
 
     annex_match = ANNEX_HEAD_RE.match(normalized)
     if annex_match:
-        clause_id = f"Annex_{annex_match.group('letter').upper()}"
-        rest = clean_text(annex_match.group("rest"))
+        letter = annex_match.group("letter").upper()
+        suffix = annex_match.group("suffix")
+        clause_id = f"Annex_{letter}"
+        if suffix:
+            clause_id = f"{clause_id} & {suffix}"
+        rest = clean_text(annex_match.group("rest") or "")
+        if rest.upper().startswith("TABLE"):
+            clause_id = f"{clause_id}_TABLE"
         if has_title_text(rest):
-            return _build_clause_match(clause_id, normalized)
+            return _build_clause_match(clause_id, rest)
         return None
 
     clause_match = CLAUSE_HEAD_RE.match(normalized)
@@ -71,17 +77,30 @@ def detect_clause_in_text(text: str) -> ClauseMatch | None:
         if len(primary) < 2:
             return None
     rest = clean_text((clause_match.group("rest") or "").lstrip(".:|- "))
-    if "." not in primary and rest and not rest[0].isupper():
-        # 裸数字后紧跟小写字母开头的一般是误检（如 "72hours"、"10 times"）
+    if rest:
+        if rest[0] == "(":
+            # 以 ( 开头是模板字段（如 (Testing equipment ID:...)），非条款标题
+            return None
+        if "." not in primary and not rest[0].isupper():
+            return None
+        if not has_title_text(rest):
+            return None
+    elif "." not in primary:
+        # 裸数字且无后续文本 → 大概率误检
         return None
-    if not has_title_text(rest):
-        return None
+    # 点号条款号允许无标题（如 "19.14"），后续段落/表格行会补充内容
     return _build_clause_match(clause_id, normalized, secondary_refs)
 
 
 def _try_detect_in_first_cell(first: str) -> ClauseMatch | None:
-    """路径 1：直接对第一格文本做条款号检测"""
-    return detect_clause_in_text(first)
+    """路径 1：直接对第一格文本做条款号检测。无实质标题内容时返回 None，留给跨列检测"""
+    match = detect_clause_in_text(first)
+    if match and match.title_hint:
+        # 剥离条款号后检查是否还有实质文本
+        body = re.sub(r"^[\d.,&\s]+", "", match.title_hint).strip()
+        if body and re.search(r"[A-Za-z]{2,}", body):
+            return match
+    return None
 
 
 def _try_detect_in_segments(first: str) -> ClauseMatch | None:
@@ -98,7 +117,7 @@ def _try_detect_in_segments(first: str) -> ClauseMatch | None:
             continue
         return _build_clause_match(
             segment_match.clause_id,
-            first,
+            after,
             segment_match.secondary_refs,
         )
     return None
@@ -119,30 +138,82 @@ def _try_detect_across_cells(first: str, second: str) -> ClauseMatch | None:
             return None
         if "." not in primary and len(primary) < 2:
             return None
-        return _build_clause_match(clause_id, f"{normalized} | {second}", secondary_refs)
+        return _build_clause_match(clause_id, second, secondary_refs)
 
     annex_match = ANNEX_HEAD_RE.match(normalized)
     if annex_match:
-        clause_id = f"Annex_{annex_match.group('letter').upper()}"
-        return _build_clause_match(clause_id, f"{normalized} | {second}")
+        letter = annex_match.group("letter").upper()
+        suffix = annex_match.group("suffix")
+        clause_id = f"Annex_{letter}"
+        if suffix:
+            clause_id = f"{clause_id} & {suffix}"
+        if second.upper().startswith("TABLE"):
+            clause_id = f"{clause_id}_TABLE"
+        return _build_clause_match(clause_id, second)
     return None
 
 
-def detect_clause_in_cells(cells: list[str]) -> ClauseMatch | None:
-    """从表格行的单元格列表中检测条款号"""
+def detect_clause_in_cells(cells: list[str],
+                            cell_elements: list[ET.Element] | None = None) -> list[ClauseMatch]:
+    """从表格行的单元格列表中检测条款号。返回所有检测到的条款（支持同单元格多条款）"""
     if not cells:
-        return None
+        return []
     first = clean_text(cells[0])
     if not first:
-        return None
+        return []
 
-    if match := _try_detect_in_first_cell(first):
-        return match
-    if match := _try_detect_in_segments(first):
-        return match
+    matches: list[ClauseMatch] = []
+    # 收集所有单元格中按 ☐ 分段检测到的条款号
+    all_nums: list[str] = []
+    for c in cells:
+        all_nums.extend(_clause_numbers_in_text(clean_text(c)))
 
-    second = next((clean_text(v) for v in cells[1:] if clean_text(v)), "")
-    return _try_detect_across_cells(first, second)
+    if len(all_nums) > 1:
+        # 同单元格多条款 → 合并为复合条款号如 "21.101&21.102"
+        compound_id = "&".join(all_nums)
+        matches.append(_build_clause_match(compound_id, first))
+        if matches and cell_elements:
+            matches = [_check_font_consistency(m, cell_elements, cells) for m in matches]
+        return matches
+
+    # 标准单条款检测
+    match: ClauseMatch | None = None
+    if m := _try_detect_in_first_cell(first):
+        match = m
+    elif m := _try_detect_in_segments(first):
+        match = m
+    else:
+        second = next((clean_text(v) for v in cells[1:] if clean_text(v)), "")
+        if m := _try_detect_across_cells(first, second):
+            match = m
+        else:
+            cm = CLAUSE_HEAD_RE.match(normalize_clause_leading_text(first))
+            if cm and "." in cm.group("compound"):
+                compound = cm.group("compound")
+                primary, clause_id, secondary_refs = _parse_compound_clause(compound)
+                if "." not in primary or len(primary) >= 2:
+                    match = _build_clause_match(clause_id, first, secondary_refs)
+
+    if match and cell_elements:
+        match = _check_font_consistency(match, cell_elements, cells)
+    return [match] if match else []
+
+
+def _check_font_consistency(match: ClauseMatch, cell_elements, cells) -> ClauseMatch:
+    """如果条款号后的标题字体不一致，清空标题"""
+    from tuv_tools.core.splitter.utils import clause_title_font_consistent
+    # 找到包含条款号的 cell
+    search_id = match.clause_id
+    if "&" in search_id:
+        search_id = search_id.split("&")[0].strip()
+    for i, cell_el in enumerate(cell_elements):
+        if i >= len(cells):
+            break
+        if search_id in clean_text(cells[i]):
+            if not clause_title_font_consistent(cell_el, search_id):
+                return _build_clause_match(match.clause_id, match.clause_id, match.secondary_refs)
+            break
+    return match
 
 
 def parse_document(docx_path: Path) -> list[Block]:
@@ -222,14 +293,49 @@ def _build_table_slice(block: Block, row_start: int, row_end: int, clause_id: st
     )
 
 
+_HEADING_CLAUSE_RE = re.compile(r"^\s*(\d+\.\d+(?:\.\d+)?)")
+
+
+def _clause_numbers_in_text(text: str) -> list[str]:
+    """按 ☐ 分段，统计各段开头的条款号数量（首段即使无☐也检查）"""
+    nums: list[str] = []
+    segments = text.split("☐")
+    for i, seg in enumerate(segments):
+        m = _HEADING_CLAUSE_RE.match(seg)
+        if m:
+            nums.append(m.group(1))
+    return nums
+
+
+def _share_prefix(nums: list[str]) -> str | None:
+    """多个条款号共享的父级前缀（如 22.107.1/22.107.2 返回 '22.107'），无共享返回 None"""
+    if len(nums) < 2:
+        return None
+    prefixes = set()
+    for n in nums:
+        parts = n.rsplit(".", 1)
+        prefixes.add(parts[0] if len(parts) > 1 else n)
+    return prefixes.pop() if len(prefixes) == 1 else None
+
+
 def _split_table_into_sections(block: Block) -> list[tuple[ClauseMatch, TableSlice]]:
     """将表格按行中的条款号切分为多个 (ClauseMatch, TableSlice) 对"""
     rows = block.element.findall("./w:tr", NS)
     row_hits: list[tuple[int, ClauseMatch]] = []
     for idx, row in enumerate(rows):
-        row_cells = [cell_text(cell) for cell in row.findall("./w:tc", NS)]
-        clause = detect_clause_in_cells(row_cells)
-        if clause:
+        cell_els = row.findall("./w:tc", NS)
+        row_cells = [cell_text(cell) for cell in cell_els]
+        clauses = detect_clause_in_cells(row_cells, cell_els)
+        for clause in clauses:
+            parent_ids = {c.clause_id for _, c in row_hits}
+            all_nums: list[str] = []
+            for c in row_cells:
+                all_nums.extend(_clause_numbers_in_text(clean_text(c)))
+            shared_prefix = _share_prefix(all_nums)
+            if shared_prefix and shared_prefix in parent_ids:
+                continue
+            if any(clause.clause_id.startswith(pid + ".") for pid in parent_ids):
+                continue
             row_hits.append((idx, clause))
 
     if not row_hits:
@@ -243,10 +349,12 @@ def _split_table_into_sections(block: Block) -> list[tuple[ClauseMatch, TableSli
 
 
 def _deduplicate_sections(sections: list[Section]) -> list[Section]:
-    seen: set[tuple[str, tuple[int, ...]]] = set()
+    seen: set[tuple] = set()
     deduped: list[Section] = []
     for section in sections:
-        key = (section.clause_id, tuple(section.block_indexes))
+        # 用 (clause_id, block_indexes, table_slice row ranges) 作为去重键
+        slice_ranges = tuple((ts.row_start, ts.row_end) for ts in section.table_slices)
+        key = (section.clause_id, tuple(section.block_indexes), slice_ranges)
         if key in seen:
             continue
         seen.add(key)

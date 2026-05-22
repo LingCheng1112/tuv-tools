@@ -33,6 +33,7 @@ class DocumentTable(QTableWidget):
     checked_changed = Signal()  # 勾选变化
     split_requested = Signal(int)  # 请求拆分单条 (doc_id)
     open_output_requested = Signal(int)  # 请求打开输出目录 (doc_id)
+    double_clicked = Signal(int)  # 双击行 (doc_id)
     selection_empty = Signal()  # 列表为空时发出
 
     COL_CHECK = 0
@@ -67,6 +68,7 @@ class DocumentTable(QTableWidget):
         self.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
+        self.cellDoubleClicked.connect(self._on_double_click)
         self._base_style = """
             QTableWidget {
                 background-color: #2b2d30;
@@ -153,6 +155,10 @@ class DocumentTable(QTableWidget):
         display_time = split_at[:16] if len(split_at) > 16 else split_at
         self.setItem(row, self.COL_SPLIT_AT,
                      self._make_item(display_time, split_at if split_at != "-" else ""))
+
+    def _on_double_click(self, row: int, col: int) -> None:
+        if 0 <= row < len(self._data):
+            self.double_clicked.emit(self._data[row]["id"])
 
     def _on_toggle(self, doc_id: int, checked: bool) -> None:
         if checked:

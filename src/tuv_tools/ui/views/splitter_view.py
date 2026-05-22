@@ -22,6 +22,7 @@ from tuv_tools.config import AppSettings
 from tuv_tools.core.splitter import build_sections, export_docx_outputs
 from tuv_tools.core.splitter.utils import CleanPatterns
 from tuv_tools.ui.widgets import CHECKBOX_STYLE
+from tuv_tools.ui.widgets.clause_panel import ClauseOverlay
 from tuv_tools.ui.widgets.document_list import DocumentTable
 from tuv_tools.ui.widgets.toast import Toast
 
@@ -72,6 +73,8 @@ class SplitterView(QWidget):
         super().__init__()
         self._settings = AppSettings()
         self._worker: SplitWorker | None = None
+        from tuv_tools.config.database import DatabaseManager
+        self._db = DatabaseManager()
         self._setup_ui()
         self._load_documents()
 
@@ -109,28 +112,28 @@ class SplitterView(QWidget):
         self._table = DocumentTable()
         self._table.split_requested.connect(self._split_single)
         self._table.open_output_requested.connect(self._open_output_dir)
+        self._table.double_clicked.connect(self._show_clause_panel)
         self._table.selection_empty.connect(self._on_empty)
         layout.addWidget(self._table, stretch=1)
 
         # 底部操作栏
         bottom = QHBoxLayout()
-
         self._select_all_cb = QCheckBox("全选")
         self._select_all_cb.setStyleSheet(CHECKBOX_STYLE)
         self._select_all_cb.toggled.connect(self._table.set_all_checked)
         bottom.addWidget(self._select_all_cb)
-
         self._selected_label = QLabel("已选 0/0 项")
         self._table.checked_changed.connect(self._update_selected_label)
         bottom.addWidget(self._selected_label)
         bottom.addStretch()
-
         self._split_btn = QPushButton("开始拆分选中")
         self._split_btn.setStyleSheet(self._action_btn_style("#4a9eff"))
         self._split_btn.clicked.connect(self._start_batch_split)
         bottom.addWidget(self._split_btn)
-
         layout.addLayout(bottom)
+
+        # 浮层条款面板
+        self._clause_panel = ClauseOverlay(self)
 
         # 进度条
         self._progress = QProgressBar()
@@ -203,8 +206,7 @@ class SplitterView(QWidget):
             self._add_paths(files)
 
     def _add_paths(self, paths: list[str]) -> None:
-        from tuv_tools.config.database import DatabaseManager
-        db = DatabaseManager()
+        db = self._db
         added = 0
         for fp in paths:
             try:
@@ -219,8 +221,7 @@ class SplitterView(QWidget):
     # ---- 文档列表 ----
 
     def _load_documents(self) -> None:
-        from tuv_tools.config.database import DatabaseManager
-        docs = DatabaseManager().get_documents()
+        docs = self._db.get_documents()
         self._table.load_documents(docs)
         self._update_selected_label()
         if not docs:
@@ -253,8 +254,7 @@ class SplitterView(QWidget):
         if not checked_ids:
             return
 
-        from tuv_tools.config.database import DatabaseManager
-        db = DatabaseManager()
+        db = self._db
         items: list[tuple[int, str, str]] = []
         for doc_id in checked_ids:
             doc = db.get_document(doc_id)
@@ -282,13 +282,11 @@ class SplitterView(QWidget):
         self._worker.start()
 
     def _on_doc_done(self, doc_id: int, status: str, section_count: int) -> None:
-        from tuv_tools.config.database import DatabaseManager
-        DatabaseManager().update_document_status(doc_id, status, section_count)
+        self._db.update_document_status(doc_id, status, section_count)
         self._load_documents()
 
     def _on_doc_error(self, doc_id: int, error: str) -> None:
-        from tuv_tools.config.database import DatabaseManager
-        DatabaseManager().update_document_status(doc_id, "failed", error=error)
+        self._db.update_document_status(doc_id, "failed", error=error)
         self._load_documents()
 
     def _on_all_done(self) -> None:
@@ -302,11 +300,34 @@ class SplitterView(QWidget):
             self._worker.cancel()
             self._cancel_btn.setEnabled(False)
 
+    # ---- 条款面板 ----
+
+    def _show_clause_panel(self, doc_id: int) -> None:
+        db = self._db
+        doc = db.get_document(doc_id)
+        if not doc:
+            return
+
+        docx_path = Path(doc["file_path"])
+        file_name = doc.get("file_name", "")
+        self._clause_panel.set_title(file_name)
+        self._clause_panel.show_loading()
+        self._clause_panel.expand()
+
+        if not docx_path.exists():
+            self._clause_panel.show_error("原文件不存在")
+            return
+
+        try:
+            sections = build_sections(docx_path)
+            self._clause_panel.set_sections(sections)
+        except Exception as exc:
+            self._clause_panel.show_error(str(exc))
+
     # ---- 输出目录 ----
 
     def _open_output_dir(self, doc_id: int | None = None) -> None:
-        from tuv_tools.config.database import DatabaseManager
-        db = DatabaseManager()
+        db = self._db
         output_root = db.get_config("splitter.output_path", "")
 
         # 定位目标文档
@@ -338,6 +359,11 @@ class SplitterView(QWidget):
                 return
 
         Toast(self, "输出目录不存在，请先拆分文档")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._clause_panel.isVisible():
+            self._clause_panel.setGeometry(0, 0, self.width(), self.height())
 
     def closeEvent(self, event):
         if self._worker and self._worker.isRunning():
