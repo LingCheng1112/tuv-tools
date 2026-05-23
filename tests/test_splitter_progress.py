@@ -2,6 +2,7 @@
 
 from tuv_tools.core.splitter.models import CoreProgressEvent, SplitCancelled
 from tuv_tools.ui.views.splitter_progress import ProgressThrottler, SplitProgressMapper
+from tuv_tools.ui.views.splitter_view import build_split_summary
 
 
 class FakeClock:
@@ -94,3 +95,17 @@ class TestProgressThrottler:
         clock.advance(0.21)
         assert throttler.should_emit(CoreProgressEvent("parsing_blocks", "解析内容块", 2, 100, "2/100")) is True
         assert throttler.should_emit(CoreProgressEvent("parsing_blocks", "解析内容块", 100, 100, "100/100")) is True
+
+
+class TestSplitSummary:
+    def test_success_summary(self):
+        assert build_split_summary(success=3, failed=0, cancelled=False, total=3) == "拆分完成：成功 3 个，失败 0 个"
+
+    def test_partial_failure_summary(self):
+        assert build_split_summary(success=2, failed=1, cancelled=False, total=3) == "拆分完成：成功 2 个，失败 1 个"
+
+    def test_all_failed_summary(self):
+        assert build_split_summary(success=0, failed=3, cancelled=False, total=3) == "拆分失败：3 个文档未完成"
+
+    def test_cancelled_summary(self):
+        assert build_split_summary(success=1, failed=0, cancelled=True, total=4) == "已取消拆分：完成 1 个，剩余 3 个"

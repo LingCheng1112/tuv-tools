@@ -1,11 +1,11 @@
-"""文档拆分视图 — 导入→列表→批量拆分"""
+"""文档拆分视图 - 导入、列表、批量拆分"""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -20,8 +20,10 @@ from PySide6.QtWidgets import (
 
 from tuv_tools.config import AppSettings
 from tuv_tools.core.splitter import build_sections, export_docx_outputs
-from tuv_tools.core.splitter.utils import safe_name
-from tuv_tools.core.splitter.utils import CleanPatterns
+from tuv_tools.core.splitter.exporting import get_output_base_dir_name
+from tuv_tools.core.splitter.models import CoreProgressEvent, SplitCancelled
+from tuv_tools.core.splitter.utils import CleanPatterns, safe_name
+from tuv_tools.ui.views.splitter_progress import ProgressThrottler, SplitProgressMapper
 from tuv_tools.ui.widgets import CHECKBOX_STYLE
 from tuv_tools.ui.widgets.clause_panel import ClauseOverlay
 from tuv_tools.ui.widgets.document_list import DocumentTable
@@ -30,9 +32,12 @@ from tuv_tools.ui.widgets.toast import Toast
 
 class SplitWorker(QThread):
     """后台拆分工作线程"""
-    progress = Signal(int, int)  # (current, total)
+    doc_started = Signal(int)
+    progress_detail = Signal(object)
     doc_done = Signal(int, str, int)  # (doc_id, status, section_count)
     doc_error = Signal(int, str)  # (doc_id, error_message)
+    doc_cancelled = Signal(int)
+    batch_cancelled = Signal()
 
     def __init__(self, items: list[tuple[int, str, str]], output_root: str, patterns: CleanPatterns):
         """items: [(doc_id, file_path, output_dir), ...]"""
@@ -42,28 +47,58 @@ class SplitWorker(QThread):
         self._patterns = patterns
         self._cancelled = False
 
-    def cancel(self):
+    def cancel(self) -> None:
         self._cancelled = True
 
-    def run(self):
+    def run(self) -> None:
         total = len(self._items)
-        for idx, (doc_id, file_path, output_subdir) in enumerate(self._items):
+        for idx, (doc_id, file_path, output_subdir) in enumerate(self._items, 1):
             if self._cancelled:
+                self.batch_cancelled.emit()
                 break
-            self.progress.emit(idx + 1, total)
+
             docx_path = Path(file_path)
+            self.doc_started.emit(doc_id)
+            mapper = SplitProgressMapper(doc_id, docx_path.name, idx, total)
+            throttler = ProgressThrottler()
+
+            def should_cancel() -> bool:
+                return self._cancelled
+
+            def on_core_progress(event: CoreProgressEvent) -> None:
+                if self._cancelled:
+                    raise SplitCancelled("Document split cancelled")
+                if throttler.should_emit(event):
+                    self.progress_detail.emit(mapper.to_ui_event(event))
+
             try:
+                on_core_progress(CoreProgressEvent("validating", "校验文件", 0, 1, f"校验 {docx_path.name}"))
                 if not docx_path.exists():
                     self.doc_error.emit(doc_id, f"文件不存在: {file_path}")
                     continue
-                sections = build_sections(docx_path)
+                on_core_progress(CoreProgressEvent("validating", "校验文件", 1, 1, "文件存在"))
+
+                sections = build_sections(docx_path, progress=on_core_progress, should_cancel=should_cancel)
                 if sections:
                     output_path = resolve_output_root(docx_path, self._output_root, output_subdir)
-                    export_docx_outputs(docx_path, sections, output_path, self._patterns)
+                    base_name = get_output_base_dir_name(docx_path)
+                    staging_root = output_path / f"{base_name}.partial-{doc_id}"
+                    export_docx_outputs(
+                        docx_path,
+                        sections,
+                        output_path,
+                        self._patterns,
+                        progress=on_core_progress,
+                        should_cancel=should_cancel,
+                        staging_root=staging_root,
+                    )
                 self.doc_done.emit(doc_id, "completed", len(sections))
+            except SplitCancelled:
+                self.doc_cancelled.emit(doc_id)
+                self.batch_cancelled.emit()
+                break
             except Exception as exc:
                 self.doc_error.emit(doc_id, str(exc))
-        self.progress.emit(total, total)
 
 
 def resolve_output_root(docx_path: Path, output_root: str, output_subdir: str = "") -> Path:
@@ -75,6 +110,15 @@ def resolve_output_root(docx_path: Path, output_root: str, output_subdir: str = 
     return docx_path.parent
 
 
+def build_split_summary(success: int, failed: int, cancelled: bool, total: int) -> str:
+    if cancelled:
+        remaining = max(total - success - failed, 0)
+        return f"已取消拆分：完成 {success} 个，剩余 {remaining} 个"
+    if success == 0 and failed > 0:
+        return f"拆分失败：{failed} 个文档未完成"
+    return f"拆分完成：成功 {success} 个，失败 {failed} 个"
+
+
 class ParseWorker(QThread):
     """后台解析工作线程（用于条款面板预览）"""
     result_ready = Signal(list)
@@ -84,7 +128,7 @@ class ParseWorker(QThread):
         super().__init__()
         self._docx_path = docx_path
 
-    def run(self):
+    def run(self) -> None:
         try:
             sections = build_sections(self._docx_path)
             self.result_ready.emit(sections)
@@ -93,24 +137,27 @@ class ParseWorker(QThread):
 
 
 class SplitterView(QWidget):
-    """文档拆分视图（新版）"""
+    """文档拆分视图"""
 
     def __init__(self):
         super().__init__()
         self._settings = AppSettings()
         self._worker: SplitWorker | None = None
         self._parse_worker: ParseWorker | None = None
+        self._split_success = 0
+        self._split_failed = 0
+        self._split_cancelled = False
+        self._split_total = 0
         from tuv_tools.config.database import DatabaseManager
         self._db = DatabaseManager()
         self._setup_ui()
         self._load_documents()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        # 标题行
         title_row = QHBoxLayout()
         title = QLabel("文档拆分")
         title.setStyleSheet("font-size: 18px; font-weight: bold;")
@@ -118,7 +165,6 @@ class SplitterView(QWidget):
         title_row.addStretch()
         layout.addLayout(title_row)
 
-        # 工具栏：导入 + 搜索
         toolbar = QHBoxLayout()
         import_file_btn = QPushButton("导入文件")
         import_file_btn.clicked.connect(self._import_files)
@@ -135,7 +181,6 @@ class SplitterView(QWidget):
         toolbar.addWidget(self._search_edit)
         layout.addLayout(toolbar)
 
-        # 文档列表
         self._table = DocumentTable()
         self._table.split_requested.connect(self._split_single)
         self._table.open_output_requested.connect(self._open_output_dir)
@@ -143,7 +188,6 @@ class SplitterView(QWidget):
         self._table.selection_empty.connect(self._on_empty)
         layout.addWidget(self._table, stretch=1)
 
-        # 底部操作栏
         bottom = QHBoxLayout()
         self._select_all_cb = QCheckBox("全选")
         self._select_all_cb.setStyleSheet(CHECKBOX_STYLE)
@@ -159,10 +203,17 @@ class SplitterView(QWidget):
         bottom.addWidget(self._split_btn)
         layout.addLayout(bottom)
 
-        # 浮层条款面板
         self._clause_panel = ClauseOverlay(self)
 
-        # 进度条
+        self._progress_title = QLabel("")
+        self._progress_title.setVisible(False)
+        self._progress_title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._progress_detail = QLabel("")
+        self._progress_detail.setVisible(False)
+        self._progress_detail.setStyleSheet("color: #999; font-size: 12px;")
+        layout.addWidget(self._progress_title)
+        layout.addWidget(self._progress_detail)
+
         self._progress = QProgressBar()
         self._progress.setVisible(False)
         self._progress.setFixedHeight(22)
@@ -182,7 +233,7 @@ class SplitterView(QWidget):
         """)
         self._cancel_btn = QPushButton("取消")
         self._cancel_btn.setVisible(False)
-        self._cancel_btn.setFixedWidth(60)
+        self._cancel_btn.setFixedWidth(90)
         self._cancel_btn.setStyleSheet("""
             QPushButton {
                 background-color: #555; color: #dcdcdc;
@@ -210,8 +261,6 @@ class SplitterView(QWidget):
             QPushButton:hover {{ background-color: {color}; opacity: 0.9; }}
             QPushButton:disabled {{ background-color: #666666; }}
         """
-
-    # ---- 导入 ----
 
     def _import_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -248,8 +297,6 @@ class SplitterView(QWidget):
         if added > 0:
             Toast(self, f"已导入 {added} 个文档")
 
-    # ---- 文档列表 ----
-
     def _load_documents(self) -> None:
         docs = self._db.get_documents()
         self._table.load_documents(docs)
@@ -268,8 +315,6 @@ class SplitterView(QWidget):
         total = self._table.total_count()
         self._selected_label.setText(f"已选 {checked}/{total} 项")
         self._split_btn.setEnabled(checked > 0)
-
-    # ---- 拆分 ----
 
     def _split_single(self, doc_id: int) -> None:
         self._table.set_single_checked(doc_id)
@@ -298,41 +343,80 @@ class SplitterView(QWidget):
         patterns = self._settings.load_inline_clean_patterns()
         output_root = db.get_config("splitter.output_path", "")
 
+        self._progress_title.setVisible(True)
+        self._progress_title.setText("准备拆分文档...")
+        self._progress_detail.setVisible(True)
+        self._progress_detail.setText("")
         self._progress.setVisible(True)
-        self._progress.setMaximum(len(items))
+        self._progress.setMaximum(100)
         self._progress.setValue(0)
         self._cancel_btn.setVisible(True)
         self._cancel_btn.setEnabled(True)
+        self._cancel_btn.setText("取消")
         self._split_btn.setEnabled(False)
+        self._split_success = 0
+        self._split_failed = 0
+        self._split_cancelled = False
+        self._split_total = len(items)
 
         self._worker = SplitWorker(items, output_root, patterns)
-        self._worker.progress.connect(self._progress.setValue)
+        self._worker.doc_started.connect(self._on_doc_started)
+        self._worker.progress_detail.connect(self._on_progress_detail)
         self._worker.doc_done.connect(self._on_doc_done)
         self._worker.doc_error.connect(self._on_doc_error)
+        self._worker.doc_cancelled.connect(self._on_doc_cancelled)
+        self._worker.batch_cancelled.connect(self._on_batch_cancelled)
         self._worker.finished.connect(self._on_all_done)
         self._worker.start()
 
+    def _on_doc_started(self, doc_id: int) -> None:
+        self._db.update_document_status(doc_id, "processing")
+        self._table.update_row_status(doc_id, "processing")
+
+    def _on_progress_detail(self, event) -> None:
+        title = f"第 {event.doc_index}/{event.doc_total} 个文档 | {event.file_name}"
+        self._progress_title.setText(title)
+        self._progress_title.setToolTip(event.file_name)
+        self._progress_detail.setText(event.message)
+        self._progress.setValue(event.overall_percent)
+
     def _on_doc_done(self, doc_id: int, status: str, section_count: int) -> None:
+        self._split_success += 1
         self._db.update_document_status(doc_id, status, section_count)
         self._table.update_row_status(doc_id, status, section_count)
 
     def _on_doc_error(self, doc_id: int, error: str) -> None:
+        self._split_failed += 1
         self._db.update_document_status(doc_id, "failed", error=error)
         self._table.update_row_status(doc_id, "failed")
 
+    def _on_doc_cancelled(self, doc_id: int) -> None:
+        self._db.update_document_status(doc_id, "pending")
+        self._table.update_row_status(doc_id, "cancelled")
+
+    def _on_batch_cancelled(self) -> None:
+        self._split_cancelled = True
+
     def _on_all_done(self) -> None:
+        self._progress_title.setVisible(False)
+        self._progress_detail.setVisible(False)
         self._progress.setVisible(False)
         self._cancel_btn.setVisible(False)
         self._split_btn.setEnabled(True)
         self._load_documents()
-        Toast(self, "拆分完成")
+        Toast(self, build_split_summary(
+            success=self._split_success,
+            failed=self._split_failed,
+            cancelled=self._split_cancelled,
+            total=self._split_total,
+        ))
 
     def _cancel_split(self) -> None:
         if self._worker and self._worker.isRunning():
             self._worker.cancel()
             self._cancel_btn.setEnabled(False)
-
-    # ---- 条款面板 ----
+            self._cancel_btn.setText("正在取消...")
+            self._progress_detail.setText("正在取消，等待当前安全检查点...")
 
     def _show_clause_panel(self, doc_id: int) -> None:
         db = self._db
@@ -355,13 +439,10 @@ class SplitterView(QWidget):
         self._parse_worker.error_occurred.connect(self._clause_panel.show_error)
         self._parse_worker.start()
 
-    # ---- 输出目录 ----
-
     def _open_output_dir(self, doc_id: int | None = None) -> None:
         db = self._db
         output_root = db.get_config("splitter.output_path", "")
 
-        # 定位目标文档
         target_id = doc_id
         if target_id is None:
             checked_ids = self._table.checked_ids()
@@ -370,7 +451,6 @@ class SplitterView(QWidget):
         doc = db.get_document(target_id) if target_id else None
         std_num = doc.get("standard_number") if doc else None
 
-        # 优先：output_root/标准号 目录
         if output_root and std_num:
             clause_dir = os.path.join(output_root, std_num)
             if os.path.isdir(clause_dir):
@@ -386,12 +466,10 @@ class SplitterView(QWidget):
                 os.startfile(base_dir)
                 return
 
-        # 回退：output_root 目录
         if output_root and os.path.isdir(output_root):
             os.startfile(output_root)
             return
 
-        # 最终回退：文档所在目录
         if doc and os.path.exists(doc["file_path"]):
             parent = str(Path(doc["file_path"]).parent)
             if os.path.isdir(parent):
@@ -400,12 +478,12 @@ class SplitterView(QWidget):
 
         Toast(self, "输出目录不存在，请先拆分文档")
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if self._clause_panel.isVisible():
             self._clause_panel.setGeometry(0, 0, self.width(), self.height())
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
         if self._worker and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(3000)
