@@ -350,22 +350,31 @@ class DatabaseManager:
         section_count: int | None = None,
         error: str | None = None,
     ) -> None:
+        """更新文档状态。
+
+        status 为 "completed" 时：全量更新 status / last_section_count /
+        last_split_at / error_message / updated_at。
+        其他状态时：仅更新 status / error_message / updated_at，
+        保留已有的 last_section_count 和 last_split_at。
+
+        不传 error 参数时 error_message 会被设为 NULL（即清除旧错误信息）。
+        """
         from datetime import datetime
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if status != "completed" and section_count is None:
-            self._conn.execute(
-                """UPDATE imported_documents
-                   SET status = ?, error_message = ?, updated_at = ?
-                   WHERE id = ?""",
-                (status, error, now, doc_id),
-            )
-        else:
+        if status == "completed":
             self._conn.execute(
                 """UPDATE imported_documents
                    SET status = ?, last_section_count = ?, last_split_at = ?,
                        error_message = ?, updated_at = ?
                    WHERE id = ?""",
                 (status, section_count, now, error, now, doc_id),
+            )
+        else:
+            self._conn.execute(
+                """UPDATE imported_documents
+                   SET status = ?, error_message = ?, updated_at = ?
+                   WHERE id = ?""",
+                (status, error, now, doc_id),
             )
         self._conn.commit()
 

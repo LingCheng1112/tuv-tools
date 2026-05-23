@@ -391,7 +391,7 @@ class SplitterView(QWidget):
         self._table.update_row_status(doc_id, "failed")
 
     def _on_doc_cancelled(self, doc_id: int) -> None:
-        self._db.update_document_status(doc_id, "pending")
+        self._db.update_document_status(doc_id, "cancelled")
         self._table.update_row_status(doc_id, "cancelled")
 
     def _on_batch_cancelled(self) -> None:
