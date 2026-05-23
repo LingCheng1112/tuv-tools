@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 from xml.etree import ElementTree as ET
 
 
@@ -35,6 +36,39 @@ class ClauseMatch:
     major_version: str
     title_hint: str
     secondary_refs: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CoreProgressEvent:
+    """splitter core 内部的阶段进度事件，不包含 UI 批次概念。"""
+    phase: str
+    phase_label: str
+    current: int
+    total: int
+    message: str
+
+
+@dataclass(frozen=True)
+class SplitProgressEvent:
+    """UI 使用的批次进度事件，由 SplitWorker 从 CoreProgressEvent 映射而来。"""
+    doc_id: int
+    file_name: str
+    doc_index: int
+    doc_total: int
+    phase: str
+    phase_label: str
+    phase_current: int
+    phase_total: int
+    overall_percent: int
+    message: str
+
+
+class SplitCancelled(Exception):
+    """用户取消文档拆分。"""
+
+
+CoreProgressCallback = Callable[[CoreProgressEvent], None]
+CancelCallback = Callable[[], bool]
 
 
 @dataclass
