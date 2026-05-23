@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import os
 import re
+import shutil
 import zipfile
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -11,8 +13,36 @@ from xml.etree import ElementTree as ET
 
 from .cleaning import clean_table_xml, clone_paragraph
 from .constants import NS, W
-from .models import Section, TableSlice
+from .models import (
+    CancelCallback,
+    CoreProgressCallback,
+    CoreProgressEvent,
+    Section,
+    SplitCancelled,
+    TableSlice,
+)
 from .utils import CleanPatterns, clean_text, extract_standard_number, safe_name, slugify
+
+
+def _emit_progress(
+    progress: CoreProgressCallback | None,
+    phase: str,
+    phase_label: str,
+    current: int,
+    total: int,
+    message: str,
+) -> None:
+    if progress is None:
+        return
+    try:
+        progress(CoreProgressEvent(phase, phase_label, current, total, message))
+    except Exception:
+        return
+
+
+def _check_cancel(should_cancel: CancelCallback | None) -> None:
+    if should_cancel is not None and should_cancel():
+        raise SplitCancelled("Document split cancelled")
 
 
 def _merge_table_slices_xml(table_slices: list[TableSlice]) -> str:
@@ -69,7 +99,7 @@ def _collapse_sections_for_version(sections: list[Section]) -> list[Section]:
         for ts in section.table_slices:
             sections_by_block[ts.table_block_index].append(section)
 
-    def flush():
+    def flush() -> None:
         nonlocal current_table_group, current_table_key
         if not current_table_group:
             return
@@ -125,64 +155,102 @@ def _write_docx_from_template(
     sections: list[Section],
     inline_clean_patterns: CleanPatterns,
     collapse_shared_tables: bool = False,
+    should_cancel: CancelCallback | None = None,
 ) -> None:
+    _check_cancel(should_cancel)
     output_docx.parent.mkdir(parents=True, exist_ok=True)
     if collapse_shared_tables:
         sections = _collapse_sections_for_version(sections)
+    _check_cancel(should_cancel)
     document_xml = _build_document_xml(sections, inline_clean_patterns)
     with zipfile.ZipFile(template_docx, "r") as src, \
          zipfile.ZipFile(output_docx, "w", zipfile.ZIP_DEFLATED) as dst:
         for item in src.infolist():
+            _check_cancel(should_cancel)
             if item.filename == "word/document.xml":
                 dst.writestr(item, document_xml)
             else:
                 dst.writestr(item, src.read(item.filename))
 
 
-def _get_output_base_dir_name(docx_path: Path) -> str:
+def get_output_base_dir_name(docx_path: Path) -> str:
     standard_number = extract_standard_number(docx_path.stem)
     return safe_name(standard_number or docx_path.stem)
 
 
-def export_docx_outputs(
+def _get_output_base_dir_name(docx_path: Path) -> str:
+    return get_output_base_dir_name(docx_path)
+
+
+def _promote_staging_directory(staging_dir: Path, final_dir: Path) -> None:
+    """将 partial 目录提升为正式输出，失败时尽量恢复旧输出。"""
+    backup_dir = final_dir.with_name(f"{final_dir.name}.backup-{os.getpid()}")
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir)
+
+    moved_existing = False
+    if final_dir.exists():
+        final_dir.rename(backup_dir)
+        moved_existing = True
+
+    try:
+        staging_dir.rename(final_dir)
+    except Exception:
+        if final_dir.exists():
+            shutil.rmtree(final_dir, ignore_errors=True)
+        if moved_existing and backup_dir.exists():
+            backup_dir.rename(final_dir)
+        raise
+    else:
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)
+
+
+def _export_docx_outputs_to_base_dir(
     docx_path: Path,
     sections: list[Section],
-    output_root: Path,
+    base_dir: Path,
     inline_clean_patterns: CleanPatterns,
+    progress: CoreProgressCallback | None = None,
+    should_cancel: CancelCallback | None = None,
 ) -> None:
-    """导出拆分结果：按条款生成独立 DOCX + 按主版本合并生成 DOCX"""
-    base_dir = output_root / _get_output_base_dir_name(docx_path)
     clause_docx_dir = base_dir / "clauses_docx"
     version_docx_dir = base_dir / "versions_docx"
 
+    _check_cancel(should_cancel)
     clause_id_counts = Counter(s.clause_id for s in sections)
     clause_name_counts: dict[str, int] = defaultdict(int)
 
-    # 为重复条款号预计算差异化后缀
-    _dup_bodies: dict[str, list[str]] = {}
+    duplicate_bodies: dict[str, list[str]] = {}
     for clause_id, count in clause_id_counts.items():
         if count > 1:
-            bodies = [re.sub(r"^[\d.,&\s]+", "", s.title).strip()
-                      for s in sections if s.clause_id == clause_id]
-            _dup_bodies[clause_id] = bodies
+            bodies = [
+                re.sub(r"^[\d.,&\s]+", "", s.title).strip()
+                for s in sections if s.clause_id == clause_id
+            ]
+            duplicate_bodies[clause_id] = bodies
 
-    # 遍历时按出现顺序匹配后缀
-    _dup_index: dict[str, int] = defaultdict(int)
-    for section in sections:
+    total_clauses = len(sections)
+    for index, section in enumerate(sections, 1):
+        _check_cancel(should_cancel)
+        _emit_progress(
+            progress,
+            "exporting_clauses",
+            "导出条款文件",
+            index,
+            total_clauses,
+            f"导出条款文件 {index}/{total_clauses}: {section.clause_id}",
+        )
         if clause_id_counts[section.clause_id] > 1:
-            bodies = _dup_bodies[section.clause_id]
-            cur = _dup_index[section.clause_id]
-            _dup_index[section.clause_id] += 1
-            # 计算差异部分
+            bodies = duplicate_bodies[section.clause_id]
             body = re.sub(r"^[\d.,&\s]+", "", section.title).strip()
-            # 找公共前缀
             min_len = min(len(b) for b in bodies)
-            cp = 0
-            for i in range(min_len):
-                if len({b[i] for b in bodies}) > 1:
+            common_prefix_len = 0
+            for char_index in range(min_len):
+                if len({b[char_index] for b in bodies}) > 1:
                     break
-                cp = i + 1
-            diff = body[cp:].strip()
+                common_prefix_len = char_index + 1
+            diff = body[common_prefix_len:].strip()
             if diff and diff != body:
                 short_slug = slugify(diff)[:30].strip("-")
             elif body:
@@ -197,15 +265,75 @@ def export_docx_outputs(
             export_stem = safe_name(f"{export_stem}_{clause_name_counts[export_stem]}")
 
         clause_docx_file = clause_docx_dir / f"{export_stem}.docx"
-        _write_docx_from_template(docx_path, clause_docx_file, [section], inline_clean_patterns)
+        _write_docx_from_template(
+            docx_path,
+            clause_docx_file,
+            [section],
+            inline_clean_patterns,
+            should_cancel=should_cancel,
+        )
 
     grouped: dict[str, list[Section]] = defaultdict(list)
     for section in sections:
         grouped[section.major_version].append(section)
 
-    for major_version, group_sections in grouped.items():
+    grouped_items = list(grouped.items())
+    total_versions = len(grouped_items)
+    for index, (major_version, group_sections) in enumerate(grouped_items, 1):
+        _check_cancel(should_cancel)
+        _emit_progress(
+            progress,
+            "exporting_versions",
+            "导出版本文件",
+            index,
+            total_versions,
+            f"导出版本文件 {index}/{total_versions}: {major_version}",
+        )
         version_docx_file = version_docx_dir / f"{safe_name(major_version)}.docx"
         _write_docx_from_template(
-            docx_path, version_docx_file, group_sections,
-            inline_clean_patterns, collapse_shared_tables=True,
+            docx_path,
+            version_docx_file,
+            group_sections,
+            inline_clean_patterns,
+            collapse_shared_tables=True,
+            should_cancel=should_cancel,
         )
+
+
+def export_docx_outputs(
+    docx_path: Path,
+    sections: list[Section],
+    output_root: Path,
+    inline_clean_patterns: CleanPatterns,
+    progress: CoreProgressCallback | None = None,
+    should_cancel: CancelCallback | None = None,
+    staging_root: Path | None = None,
+) -> None:
+    """导出拆分结果：按条款生成独立 DOCX + 按主版本合并生成 DOCX"""
+    final_base_dir = output_root / _get_output_base_dir_name(docx_path)
+    base_dir = staging_root if staging_root is not None else final_base_dir
+
+    if staging_root is not None:
+        if staging_root.resolve() == final_base_dir.resolve():
+            raise ValueError("staging_root must not be the final output directory")
+        if staging_root.exists():
+            shutil.rmtree(staging_root)
+        staging_root.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        _export_docx_outputs_to_base_dir(
+            docx_path,
+            sections,
+            base_dir,
+            inline_clean_patterns,
+            progress=progress,
+            should_cancel=should_cancel,
+        )
+        if staging_root is not None:
+            _check_cancel(should_cancel)
+            _promote_staging_directory(staging_root, final_base_dir)
+        _emit_progress(progress, "completed", "完成", 1, 1, "当前文档导出完成")
+    except Exception:
+        if staging_root is not None and staging_root.exists():
+            shutil.rmtree(staging_root, ignore_errors=True)
+        raise

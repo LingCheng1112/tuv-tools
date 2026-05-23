@@ -516,10 +516,78 @@ class TestExportIntegration:
         patterns: list = []
         export_docx_outputs(FIXTURE, sections, output_root, patterns)
 
-        clause_dir = output_root / FIXTURE.stem / "clauses_docx"
+        base_name = safe_name(extract_standard_number(FIXTURE.stem) or FIXTURE.stem)
+        clause_dir = output_root / base_name / "clauses_docx"
         for docx_file in clause_dir.glob("*.docx"):
             with zipfile.ZipFile(docx_file) as z:
                 assert "word/document.xml" in z.namelist()
+
+    def test_export_emits_clause_and_version_progress(self, tmp_path):
+        events = []
+        sections = build_sections(FIXTURE)
+
+        export_docx_outputs(FIXTURE, sections, tmp_path / "output", [], progress=events.append)
+
+        phases = [event.phase for event in events]
+        assert "exporting_clauses" in phases
+        assert "exporting_versions" in phases
+        assert phases[-1] == "completed"
+
+    def test_export_callback_error_does_not_break_export(self, tmp_path):
+        sections = build_sections(FIXTURE)
+
+        def broken_progress(_event):
+            raise RuntimeError("ui callback failed")
+
+        export_docx_outputs(FIXTURE, sections, tmp_path / "output", [], progress=broken_progress)
+
+        assert any((tmp_path / "output").rglob("*.docx"))
+
+    def test_export_cancel_cleans_partial_and_keeps_previous_output(self, tmp_path):
+        sections = build_sections(FIXTURE)
+        output_root = tmp_path / "output"
+        base_name = safe_name(extract_standard_number(FIXTURE.stem) or FIXTURE.stem)
+        final_dir = output_root / base_name
+        partial_dir = output_root / f"{base_name}.partial-42"
+
+        export_docx_outputs(FIXTURE, sections[:1], output_root, [])
+        marker = final_dir / "marker.txt"
+        marker.write_text("previous output", encoding="utf-8")
+
+        def should_cancel() -> bool:
+            return True
+
+        with pytest.raises(SplitCancelled):
+            export_docx_outputs(
+                FIXTURE,
+                sections,
+                output_root,
+                [],
+                should_cancel=should_cancel,
+                staging_root=partial_dir,
+            )
+
+        assert marker.read_text(encoding="utf-8") == "previous output"
+        assert not partial_dir.exists()
+
+    def test_export_success_promotes_partial_directory(self, tmp_path):
+        sections = build_sections(FIXTURE)
+        output_root = tmp_path / "output"
+        base_name = safe_name(extract_standard_number(FIXTURE.stem) or FIXTURE.stem)
+        final_dir = output_root / base_name
+        partial_dir = output_root / f"{base_name}.partial-99"
+
+        export_docx_outputs(
+            FIXTURE,
+            sections[:2],
+            output_root,
+            [],
+            staging_root=partial_dir,
+        )
+
+        assert final_dir.exists()
+        assert not partial_dir.exists()
+        assert any((final_dir / "clauses_docx").glob("*.docx"))
 
 
 class TestSplitterUiHelpers:
