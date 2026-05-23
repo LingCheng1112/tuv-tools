@@ -10,7 +10,16 @@ from typing import Iterable
 from xml.etree import ElementTree as ET
 
 from .constants import ANNEX_HEAD_RE, CLAUSE_HEAD_RE, IGNORED_TABLE_PATTERNS, NS, W
-from .models import Block, ClauseMatch, Section, TableSlice
+from .models import (
+    Block,
+    CancelCallback,
+    ClauseMatch,
+    CoreProgressCallback,
+    CoreProgressEvent,
+    Section,
+    SplitCancelled,
+    TableSlice,
+)
 from .utils import (
     CleanPatterns,
     cell_text,
@@ -20,6 +29,27 @@ from .utils import (
     normalize_clause_leading_text,
     paragraph_text,
 )
+
+
+def _emit_progress(
+    progress: CoreProgressCallback | None,
+    phase: str,
+    phase_label: str,
+    current: int,
+    total: int,
+    message: str,
+) -> None:
+    if progress is None:
+        return
+    try:
+        progress(CoreProgressEvent(phase, phase_label, current, total, message))
+    except Exception:
+        return
+
+
+def _check_cancel(should_cancel: CancelCallback | None) -> None:
+    if should_cancel is not None and should_cancel():
+        raise SplitCancelled("Document split cancelled")
 
 
 def iter_body_blocks(body: ET.Element) -> Iterable[ET.Element]:
@@ -216,18 +246,26 @@ def _check_font_consistency(match: ClauseMatch, cell_elements, cells) -> ClauseM
     return match
 
 
-def parse_document(docx_path: Path) -> list[Block]:
+def parse_document(
+    docx_path: Path,
+    progress: CoreProgressCallback | None = None,
+    should_cancel: CancelCallback | None = None,
+) -> list[Block]:
     """解析 DOCX 文件为 Block 列表
 
     Raises:
         ValueError: DOCX 文件损坏或缺少 word/document.xml
     """
     blocks: list[Block] = []
+    _check_cancel(should_cancel)
+    _emit_progress(progress, "reading", "读取文档", 0, 1, f"读取 {docx_path.name}")
     try:
         with zipfile.ZipFile(docx_path) as archive:
+            _check_cancel(should_cancel)
             if "word/document.xml" not in archive.namelist():
                 raise ValueError(f"Invalid DOCX: missing word/document.xml in {docx_path.name}")
             root = ET.fromstring(archive.read("word/document.xml"))
+            _emit_progress(progress, "reading", "读取文档", 1, 1, "已读取 word/document.xml")
     except zipfile.BadZipFile as exc:
         raise ValueError(f"Corrupt DOCX file: {docx_path.name} ({exc})") from exc
 
@@ -236,7 +274,18 @@ def parse_document(docx_path: Path) -> list[Block]:
         return blocks
 
     table_index = 0
-    for block_index, element in enumerate(iter_body_blocks(body), 1):
+    body_blocks = list(iter_body_blocks(body))
+    total_blocks = len(body_blocks)
+    for block_index, element in enumerate(body_blocks, 1):
+        _check_cancel(should_cancel)
+        _emit_progress(
+            progress,
+            "parsing_blocks",
+            "解析内容块",
+            block_index,
+            total_blocks,
+            f"解析内容块 {block_index}/{total_blocks}",
+        )
         if element.tag == W + "p":
             blocks.append(Block(
                 block_type="paragraph",
@@ -318,11 +367,25 @@ def _share_prefix(nums: list[str]) -> str | None:
     return prefixes.pop() if len(prefixes) == 1 else None
 
 
-def _split_table_into_sections(block: Block) -> list[tuple[ClauseMatch, TableSlice]]:
+def _split_table_into_sections(
+    block: Block,
+    progress: CoreProgressCallback | None = None,
+    should_cancel: CancelCallback | None = None,
+) -> list[tuple[ClauseMatch, TableSlice]]:
     """将表格按行中的条款号切分为多个 (ClauseMatch, TableSlice) 对"""
     rows = block.element.findall("./w:tr", NS)
     row_hits: list[tuple[int, ClauseMatch]] = []
+    total_rows = len(rows)
     for idx, row in enumerate(rows):
+        _check_cancel(should_cancel)
+        _emit_progress(
+            progress,
+            "splitting_tables",
+            "拆分表格",
+            idx + 1,
+            total_rows,
+            f"解析表格行 {idx + 1}/{total_rows}",
+        )
         cell_els = row.findall("./w:tc", NS)
         row_cells = [cell_text(cell) for cell in cell_els]
         clauses = detect_clause_in_cells(row_cells, cell_els)
@@ -362,13 +425,18 @@ def _deduplicate_sections(sections: list[Section]) -> list[Section]:
     return deduped
 
 
-def build_sections(docx_path: Path) -> list[Section]:
+def build_sections(
+    docx_path: Path,
+    progress: CoreProgressCallback | None = None,
+    should_cancel: CancelCallback | None = None,
+) -> list[Section]:
     """解析 DOCX 并构建 Section 列表（主入口）"""
-    blocks = parse_document(docx_path)
+    blocks = parse_document(docx_path, progress=progress, should_cancel=should_cancel)
     sections: list[Section] = []
     current: Section | None = None
 
     for block in blocks:
+        _check_cancel(should_cancel)
         if block.block_type == "paragraph":
             clause = detect_clause_in_text(block.text)
             if clause:
@@ -385,7 +453,11 @@ def build_sections(docx_path: Path) -> list[Section]:
                 current.add_paragraph(block.index, block.text, block.element)
             continue
 
-        table_sections = _split_table_into_sections(block)
+        table_sections = _split_table_into_sections(
+            block,
+            progress=progress,
+            should_cancel=should_cancel,
+        )
         is_ignored = _should_ignore_table(block)
 
         for clause, table_slice in table_sections:
@@ -412,5 +484,15 @@ def build_sections(docx_path: Path) -> list[Section]:
             )
             current.add_table_slice(block.index, whole_table)
 
+    _emit_progress(
+        progress,
+        "deduplicating",
+        "整理条款",
+        0,
+        1,
+        "整理条款并移除重复结果",
+    )
     sections = [s for s in sections if s.major_version != "1"]
-    return _deduplicate_sections(sections)
+    result = _deduplicate_sections(sections)
+    _emit_progress(progress, "deduplicating", "整理条款", 1, 1, f"识别到 {len(result)} 个条款")
+    return result

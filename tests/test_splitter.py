@@ -7,7 +7,14 @@ import pytest
 
 from tuv_tools.core.splitter import build_sections, export_docx_outputs
 from tuv_tools.core.splitter.constants import ANNEX_HEAD_RE, CLAUSE_HEAD_RE, IGNORED_TABLE_PATTERNS
-from tuv_tools.core.splitter.models import Block, ClauseMatch, Section, TableSlice
+from tuv_tools.core.splitter.models import (
+    Block,
+    ClauseMatch,
+    CoreProgressEvent,
+    Section,
+    SplitCancelled,
+    TableSlice,
+)
 from tuv_tools.core.splitter.parsing import (
     _clone_table_with_rows,
     _should_ignore_table,
@@ -260,6 +267,34 @@ class TestBuildSections:
         sections = build_sections(FIXTURE)
         keys = [(s.clause_id, tuple(s.block_indexes)) for s in sections]
         assert len(keys) == len(set(keys))
+
+    def test_emits_progress_events(self):
+        events: list[CoreProgressEvent] = []
+
+        sections = build_sections(FIXTURE, progress=events.append)
+
+        assert sections
+        phases = [event.phase for event in events]
+        assert "reading" in phases
+        assert "parsing_blocks" in phases
+        assert "deduplicating" in phases
+        assert all(event.current >= 0 for event in events)
+        assert all(event.total >= 0 for event in events)
+
+    def test_progress_callback_error_does_not_break_parsing(self):
+        def broken_progress(_event: CoreProgressEvent) -> None:
+            raise RuntimeError("ui callback failed")
+
+        sections = build_sections(FIXTURE, progress=broken_progress)
+
+        assert sections
+
+    def test_cancel_during_build_sections_raises_split_cancelled(self):
+        def should_cancel() -> bool:
+            return True
+
+        with pytest.raises(SplitCancelled):
+            build_sections(FIXTURE, should_cancel=should_cancel)
 
 
 # ═══════════════════════════════════════════════════
