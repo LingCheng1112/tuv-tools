@@ -352,13 +352,21 @@ class DatabaseManager:
     ) -> None:
         from datetime import datetime
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._conn.execute(
-            """UPDATE imported_documents
-               SET status = ?, last_section_count = ?, last_split_at = ?,
-                   error_message = ?, updated_at = ?
-               WHERE id = ?""",
-            (status, section_count, now, error, now, doc_id),
-        )
+        if status != "completed" and section_count is None:
+            self._conn.execute(
+                """UPDATE imported_documents
+                   SET status = ?, error_message = ?, updated_at = ?
+                   WHERE id = ?""",
+                (status, error, now, doc_id),
+            )
+        else:
+            self._conn.execute(
+                """UPDATE imported_documents
+                   SET status = ?, last_section_count = ?, last_split_at = ?,
+                       error_message = ?, updated_at = ?
+                   WHERE id = ?""",
+                (status, section_count, now, error, now, doc_id),
+            )
         self._conn.commit()
 
     def delete_document(self, doc_id: int) -> None:

@@ -24,6 +24,7 @@ STATUS_LABELS: dict[str, str] = {
     "completed": "✅ 已拆分",
     "failed": "✗ 失败",
     "processing": "⟳ 处理中",
+    "cancelled": "已取消",
 }
 
 
@@ -254,7 +255,8 @@ class DocumentTable(QTableWidget):
                     doc["last_section_count"] = section_count
                 label = STATUS_LABELS.get(status, status)
                 self.setItem(row, self.COL_STATUS, self._make_item(label, label))
-                count_text = str(section_count) if section_count else "-"
+                existing_count = doc.get("last_section_count")
+                count_text = str(existing_count) if existing_count else "-"
                 self.setItem(row, self.COL_COUNT, self._make_item(count_text))
                 break
 

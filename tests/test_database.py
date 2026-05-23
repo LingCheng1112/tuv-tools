@@ -146,6 +146,34 @@ class TestDatabaseManager:
         assert doc["status"] == "failed"
         assert doc["error_message"] == "File corrupted"
 
+    def test_processing_status_preserves_previous_success_result(self):
+        db, _ = self._new_db()
+        doc_id = db.add_document(str(Path(__file__).resolve()))
+        db.update_document_status(doc_id, "completed", section_count=12)
+        completed = db.get_document(doc_id)
+
+        db.update_document_status(doc_id, "processing")
+        processing = db.get_document(doc_id)
+
+        assert processing["status"] == "processing"
+        assert processing["last_section_count"] == 12
+        assert processing["last_split_at"] == completed["last_split_at"]
+
+    def test_pending_status_after_cancel_preserves_previous_success_result_and_clears_error(self):
+        db, _ = self._new_db()
+        doc_id = db.add_document(str(Path(__file__).resolve()))
+        db.update_document_status(doc_id, "completed", section_count=9)
+        completed = db.get_document(doc_id)
+        db.update_document_status(doc_id, "failed", error="old error")
+
+        db.update_document_status(doc_id, "pending")
+        pending = db.get_document(doc_id)
+
+        assert pending["status"] == "pending"
+        assert pending["last_section_count"] == 9
+        assert pending["last_split_at"] == completed["last_split_at"]
+        assert pending["error_message"] is None
+
     def test_document_delete(self):
         db, _ = self._new_db()
         file_path = str(Path(tempfile.mkdtemp()) / "test.docx")
