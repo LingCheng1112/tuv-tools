@@ -612,3 +612,7 @@ class TestSplitterUiHelpers:
         from tuv_tools.ui.widgets.document_list import STATUS_LABELS
 
         assert STATUS_LABELS["cancelled"]
+
+    def test_preparing_status_label_exists(self):
+        from tuv_tools.ui.widgets.document_list import STATUS_LABELS
+        assert STATUS_LABELS["preparing"] == "⟳ 预处理中"

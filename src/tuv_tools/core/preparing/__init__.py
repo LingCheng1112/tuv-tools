@@ -8,10 +8,9 @@ from PySide6.QtCore import QThread, Signal
 
 
 def prepare_document(docx_path: str) -> None:
-    """对指定 DOCX 执行复选框统一替换预处理
+    """对指定 DOCX 执行复选框统一替换预处理（单文件，每次启动独立 Word 实例）
 
-    将旧式表单域复选框和纯文本符号转换为 ContentControl 复选框。
-    修改直接写入原文件。
+    批量导入时建议使用 PreparingWorker，它复用同一个 Word 实例。
     """
     app = None
     doc = None
@@ -40,6 +39,18 @@ def prepare_document(docx_path: str) -> None:
                 app.Quit()
             except Exception:
                 pass
+
+
+def _prepare_single_doc(doc, app) -> None:
+    """对已打开的文档执行复选框替换（不管理 Word 生命周期）"""
+    if doc.ProtectionType != -1:
+        doc.Unprotect()
+
+    _replace_plain_checkbox_symbols(doc)
+    _replace_legacy_formfield_checkboxes(doc)
+    _replace_markers_with_content_controls(doc)
+
+    doc.Save()
 
 
 def _replace_plain_checkbox_symbols(doc) -> None:
@@ -112,7 +123,7 @@ def _normalize_checkbox_font(cc) -> None:
 
 
 class PreparingWorker(QThread):
-    """后台预处理工作线程：逐个文档执行复选框统一替换"""
+    """后台预处理工作线程：共享一个 Word 实例批量处理文档"""
 
     doc_prepared = Signal(int)
     doc_error = Signal(int, str)
@@ -123,9 +134,29 @@ class PreparingWorker(QThread):
         self._items = items
 
     def run(self) -> None:
-        for doc_id, file_path in self._items:
-            try:
-                prepare_document(file_path)
-                self.doc_prepared.emit(doc_id)
-            except Exception as exc:
-                self.doc_error.emit(doc_id, str(exc))
+        app = None
+        try:
+            app = win32com.client.Dispatch("Word.Application")
+            app.Visible = False
+            app.ScreenUpdating = False
+
+            for doc_id, file_path in self._items:
+                doc = None
+                try:
+                    doc = app.Documents.Open(file_path)
+                    _prepare_single_doc(doc, app)
+                    self.doc_prepared.emit(doc_id)
+                except Exception as exc:
+                    self.doc_error.emit(doc_id, str(exc))
+                finally:
+                    if doc is not None:
+                        try:
+                            doc.Close()
+                        except Exception:
+                            pass
+        finally:
+            if app is not None:
+                try:
+                    app.Quit()
+                except Exception:
+                    pass

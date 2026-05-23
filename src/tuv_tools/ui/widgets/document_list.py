@@ -25,6 +25,7 @@ STATUS_LABELS: dict[str, str] = {
     "failed": "✗ 失败",
     "processing": "⟳ 处理中",
     "cancelled": "已取消",
+    "preparing": "⟳ 预处理中",
 }
 
 
@@ -129,6 +130,8 @@ class DocumentTable(QTableWidget):
         cb.setStyleSheet(CHECKBOX_STYLE)
         cb.setChecked(doc["id"] in self._checked)
         cb.toggled.connect(lambda checked, d=doc: self._on_toggle(d["id"], checked))
+        can_select = doc["status"] not in ("preparing", "processing")
+        cb.setEnabled(can_select)
         self.setCellWidget(row, self.COL_CHECK, cb)
 
         # 文件名
@@ -193,9 +196,10 @@ class DocumentTable(QTableWidget):
         doc = self._data[row]
         menu = QMenu(self)
 
-        split_action = QAction("拆分此文档", self)
-        split_action.triggered.connect(lambda: self.split_requested.emit(doc["id"]))
-        menu.addAction(split_action)
+        if doc["status"] not in ("preparing", "processing"):
+            split_action = QAction("拆分此文档", self)
+            split_action.triggered.connect(lambda: self.split_requested.emit(doc["id"]))
+            menu.addAction(split_action)
 
         open_file_action = QAction("打开文件位置", self)
         open_file_action.triggered.connect(lambda: self._open_file_location(doc))
