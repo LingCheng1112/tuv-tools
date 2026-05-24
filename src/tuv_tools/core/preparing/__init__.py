@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+from collections import deque
+
 from PySide6.QtCore import QThread, Signal
 
 
@@ -9,41 +12,6 @@ def _win32com_client():
     """懒加载 win32com.client —— 仅在真正需要 Word 自动化时才导入"""
     import win32com.client  # type: ignore[import-untyped]
     return win32com.client
-
-
-def prepare_document(docx_path: str) -> None:
-    """对指定 DOCX 执行复选框统一替换预处理（单文件，每次启动独立 Word 实例）
-
-    批量导入时建议使用 PreparingWorker，它复用同一个 Word 实例。
-    """
-    client = _win32com_client()
-    app = None
-    doc = None
-    try:
-        app = client.Dispatch("Word.Application")
-        app.Visible = False
-        app.ScreenUpdating = False
-
-        doc = app.Documents.Open(docx_path)
-        if doc.ProtectionType != -1:  # wdNoProtection
-            doc.Unprotect()
-
-        _replace_plain_checkbox_symbols(doc)
-        _replace_legacy_formfield_checkboxes(doc)
-        _replace_markers_with_content_controls(doc)
-
-        doc.Save()
-    finally:
-        if doc is not None:
-            try:
-                doc.Close()
-            except Exception:
-                pass
-        if app is not None:
-            try:
-                app.Quit()
-            except Exception:
-                pass
 
 
 def _prepare_single_doc(doc, app) -> None:
@@ -59,7 +27,6 @@ def _prepare_single_doc(doc, app) -> None:
 
 
 def _replace_plain_checkbox_symbols(doc) -> None:
-    """Step 1: 将纯文本复选框符号替换为临时标记"""
     symbol_map = [
         (chr(0x2612), "@@CHECKED_BOX@@"),
         (chr(0x2610), "@@UNCHECKED_BOX@@"),
@@ -78,7 +45,6 @@ def _replace_plain_checkbox_symbols(doc) -> None:
 
 
 def _replace_legacy_formfield_checkboxes(doc) -> None:
-    """Step 2: 将旧式表单域复选框替换为 ContentControl 复选框"""
     for i in range(doc.FormFields.Count, 0, -1):
         ff = doc.FormFields(i)
         if ff.Type != 71:  # wdFieldFormCheckBox
@@ -92,7 +58,6 @@ def _replace_legacy_formfield_checkboxes(doc) -> None:
 
 
 def _replace_markers_with_content_controls(doc) -> None:
-    """Step 3: 将临时标记替换为 ContentControl 复选框"""
     markers = [
         ("@@CHECKED_BOX@@", True),
         ("@@UNCHECKED_BOX@@", False),
@@ -103,13 +68,13 @@ def _replace_markers_with_content_controls(doc) -> None:
         find.ClearFormatting()
         find.Text = marker_text
         find.Forward = True
-        find.Wrap = 0  # wdFindStop
+        find.Wrap = 0
         find.Format = False
 
         while find.Execute():
             found_range = rng.Duplicate
             found_range.Delete()
-            found_range.Collapse(1)  # wdCollapseStart
+            found_range.Collapse(1)
 
             try:
                 cc = doc.ContentControls.Add(8, found_range)
@@ -122,21 +87,54 @@ def _replace_markers_with_content_controls(doc) -> None:
 
 
 def _normalize_checkbox_font(cc) -> None:
-    """Step 4: 清除复选框字体样式"""
     cc.Range.Font.Italic = False
     cc.Range.Font.Bold = False
 
 
 class PreparingWorker(QThread):
-    """后台预处理工作线程：共享一个 Word 实例批量处理文档"""
+    """后台预处理工作线程：全局唯一 Word 实例，所有文档排队处理
+
+    支持运行时通过 add_items() 追加队列项。
+    stop() 发出停止信号（处理完当前文档后退出）。
+    """
 
     doc_prepared = Signal(int)
     doc_error = Signal(int, str)
 
-    def __init__(self, items: list[tuple[int, str]]):
-        """items: [(doc_id, file_path), ...]"""
+    _IDLE_TIMEOUT = 30  # 队列清空后空闲多少秒退出 Word（秒）
+
+    def __init__(self):
         super().__init__()
-        self._items = items
+        self._queue: deque[tuple[int, str]] = deque()
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._stopping = threading.Event()
+
+    def add_items(self, items: list[tuple[int, str]]) -> None:
+        """追加队列项（线程安全，可在主线程调用）"""
+        with self._lock:
+            self._queue.extend(items)
+        self._wake.set()
+
+    def _pop_item(self, timeout: float | None = None) -> tuple[int, str] | None:
+        """从队列取一个项，队列为空时等待（线程安全）"""
+        if self._wake.wait(timeout):
+            self._wake.clear()
+        with self._lock:
+            try:
+                return self._queue.popleft()
+            except IndexError:
+                return None
+
+    @property
+    def queue_size(self) -> int:
+        with self._lock:
+            return len(self._queue)
+
+    def stop(self) -> None:
+        """发出停止信号，处理完当前文档后退出"""
+        self._stopping.set()
+        self._wake.set()
 
     def run(self) -> None:
         client = _win32com_client()
@@ -146,7 +144,13 @@ class PreparingWorker(QThread):
             app.Visible = False
             app.ScreenUpdating = False
 
-            for doc_id, file_path in self._items:
+            while not self._stopping.is_set():
+                item = self._pop_item(timeout=self._IDLE_TIMEOUT)
+                if item is None:
+                    # 空闲超时，退出
+                    break
+
+                doc_id, file_path = item
                 doc = None
                 try:
                     doc = app.Documents.Open(file_path)

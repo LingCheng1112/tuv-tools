@@ -145,7 +145,7 @@ class SplitterView(QWidget):
         self._settings = AppSettings()
         self._worker: SplitWorker | None = None
         self._parse_worker: ParseWorker | None = None
-        self._preparing_workers: list[PreparingWorker] = []
+        self._preparing_worker: PreparingWorker | None = None
         self._split_success = 0
         self._split_failed = 0
         self._split_cancelled = False
@@ -300,17 +300,22 @@ class SplitterView(QWidget):
                 pass
         self._load_documents()
         if new_items:
-            worker = PreparingWorker(new_items)
-            worker.doc_prepared.connect(self._on_doc_prepared)
-            worker.doc_error.connect(self._on_prepare_error)
-            worker.finished.connect(
-                lambda w=worker: self._cleanup_preparing_worker(w)
-            )
-            self._preparing_workers.append(worker)
-            worker.start()
-            Toast(self, f"已导入 {added} 个文档，正在后台预处理...")
+            self._ensure_preparing_worker()
+            self._preparing_worker.add_items(new_items)  # type: ignore[union-attr]
+            msg = f"已导入 {added} 个文档"
+            if self._preparing_worker and self._preparing_worker.isRunning():
+                msg += f"（队列 +{len(new_items)}，正在后台预处理...）"
+            Toast(self, msg)
         elif added > 0:
             Toast(self, f"已导入 {added} 个文档")
+
+    def _ensure_preparing_worker(self) -> None:
+        """确保全局预处理 worker 存在（懒创建、单例）"""
+        if self._preparing_worker is None or not self._preparing_worker.isRunning():
+            self._preparing_worker = PreparingWorker()
+            self._preparing_worker.doc_prepared.connect(self._on_doc_prepared)
+            self._preparing_worker.doc_error.connect(self._on_prepare_error)
+            self._preparing_worker.start()
 
     def _load_documents(self) -> None:
         docs = self._db.get_documents()
@@ -434,22 +439,13 @@ class SplitterView(QWidget):
             self._progress_detail.setText("正在取消，等待当前安全检查点...")
 
     def _on_doc_prepared(self, doc_id: int) -> None:
-        """预处理成功：状态转为 pending"""
         self._db.update_document_status(doc_id, "pending")
         self._table.update_row_status(doc_id, "pending")
 
     def _on_prepare_error(self, doc_id: int, error: str) -> None:
-        """预处理失败：状态转为 failed，记录错误信息"""
         self._db.update_document_status(doc_id, "failed", error=error)
         self._table.update_row_status(doc_id, "failed")
         Toast(self, f"预处理失败: {error}")
-
-    def _cleanup_preparing_worker(self, worker: PreparingWorker) -> None:
-        """从列表中移除已完成的 PreparingWorker"""
-        try:
-            self._preparing_workers.remove(worker)
-        except ValueError:
-            pass
 
     def _show_clause_panel(self, doc_id: int) -> None:
         db = self._db
@@ -522,7 +518,7 @@ class SplitterView(QWidget):
             self._worker.wait(3000)
         if self._parse_worker and self._parse_worker.isRunning():
             self._parse_worker.wait(3000)
-        for w in self._preparing_workers:
-            if w.isRunning():
-                w.wait(3000)
+        if self._preparing_worker and self._preparing_worker.isRunning():
+            self._preparing_worker.stop()
+            self._preparing_worker.wait(3000)
         super().closeEvent(event)
