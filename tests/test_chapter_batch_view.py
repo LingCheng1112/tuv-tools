@@ -550,6 +550,90 @@ def test_save_confirm_slightly_later_keeps_document_not_queued(qapp, monkeypatch
     assert saved.is_queued is False
 
 
+def test_save_confirm_direct_upload_starts_ready_documents(qapp, monkeypatch):
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    view.show()
+    qapp.processEvents()
+
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/upload.docx",
+            file_name="upload.docx",
+            document_status=DocumentStatus.PENDING_CONFIRM.value,
+        )
+    )
+    doc = repo.get_document(doc_id)
+    assert doc is not None
+    view._documents = [doc]
+    view._drawer.set_documents([doc])
+    view._drawer._document_form.load_document(
+        {
+            "standard": "60335-2-9",
+            "folder_id": 1061,
+            "folder_name": "60335-2-9",
+            "product_type": "家电",
+            "plan_sr": "1",
+            "standard_version": "",
+            "chapter_version": "1.0",
+            "specific_product": "",
+        }
+    )
+    started = []
+    monkeypatch.setattr(view, "_ask_post_confirm_action", lambda: "upload")
+    monkeypatch.setattr(view, "_start_documents", lambda document_ids: started.append(document_ids))
+
+    view._on_save_confirm_requested([doc_id])
+
+    saved = repo.get_document(doc_id)
+    assert saved is not None
+    assert started == [[doc_id]]
+    assert saved.is_queued is True
+
+
+def test_save_confirm_cancel_keeps_saved_data_without_queue(qapp, monkeypatch):
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/cancel.docx",
+            file_name="cancel.docx",
+            document_status=DocumentStatus.PENDING_CONFIRM.value,
+        )
+    )
+    doc = repo.get_document(doc_id)
+    assert doc is not None
+    view._documents = [doc]
+    view._drawer.set_documents([doc])
+    view._drawer._document_form.load_document(
+        {
+            "standard": "60335-2-9",
+            "folder_id": 1061,
+            "folder_name": "60335-2-9",
+            "product_type": "家电",
+            "plan_sr": "1",
+            "standard_version": "",
+            "chapter_version": "1.0",
+            "specific_product": "",
+        }
+    )
+    monkeypatch.setattr(view, "_ask_post_confirm_action", lambda: "cancel")
+
+    view._on_save_confirm_requested([doc_id])
+
+    saved = repo.get_document(doc_id)
+    assert saved is not None
+    assert saved.document_status == DocumentStatus.PENDING_CREATE.value
+    assert saved.standard == "60335-2-9"
+    assert saved.is_queued is False
+
+
 def test_bulk_confirm_preserves_fields_per_document_across_tabs(qapp, monkeypatch):
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
     from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus

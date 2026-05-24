@@ -299,21 +299,31 @@ class ChapterBatchView(QWidget):
             return
         ready_ids = self._service.save_confirmed_documents(document_updates)
         self._load_documents()
-        reply = QMessageBox.question(
-            self,
-            "确认完成",
-            "是否直接上传？\n选择“否”将文档保留为待创建。",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
+        action = self._ask_post_confirm_action()
+        if action == "upload":
             for document_id in ready_ids:
                 self._repo.update_document(document_id, is_queued=1)
             self._load_documents()
             self._start_documents(ready_ids)
-        else:
-            for document_id in ready_ids:
-                self._repo.update_document(document_id, is_queued=0)
-            self._load_documents()
+            return
+        for document_id in ready_ids:
+            self._repo.update_document(document_id, is_queued=0)
+        self._load_documents()
+
+    def _ask_post_confirm_action(self) -> str:
+        reply = QMessageBox.question(
+            self,
+            "确认完成",
+            "请选择下一步操作：\n是：直接上传\n否：稍后处理\n取消：只保留本地已保存结果",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No
+            | QMessageBox.StandardButton.Cancel,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            return "upload"
+        if reply == QMessageBox.StandardButton.No:
+            return "later"
+        return "cancel"
 
     def _save_clause_updates(self) -> None:
         for _document_id, clauses in self._drawer.all_clause_fields().items():
