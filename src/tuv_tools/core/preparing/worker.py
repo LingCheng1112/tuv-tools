@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import queue
+from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
@@ -51,6 +52,9 @@ class PreparingWorker(QThread):
         self._queue.put(_STOP)
 
     def run(self) -> None:
+        import pythoncom  # type: ignore[import-untyped]
+
+        pythoncom.CoInitialize()
         client = _win32com_client()
         app = None
         try:
@@ -68,7 +72,8 @@ class PreparingWorker(QThread):
                 doc_id, file_path = item  # type: ignore[misc]
                 doc = None
                 try:
-                    doc = app.Documents.Open(file_path)
+                    normalized_path = str(Path(file_path).resolve())
+                    doc = app.Documents.Open(normalized_path)
                     prepare_single_doc(doc, app)
                     self.doc_prepared.emit(doc_id)
                 except Exception as exc:
@@ -87,3 +92,4 @@ class PreparingWorker(QThread):
                     app.Quit()
                 except Exception:
                     pass
+            pythoncom.CoUninitialize()

@@ -171,3 +171,36 @@ class TestPreparingWorker:
         assert thread.is_alive() is False
         assert len(popped) == 1
         assert popped[0] is not None
+
+    @patch("tuv_tools.core.preparing.worker.prepare_single_doc")
+    @patch("tuv_tools.core.preparing.worker._win32com_client")
+    @patch("pythoncom.CoUninitialize")
+    @patch("pythoncom.CoInitialize")
+    def test_initializes_and_uninitializes_com_in_worker_thread(
+        self,
+        mock_coinit,
+        mock_couninit,
+        mock_wc,
+        mock_psd,
+    ):
+        _make_client_mock(mock_wc, mock_psd)
+        worker = PreparingWorker()
+        worker.add_items([(1, "a.docx")])
+
+        worker.run()
+
+        mock_coinit.assert_called_once()
+        mock_couninit.assert_called_once()
+
+    @patch("tuv_tools.core.preparing.worker.prepare_single_doc")
+    @patch("tuv_tools.core.preparing.worker._win32com_client")
+    @patch("tuv_tools.core.preparing.worker.Path.resolve")
+    def test_normalizes_path_before_documents_open(self, mock_resolve, mock_wc, mock_psd):
+        client, app, doc = _make_client_mock(mock_wc, mock_psd)
+        mock_resolve.return_value = "D:\\Data\\normalized.docx"
+        worker = PreparingWorker()
+        worker.add_items([(1, "D:\\Data\\raw path.docx")])
+
+        worker.run()
+
+        app.Documents.Open.assert_called_once_with("D:\\Data\\normalized.docx")

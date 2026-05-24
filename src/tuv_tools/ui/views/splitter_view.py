@@ -129,6 +129,7 @@ class SplitterView(QWidget):
         self._worker: SplitWorker | None = None
         self._parse_worker: ParseWorker | None = None
         self._preparing_worker: PreparingWorker | None = None
+        self._preparing_pending_ids: set[int] = set()
         self._split_success = 0
         self._split_failed = 0
         self._split_cancelled = False
@@ -284,6 +285,7 @@ class SplitterView(QWidget):
                     added += 1
                     db.update_document_status(doc_id, "preparing")
                     new_items.append((doc_id, fp))
+                    self._preparing_pending_ids.add(doc_id)
             except Exception:
                 pass
         self._load_documents()
@@ -347,6 +349,7 @@ class SplitterView(QWidget):
             if queued:
                 self._ensure_preparing_worker()
                 self._preparing_worker.add_items(queued)  # type: ignore[union-attr]
+                self._preparing_pending_ids.update(doc_id for doc_id, _path in queued)
             for doc in docs:
                 refreshed = self._db.get_document(doc["id"])
                 if refreshed is not None:
@@ -396,6 +399,7 @@ class SplitterView(QWidget):
             return
         self._ensure_preparing_worker()
         self._preparing_worker.add_items([(doc_id, doc["file_path"])])  # type: ignore[union-attr]
+        self._preparing_pending_ids.add(doc_id)
 
     def _skip_preparing_and_split(self, doc_id: int) -> None:
         reply = QMessageBox.question(
@@ -541,11 +545,17 @@ class SplitterView(QWidget):
     def _on_doc_prepared(self, doc_id: int) -> None:
         self._db.update_document_status(doc_id, "pending")
         self._table.update_row_status(doc_id, "pending")
+        self._preparing_pending_ids.discard(doc_id)
+        if not self._preparing_pending_ids:
+            Toast(self, "所有预处理已完成")
 
     def _on_prepare_error(self, doc_id: int, error: str) -> None:
         self._db.update_document_status(doc_id, "prepare_failed", error=error)
         self._table.update_row_status(doc_id, "prepare_failed")
         Toast(self, f"预处理失败: {error}")
+        self._preparing_pending_ids.discard(doc_id)
+        if not self._preparing_pending_ids:
+            Toast(self, "所有预处理已完成")
 
     def _show_document_error(self, doc_id: int) -> None:
         doc = self._db.get_document(doc_id)

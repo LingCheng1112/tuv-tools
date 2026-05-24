@@ -111,3 +111,63 @@ class TestSplitterView:
         assert doc is not None
         assert doc["status"] == "prepare_failed"
         assert doc["error_message"] == "Word crash"
+
+    def test_prepare_error_shows_failure_toast_immediately(self, qapp, monkeypatch, tmp_path):
+        path = tmp_path / "broken.docx"
+        path.write_text("x", encoding="utf-8")
+
+        monkeypatch.setattr(SplitterView, "_load_documents", lambda self: None)
+        toasts = []
+        monkeypatch.setattr("tuv_tools.ui.views.splitter_view.Toast", lambda parent, message, duration_ms=2000: toasts.append(message))
+
+        view = SplitterView()
+        doc_id = view._db.add_document(str(path))
+        view._preparing_pending_ids = {doc_id}
+
+        view._on_prepare_error(doc_id, "Word crash")
+
+        assert any("预处理失败" in message for message in toasts)
+
+    def test_all_preparing_done_shows_completion_toast_once(self, qapp, monkeypatch, tmp_path):
+        first = tmp_path / "a.docx"
+        second = tmp_path / "b.docx"
+        first.write_text("x", encoding="utf-8")
+        second.write_text("x", encoding="utf-8")
+
+        monkeypatch.setattr(SplitterView, "_load_documents", lambda self: None)
+        toasts = []
+        monkeypatch.setattr("tuv_tools.ui.views.splitter_view.Toast", lambda parent, message, duration_ms=2000: toasts.append(message))
+
+        view = SplitterView()
+        first_id = view._db.add_document(str(first))
+        second_id = view._db.add_document(str(second))
+        view._preparing_pending_ids = {first_id, second_id}
+
+        view._on_doc_prepared(first_id)
+        assert not any("所有预处理已完成" in message for message in toasts)
+
+        view._on_doc_prepared(second_id)
+
+        done_toasts = [message for message in toasts if "所有预处理已完成" in message]
+        assert len(done_toasts) == 1
+
+    def test_failure_then_last_success_still_emits_final_completion_toast(self, qapp, monkeypatch, tmp_path):
+        first = tmp_path / "a.docx"
+        second = tmp_path / "b.docx"
+        first.write_text("x", encoding="utf-8")
+        second.write_text("x", encoding="utf-8")
+
+        monkeypatch.setattr(SplitterView, "_load_documents", lambda self: None)
+        toasts = []
+        monkeypatch.setattr("tuv_tools.ui.views.splitter_view.Toast", lambda parent, message, duration_ms=2000: toasts.append(message))
+
+        view = SplitterView()
+        first_id = view._db.add_document(str(first))
+        second_id = view._db.add_document(str(second))
+        view._preparing_pending_ids = {first_id, second_id}
+
+        view._on_prepare_error(first_id, "Word crash")
+        view._on_doc_prepared(second_id)
+
+        assert any("预处理失败" in message for message in toasts)
+        assert any("所有预处理已完成" in message for message in toasts)
