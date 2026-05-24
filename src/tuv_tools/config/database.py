@@ -77,6 +77,65 @@ CREATE TABLE IF NOT EXISTS imported_documents (
     created_at         TEXT NOT NULL,
     updated_at         TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS batch_import_documents (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_doc_id    INTEGER,
+    source_path      TEXT NOT NULL,
+    source_name      TEXT NOT NULL,
+    standard_number  TEXT,
+    version_hint     TEXT,
+    folder_id        INTEGER,
+    folder_name      TEXT,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    error_message    TEXT,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    FOREIGN KEY (source_doc_id) REFERENCES imported_documents(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS batch_import_clauses (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id        INTEGER NOT NULL,
+    clause_no          TEXT NOT NULL,
+    title              TEXT,
+    source_section_key TEXT,
+    selected           INTEGER NOT NULL DEFAULT 1,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    FOREIGN KEY (document_id) REFERENCES batch_import_documents(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS batch_import_events (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id   INTEGER NOT NULL,
+    clause_id     INTEGER,
+    event_type    TEXT NOT NULL,
+    level         TEXT NOT NULL DEFAULT 'info',
+    message       TEXT NOT NULL,
+    payload_json  TEXT,
+    occurred_at   TEXT NOT NULL,
+    FOREIGN KEY (document_id) REFERENCES batch_import_documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (clause_id) REFERENCES batch_import_clauses(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_batch_import_documents_status
+    ON batch_import_documents(status);
+
+CREATE INDEX IF NOT EXISTS idx_batch_import_documents_updated_at
+    ON batch_import_documents(updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_batch_import_clauses_document_id
+    ON batch_import_clauses(document_id);
+
+CREATE INDEX IF NOT EXISTS idx_batch_import_clauses_selected
+    ON batch_import_clauses(selected);
+
+CREATE INDEX IF NOT EXISTS idx_batch_import_events_document_id
+    ON batch_import_events(document_id);
+
+CREATE INDEX IF NOT EXISTS idx_batch_import_events_occurred_at
+    ON batch_import_events(occurred_at);
 """
 
 

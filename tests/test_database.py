@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from tuv_tools.config.database import DatabaseManager, _extract_standard_number
 from tuv_tools.core.chapter.models import ApiConfig
@@ -222,6 +225,40 @@ class TestDatabaseManager:
         doc_id = db.add_document(file_path)
         doc = db.get_document(doc_id)
         assert doc["standard_number"] == "60335-1"
+
+    def test_batch_import_schema_created_with_required_indexes(self):
+        db, _ = self._new_db()
+
+        table_rows = db._conn.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table' AND name LIKE 'batch_import_%'
+            ORDER BY name
+            """
+        ).fetchall()
+        index_rows = db._conn.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'index' AND tbl_name LIKE 'batch_import_%'
+            ORDER BY name
+            """
+        ).fetchall()
+
+        assert [row["name"] for row in table_rows] == [
+            "batch_import_clauses",
+            "batch_import_documents",
+            "batch_import_events",
+        ]
+        assert [row["name"] for row in index_rows] == [
+            "idx_batch_import_clauses_document_id",
+            "idx_batch_import_clauses_selected",
+            "idx_batch_import_documents_status",
+            "idx_batch_import_documents_updated_at",
+            "idx_batch_import_events_document_id",
+            "idx_batch_import_events_occurred_at",
+        ]
 
     def test_rsa_key_save_and_load(self):
         db, _ = self._new_db()
