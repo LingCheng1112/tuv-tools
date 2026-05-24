@@ -79,40 +79,59 @@ CREATE TABLE IF NOT EXISTS imported_documents (
 );
 
 CREATE TABLE IF NOT EXISTS batch_import_documents (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_doc_id    INTEGER,
-    source_path      TEXT NOT NULL,
-    source_name      TEXT NOT NULL,
-    standard_number  TEXT,
-    version_hint     TEXT,
-    folder_id        INTEGER,
-    folder_name      TEXT,
-    status           TEXT NOT NULL DEFAULT 'pending',
-    error_message    TEXT,
-    created_at       TEXT NOT NULL,
-    updated_at       TEXT NOT NULL,
-    FOREIGN KEY (source_doc_id) REFERENCES imported_documents(id) ON DELETE SET NULL
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path            TEXT NOT NULL UNIQUE,
+    file_name            TEXT NOT NULL,
+    file_fingerprint     TEXT,
+    document_status      TEXT NOT NULL DEFAULT '待拆分',
+    split_mode           TEXT NOT NULL DEFAULT '条款',
+    standard             TEXT,
+    folder_id            INTEGER,
+    folder_name          TEXT,
+    product_type         TEXT,
+    plan_sr              TEXT,
+    standard_version     TEXT,
+    chapter_version      TEXT,
+    specific_product     TEXT,
+    total_clause_count   INTEGER NOT NULL DEFAULT 0,
+    success_clause_count INTEGER NOT NULL DEFAULT 0,
+    failed_clause_count  INTEGER NOT NULL DEFAULT 0,
+    skipped_clause_count INTEGER NOT NULL DEFAULT 0,
+    is_queued            INTEGER NOT NULL DEFAULT 0,
+    queue_order          INTEGER,
+    last_error           TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS batch_import_clauses (
-    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-    document_id        INTEGER NOT NULL,
-    clause_no          TEXT NOT NULL,
-    title              TEXT,
-    source_section_key TEXT,
-    selected           INTEGER NOT NULL DEFAULT 1,
-    created_at         TEXT NOT NULL,
-    updated_at         TEXT NOT NULL,
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id            INTEGER NOT NULL,
+    sort_index             INTEGER NOT NULL,
+    term                   TEXT NOT NULL,
+    test_content           TEXT,
+    clause_status          TEXT NOT NULL DEFAULT '待创建',
+    chapter_id             INTEGER,
+    backend_chapter_status INTEGER,
+    source_docx_path       TEXT NOT NULL,
+    duplicate_flag         INTEGER NOT NULL DEFAULT 0,
+    duplicate_reason       TEXT,
+    user_decision          TEXT,
+    create_error           TEXT,
+    upload_error           TEXT,
+    last_action            TEXT,
+    created_at             TEXT NOT NULL,
+    updated_at             TEXT NOT NULL,
     FOREIGN KEY (document_id) REFERENCES batch_import_documents(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS batch_import_events (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    document_id   INTEGER NOT NULL,
+    document_id   INTEGER,
     clause_id     INTEGER,
     event_type    TEXT NOT NULL,
-    level         TEXT NOT NULL DEFAULT 'info',
-    message       TEXT NOT NULL,
+    event_result  TEXT NOT NULL,
+    message       TEXT,
     payload_json  TEXT,
     occurred_at   TEXT NOT NULL,
     FOREIGN KEY (document_id) REFERENCES batch_import_documents(id) ON DELETE CASCADE,
@@ -120,7 +139,7 @@ CREATE TABLE IF NOT EXISTS batch_import_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_batch_import_documents_status
-    ON batch_import_documents(status);
+    ON batch_import_documents(document_status);
 
 CREATE INDEX IF NOT EXISTS idx_batch_import_documents_updated_at
     ON batch_import_documents(updated_at);
@@ -128,8 +147,8 @@ CREATE INDEX IF NOT EXISTS idx_batch_import_documents_updated_at
 CREATE INDEX IF NOT EXISTS idx_batch_import_clauses_document_id
     ON batch_import_clauses(document_id);
 
-CREATE INDEX IF NOT EXISTS idx_batch_import_clauses_selected
-    ON batch_import_clauses(selected);
+CREATE INDEX IF NOT EXISTS idx_batch_import_clauses_status
+    ON batch_import_clauses(clause_status);
 
 CREATE INDEX IF NOT EXISTS idx_batch_import_events_document_id
     ON batch_import_events(document_id);

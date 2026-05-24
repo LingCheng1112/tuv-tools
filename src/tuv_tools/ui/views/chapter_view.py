@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from tuv_tools.config import AppSettings
 from tuv_tools.ui.widgets import CHECKBOX_STYLE
+from tuv_tools.ui.widgets.chapter_folder_selector import ChapterFolderSelector
 from tuv_tools.core.chapter.api import (
     create_chapter,
     delete_chapters,
@@ -489,9 +490,10 @@ class ChapterDialog(QDialog):
             self._batch_cb.setStyleSheet(CHECKBOX_STYLE)
             layout.addRow(self._batch_cb)
 
-        default_folder = str(chapter.folder_id) if chapter and chapter.folder_id else (str(folder_id) if folder_id else "")
-        self._folder_edit = QLineEdit(default_folder)
-        layout.addRow("文件夹 ID *:", self._folder_edit)
+        default_folder_id = chapter.folder_id if chapter and chapter.folder_id else folder_id
+        self._folder_selector = ChapterFolderSelector(self)
+        self._folder_selector.set_selected_folder(default_folder_id, "")
+        layout.addRow("归属文件夹 *:", self._folder_selector)
         self._term_edit = QLineEdit(chapter.term if chapter else "")
         layout.addRow("条款编号 *:", self._term_edit)
         self._content_edit = QLineEdit(chapter.test_content if chapter else "")
@@ -523,7 +525,7 @@ class ChapterDialog(QDialog):
             except ValueError:
                 return default
 
-        folder_val = _safe_int(self._folder_edit.text())
+        folder_val, _folder_name = self._folder_selector.selected_folder()
         base = Chapter(
             folder_id=folder_val or None,
             product_type=self._product_edit.text().strip(),

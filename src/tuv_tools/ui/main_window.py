@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from .views.splitter_view import SplitterView
 from .views.chapter_view import ChapterView
+from .views.chapter_batch_view import ChapterBatchView
 from .views.settings_dialog import SettingsDialog
 
 
@@ -109,6 +110,7 @@ class MainWindow(QMainWindow):
         """注册所有功能视图（新增功能在此添加）"""
         self._add_view("文档拆分", SplitterView())
         self._add_view("条款管理", ChapterView())
+        self._add_view("条款批量导入", ChapterBatchView())
 
     def _add_view(self, label: str, widget: QWidget):
         item = QListWidgetItem(label)

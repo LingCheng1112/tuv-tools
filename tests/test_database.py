@@ -251,14 +251,72 @@ class TestDatabaseManager:
             "batch_import_documents",
             "batch_import_events",
         ]
-        assert [row["name"] for row in index_rows] == [
+        assert {
+            row["name"] for row in index_rows
+        } >= {
             "idx_batch_import_clauses_document_id",
-            "idx_batch_import_clauses_selected",
+            "idx_batch_import_clauses_status",
             "idx_batch_import_documents_status",
             "idx_batch_import_documents_updated_at",
             "idx_batch_import_events_document_id",
             "idx_batch_import_events_occurred_at",
-        ]
+        }
+
+    def test_batch_import_document_table_contains_workspace_fields(self):
+        db, _ = self._new_db()
+
+        cols = {
+            row["name"]
+            for row in db._conn.execute("PRAGMA table_info(batch_import_documents)").fetchall()
+        }
+
+        assert {
+            "file_path",
+            "file_name",
+            "file_fingerprint",
+            "document_status",
+            "split_mode",
+            "standard",
+            "folder_id",
+            "folder_name",
+            "product_type",
+            "plan_sr",
+            "standard_version",
+            "chapter_version",
+            "specific_product",
+            "total_clause_count",
+            "success_clause_count",
+            "failed_clause_count",
+            "skipped_clause_count",
+            "is_queued",
+            "queue_order",
+            "last_error",
+        }.issubset(cols)
+
+    def test_batch_import_clause_table_contains_clause_fields(self):
+        db, _ = self._new_db()
+
+        cols = {
+            row["name"]
+            for row in db._conn.execute("PRAGMA table_info(batch_import_clauses)").fetchall()
+        }
+
+        assert {
+            "document_id",
+            "sort_index",
+            "term",
+            "test_content",
+            "clause_status",
+            "chapter_id",
+            "backend_chapter_status",
+            "source_docx_path",
+            "duplicate_flag",
+            "duplicate_reason",
+            "user_decision",
+            "create_error",
+            "upload_error",
+            "last_action",
+        }.issubset(cols)
 
     def test_rsa_key_save_and_load(self):
         db, _ = self._new_db()
