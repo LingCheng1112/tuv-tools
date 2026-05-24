@@ -5,13 +5,19 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from tuv_tools.core.chapter.models import ChapterStatus
 from tuv_tools.core.chapter_batch.models import (
+    BACKEND_NOT_DRAFT_REASON,
+    BACKEND_STATUS_UNKNOWN_REASON,
     BatchImportClause,
     BatchImportDocument,
+    CLAUSE_STATUS_UNKNOWN_REASON,
     ClauseStatus,
     DocumentStatus,
     SplitMode,
+    get_clause_edit_state,
     is_document_executable,
+    is_document_running,
 )
 
 
@@ -27,6 +33,8 @@ class TestDocumentStatus:
         assert DocumentStatus.PENDING_CREATE.value == "待创建"
         assert DocumentStatus.PARTIAL.value == "部分完成"
         assert DocumentStatus.PENDING_UPLOAD.value == "待上传"
+        assert DocumentStatus.CREATING.value == "创建中"
+        assert DocumentStatus.UPLOADING.value == "上传中"
 
     def test_executable_states_match_agreed_policy(self):
         assert is_document_executable(DocumentStatus.PENDING_CREATE.value) is True
@@ -38,6 +46,13 @@ class TestDocumentStatus:
         assert is_document_executable(DocumentStatus.UPLOADING.value) is False
         assert is_document_executable(DocumentStatus.COMPLETED.value) is False
         assert is_document_executable(DocumentStatus.SKIPPED.value) is False
+
+    def test_running_document_statuses_are_detected(self):
+        assert is_document_running(DocumentStatus.SPLITTING.value) is True
+        assert is_document_running(DocumentStatus.CREATING.value) is True
+        assert is_document_running(DocumentStatus.UPLOADING.value) is True
+        assert is_document_running(DocumentStatus.PENDING_CREATE.value) is False
+        assert is_document_running(DocumentStatus.PARTIAL.value) is False
 
 
 class TestClauseStatus:
@@ -84,3 +99,79 @@ class TestBatchImportClause:
         assert clause.duplicate_flag is True
         assert "term + testContent" in clause.duplicate_reason
         assert clause.upload_error == "remote upload failed"
+
+    def test_clause_without_chapter_id_is_editable(self):
+        assert get_clause_edit_state(
+            clause_status=ClauseStatus.PENDING_CREATE.value,
+            chapter_id=None,
+            backend_chapter_status=None,
+        ) == (True, "")
+        assert get_clause_edit_state(
+            clause_status=ClauseStatus.UPLOAD_FAILED.value,
+            chapter_id=None,
+            backend_chapter_status=int(ChapterStatus.VALID),
+        ) == (True, "")
+
+    def test_clause_with_draft_backend_status_is_editable(self):
+        assert (
+            get_clause_edit_state(
+                clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                chapter_id=123,
+                backend_chapter_status=int(ChapterStatus.DRAFT),
+            )
+            == (True, "")
+        )
+        assert (
+            get_clause_edit_state(
+                clause_status=ClauseStatus.UPLOAD_FAILED.value,
+                chapter_id=456,
+                backend_chapter_status=int(ChapterStatus.DRAFT),
+            )
+            == (True, "")
+        )
+
+    def test_clause_with_unknown_backend_status_is_readonly(self):
+        assert (
+            get_clause_edit_state(
+                clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                chapter_id=123,
+                backend_chapter_status=None,
+            )
+            == (False, BACKEND_STATUS_UNKNOWN_REASON)
+        )
+        assert (
+            get_clause_edit_state(
+                clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                chapter_id=123,
+                backend_chapter_status=999,
+            )
+            == (False, BACKEND_STATUS_UNKNOWN_REASON)
+        )
+
+    def test_clause_with_non_draft_backend_status_is_readonly(self):
+        assert (
+            get_clause_edit_state(
+                clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                chapter_id=123,
+                backend_chapter_status=int(ChapterStatus.VALID),
+            )
+            == (False, BACKEND_NOT_DRAFT_REASON)
+        )
+        assert (
+            get_clause_edit_state(
+                clause_status=ClauseStatus.UPLOAD_SUCCESS.value,
+                chapter_id=456,
+                backend_chapter_status=int(ChapterStatus.IN_REVIEW),
+            )
+            == (False, BACKEND_NOT_DRAFT_REASON)
+        )
+
+    def test_unknown_clause_status_is_readonly(self):
+        assert (
+            get_clause_edit_state(
+                clause_status="未知状态",
+                chapter_id=None,
+                backend_chapter_status=None,
+            )
+            == (False, CLAUSE_STATUS_UNKNOWN_REASON)
+        )

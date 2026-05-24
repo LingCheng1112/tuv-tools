@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from tuv_tools.core.chapter.models import ChapterStatus
+
 
 class SplitMode(StrEnum):
     """文档拆分模式。"""
@@ -40,6 +42,13 @@ class ClauseStatus(StrEnum):
     SKIPPED = "用户跳过"
 
 
+KNOWN_CLAUSE_STATUSES = {status.value for status in ClauseStatus}
+KNOWN_BACKEND_CHAPTER_STATUSES = {int(status) for status in ChapterStatus}
+
+CLAUSE_STATUS_UNKNOWN_REASON = "条款状态未知，禁止编辑"
+BACKEND_STATUS_UNKNOWN_REASON = "后端状态未知，禁止编辑"
+BACKEND_NOT_DRAFT_REASON = "后端非草稿，禁止编辑"
+
 EXECUTABLE_DOCUMENT_STATUSES = {
     DocumentStatus.PENDING_CREATE.value,
     DocumentStatus.PENDING_UPLOAD.value,
@@ -47,10 +56,41 @@ EXECUTABLE_DOCUMENT_STATUSES = {
     DocumentStatus.FAILED.value,
 }
 
+RUNNING_DOCUMENT_STATUSES = {
+    DocumentStatus.SPLITTING.value,
+    DocumentStatus.CREATING.value,
+    DocumentStatus.UPLOADING.value,
+}
+
 
 def is_document_executable(status: str) -> bool:
     """判断文档是否允许进入执行队列。"""
     return status in EXECUTABLE_DOCUMENT_STATUSES
+
+
+def is_document_running(status: str) -> bool:
+    """判断文档是否处于执行中状态。"""
+    return status in RUNNING_DOCUMENT_STATUSES
+
+
+def get_clause_edit_state(
+    *,
+    clause_status: str,
+    chapter_id: int | None,
+    backend_chapter_status: int | None,
+) -> tuple[bool, str]:
+    """返回条款是否可编辑及对应原因。"""
+    if clause_status not in KNOWN_CLAUSE_STATUSES:
+        return False, CLAUSE_STATUS_UNKNOWN_REASON
+    if chapter_id is None:
+        return True, ""
+    if backend_chapter_status is None:
+        return False, BACKEND_STATUS_UNKNOWN_REASON
+    if backend_chapter_status not in KNOWN_BACKEND_CHAPTER_STATUSES:
+        return False, BACKEND_STATUS_UNKNOWN_REASON
+    if backend_chapter_status == int(ChapterStatus.DRAFT):
+        return True, ""
+    return False, BACKEND_NOT_DRAFT_REASON
 
 
 @dataclass(slots=True)
