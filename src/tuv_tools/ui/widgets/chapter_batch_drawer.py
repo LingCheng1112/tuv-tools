@@ -69,13 +69,7 @@ class ChapterBatchDrawer(QWidget):
         button_row = QHBoxLayout()
         self._save_btn = QPushButton("保存确认")
         self._save_btn.clicked.connect(self._emit_save_confirm)
-        self._direct_upload_btn = QPushButton("直接上传")
-        self._later_btn = QPushButton("稍后处理")
-        self._direct_upload_btn.clicked.connect(self._emit_save_confirm)
-        self._later_btn.clicked.connect(self._emit_save_confirm)
         button_row.addWidget(self._save_btn)
-        button_row.addWidget(self._direct_upload_btn)
-        button_row.addWidget(self._later_btn)
         button_row.addStretch()
         layout.addLayout(button_row)
 

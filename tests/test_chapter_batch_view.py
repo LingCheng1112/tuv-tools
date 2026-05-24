@@ -207,6 +207,18 @@ def test_bulk_confirm_opens_drawer_with_selected_documents_in_table_order(qapp):
     assert view._drawer._tabs.item(1).text() == view._documents[1].file_name
 
 
+def test_drawer_only_exposes_save_confirm_button(qapp):
+    from PySide6.QtWidgets import QPushButton
+    from tuv_tools.ui.widgets.chapter_batch_drawer import ChapterBatchDrawer
+
+    drawer = ChapterBatchDrawer()
+    button_texts = [button.text() for button in drawer.findChildren(QPushButton)]
+
+    assert "保存确认" in button_texts
+    assert "直接上传" not in button_texts
+    assert "稍后处理" not in button_texts
+
+
 def test_save_confirm_updates_local_document_and_marks_pending_create(qapp, monkeypatch):
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
     from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
