@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-import win32com.client  # type: ignore[import-untyped]
-
 from PySide6.QtCore import QThread, Signal
+
+
+def _win32com_client():
+    """懒加载 win32com.client —— 仅在真正需要 Word 自动化时才导入"""
+    import win32com.client  # type: ignore[import-untyped]
+    return win32com.client
 
 
 def prepare_document(docx_path: str) -> None:
@@ -12,10 +16,11 @@ def prepare_document(docx_path: str) -> None:
 
     批量导入时建议使用 PreparingWorker，它复用同一个 Word 实例。
     """
+    client = _win32com_client()
     app = None
     doc = None
     try:
-        app = win32com.client.Dispatch("Word.Application")
+        app = client.Dispatch("Word.Application")
         app.Visible = False
         app.ScreenUpdating = False
 
@@ -134,9 +139,10 @@ class PreparingWorker(QThread):
         self._items = items
 
     def run(self) -> None:
+        client = _win32com_client()
         app = None
         try:
-            app = win32com.client.Dispatch("Word.Application")
+            app = client.Dispatch("Word.Application")
             app.Visible = False
             app.ScreenUpdating = False
 
