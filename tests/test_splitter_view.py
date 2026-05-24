@@ -96,3 +96,18 @@ class TestSplitterView:
         view._resume_preparing_if_needed()
 
         assert view._db.get_document(doc_id)["status"] == "prepare_paused"
+
+    def test_on_prepare_error_marks_prepare_failed(self, qapp, monkeypatch, tmp_path):
+        path = tmp_path / "broken.docx"
+        path.write_text("x", encoding="utf-8")
+
+        monkeypatch.setattr(SplitterView, "_load_documents", lambda self: None)
+        view = SplitterView()
+        doc_id = view._db.add_document(str(path))
+
+        view._on_prepare_error(doc_id, "Word crash")
+
+        doc = view._db.get_document(doc_id)
+        assert doc is not None
+        assert doc["status"] == "prepare_failed"
+        assert doc["error_message"] == "Word crash"

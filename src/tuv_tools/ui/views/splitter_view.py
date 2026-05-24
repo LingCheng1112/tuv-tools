@@ -172,6 +172,7 @@ class SplitterView(QWidget):
         self._table.split_requested.connect(self._split_single)
         self._table.resume_preparing_requested.connect(self._resume_preparing)
         self._table.skip_preparing_split_requested.connect(self._skip_preparing_and_split)
+        self._table.show_error_requested.connect(self._show_document_error)
         self._table.open_output_requested.connect(self._open_output_dir)
         self._table.double_clicked.connect(self._show_clause_panel)
         self._table.selection_empty.connect(self._on_empty)
@@ -542,9 +543,16 @@ class SplitterView(QWidget):
         self._table.update_row_status(doc_id, "pending")
 
     def _on_prepare_error(self, doc_id: int, error: str) -> None:
-        self._db.update_document_status(doc_id, "failed", error=error)
-        self._table.update_row_status(doc_id, "failed")
+        self._db.update_document_status(doc_id, "prepare_failed", error=error)
+        self._table.update_row_status(doc_id, "prepare_failed")
         Toast(self, f"预处理失败: {error}")
+
+    def _show_document_error(self, doc_id: int) -> None:
+        doc = self._db.get_document(doc_id)
+        if not doc:
+            return
+        error = doc.get("error_message") or "未知错误"
+        QMessageBox.information(self, "失败原因", error)
 
     def _show_clause_panel(self, doc_id: int) -> None:
         db = self._db

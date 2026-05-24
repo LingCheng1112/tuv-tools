@@ -32,6 +32,7 @@ class DocumentTable(QTableWidget):
     split_requested = Signal(int)  # 请求拆分单条 (doc_id)
     resume_preparing_requested = Signal(int)  # 请求继续预处理 (doc_id)
     skip_preparing_split_requested = Signal(int)  # 请求跳过预处理并拆分 (doc_id)
+    show_error_requested = Signal(int)  # 请求查看失败原因 (doc_id)
     open_output_requested = Signal(int)  # 请求打开输出目录 (doc_id)
     double_clicked = Signal(int)  # 双击行 (doc_id)
     selection_empty = Signal()  # 列表为空时发出
@@ -208,6 +209,30 @@ class DocumentTable(QTableWidget):
                 lambda: self.skip_preparing_split_requested.emit(doc["id"])
             )
             menu.addAction(skip_action)
+        elif doc.get("status") == "prepare_failed":
+            retry_prepare_action = QAction("重新预处理", self)
+            retry_prepare_action.triggered.connect(
+                lambda: self.resume_preparing_requested.emit(doc["id"])
+            )
+            menu.addAction(retry_prepare_action)
+
+            show_error_action = QAction("查看失败原因", self)
+            show_error_action.triggered.connect(lambda: self.show_error_requested.emit(doc["id"]))
+            menu.addAction(show_error_action)
+
+            skip_action = QAction("跳过预处理并拆分", self)
+            skip_action.triggered.connect(
+                lambda: self.skip_preparing_split_requested.emit(doc["id"])
+            )
+            menu.addAction(skip_action)
+        elif doc.get("status") == "failed":
+            retry_split_action = QAction("重新拆分此文档", self)
+            retry_split_action.triggered.connect(lambda: self.split_requested.emit(doc["id"]))
+            menu.addAction(retry_split_action)
+
+            show_error_action = QAction("查看失败原因", self)
+            show_error_action.triggered.connect(lambda: self.show_error_requested.emit(doc["id"]))
+            menu.addAction(show_error_action)
 
         open_file_action = QAction("打开文件位置", self)
         open_file_action.triggered.connect(lambda: self._open_file_location(doc))

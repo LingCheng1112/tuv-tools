@@ -154,3 +154,16 @@ class TestDocumentTable:
 
         assert resumed == [7]
         assert skipped == [7]
+
+    def test_prepare_failed_is_not_selectable(self, qapp, tmp_path):
+        path = tmp_path / "prepare_failed.docx"
+        path.write_text("x", encoding="utf-8")
+
+        table = DocumentTable()
+        table.load_documents([_doc(9, path, "prepare_failed")])
+        table.set_all_checked(True)
+
+        checkbox = table.cellWidget(0, table.COL_CHECK)
+        assert isinstance(checkbox, QCheckBox)
+        assert checkbox.isEnabled() is False
+        assert table.checked_ids() == []
