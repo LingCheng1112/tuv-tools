@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import threading
-from collections import deque
+import queue
 
 from PySide6.QtCore import QThread, Signal
+
+_STOP = object()  # 哨兵：停止信号
 
 
 def _win32com_client():
@@ -101,40 +102,31 @@ class PreparingWorker(QThread):
     doc_prepared = Signal(int)
     doc_error = Signal(int, str)
 
-    _IDLE_TIMEOUT = 30  # 队列清空后空闲多少秒退出 Word（秒）
+    _IDLE_TIMEOUT = 30
 
     def __init__(self):
         super().__init__()
-        self._queue: deque[tuple[int, str]] = deque()
-        self._lock = threading.Lock()
-        self._wake = threading.Event()
-        self._stopping = threading.Event()
+        self._queue: queue.Queue[tuple[int, str] | object] = queue.Queue()
 
     def add_items(self, items: list[tuple[int, str]]) -> None:
         """追加队列项（线程安全，可在主线程调用）"""
-        with self._lock:
-            self._queue.extend(items)
-        self._wake.set()
+        for item in items:
+            self._queue.put(item)
 
-    def _pop_item(self, timeout: float | None = None) -> tuple[int, str] | None:
-        """从队列取一个项，队列为空时等待（线程安全）"""
-        if self._wake.wait(timeout):
-            self._wake.clear()
-        with self._lock:
-            try:
-                return self._queue.popleft()
-            except IndexError:
-                return None
+    def _pop_item(self, timeout: float | None = None) -> tuple[int, str] | object | None:
+        """从队列取一项。超时返回 None，收到 _STOP 哨兵返回 _STOP"""
+        try:
+            return self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
 
     @property
     def queue_size(self) -> int:
-        with self._lock:
-            return len(self._queue)
+        return self._queue.qsize()
 
     def stop(self) -> None:
         """发出停止信号，处理完当前文档后退出"""
-        self._stopping.set()
-        self._wake.set()
+        self._queue.put(_STOP)
 
     def run(self) -> None:
         client = _win32com_client()
@@ -144,13 +136,12 @@ class PreparingWorker(QThread):
             app.Visible = False
             app.ScreenUpdating = False
 
-            while not self._stopping.is_set():
+            while True:
                 item = self._pop_item(timeout=self._IDLE_TIMEOUT)
-                if item is None:
-                    # 空闲超时，退出
-                    break
+                if item is None or item is _STOP:
+                    break  # 空闲超时 或 收到停止信号
 
-                doc_id, file_path = item
+                doc_id, file_path = item  # type: ignore[misc]
                 doc = None
                 try:
                     doc = app.Documents.Open(file_path)

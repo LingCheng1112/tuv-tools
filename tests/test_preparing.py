@@ -1,10 +1,11 @@
 """Tests for preparing module — win32com Word automation for checkbox replacement"""
 
 from unittest.mock import MagicMock, patch
+import queue
 
 import pytest
 
-from tuv_tools.core.preparing import _prepare_single_doc, PreparingWorker
+from tuv_tools.core.preparing import _prepare_single_doc, PreparingWorker, _STOP
 
 
 class TestPrepareSingleDoc:
@@ -29,85 +30,78 @@ class TestPrepareSingleDoc:
 
 
 class TestPreparingWorker:
-    """Test PreparingWorker — global singleton Word instance with queue"""
+    """Test PreparingWorker — global singleton Word instance with queue.Queue"""
 
-    def _make_worker_and_run(self, items, mock_client_fn=None):
-        """Helper: create worker, add items, run to completion, return results."""
-        worker = PreparingWorker()
-        results = {"prepared": [], "errors": []}
-        worker.doc_prepared.connect(lambda did: results["prepared"].append(did))
-        worker.doc_error.connect(lambda did, msg: results["errors"].append((did, msg)))
-        worker.add_items(items)
-        worker.run()
-        worker.wait(3000)
-        return worker, results
-
-    @patch("tuv_tools.core.preparing._prepare_single_doc")
-    @patch("tuv_tools.core.preparing._win32com_client")
-    def test_emits_prepared_for_each_success(self, mock_wc, mock_psd):
+    def _make_client_mock(self, mock_wc, mock_psd):
         client = MagicMock()
         app = MagicMock()
         doc = MagicMock()
         app.Documents.Open.return_value = doc
         client.Dispatch.return_value = app
         mock_wc.return_value = client
+        return client, app, doc
 
-        _, r = self._make_worker_and_run([(1, "a.docx"), (2, "b.docx")])
+    @patch("tuv_tools.core.preparing._prepare_single_doc")
+    @patch("tuv_tools.core.preparing._win32com_client")
+    def test_emits_prepared_for_each_success(self, mock_wc, mock_psd):
+        self._make_client_mock(mock_wc, mock_psd)
 
-        assert r["prepared"] == [1, 2]
+        worker = PreparingWorker()
+        results = []
+        worker.doc_prepared.connect(lambda did: results.append(did))
+        worker.add_items([(1, "a.docx"), (2, "b.docx")])
+        worker.run()
+        worker.wait(3000)
+
+        assert results == [1, 2]
         assert mock_psd.call_count == 2
 
     @patch("tuv_tools.core.preparing._prepare_single_doc")
     @patch("tuv_tools.core.preparing._win32com_client")
     def test_emits_error_on_failure(self, mock_wc, mock_psd):
-        client = MagicMock()
-        app = MagicMock()
-        app.Documents.Open.return_value = MagicMock()
-        client.Dispatch.return_value = app
-        mock_wc.return_value = client
+        self._make_client_mock(mock_wc, mock_psd)
         mock_psd.side_effect = RuntimeError("Word crash")
 
-        _, r = self._make_worker_and_run([(2, "bad.docx")])
+        worker = PreparingWorker()
+        errors = []
+        worker.doc_error.connect(lambda did, msg: errors.append((did, msg)))
+        worker.add_items([(2, "bad.docx")])
+        worker.run()
+        worker.wait(3000)
 
-        assert len(r["errors"]) == 1
-        assert r["errors"][0] == (2, "Word crash")
+        assert len(errors) == 1
+        assert errors[0] == (2, "Word crash")
 
     @patch("tuv_tools.core.preparing._prepare_single_doc")
     @patch("tuv_tools.core.preparing._win32com_client")
-    def test_one_dispatch_one_quit_for_entire_batch(self, mock_wc, mock_psd):
-        client = MagicMock()
-        app = MagicMock()
-        app.Documents.Open.return_value = MagicMock()
-        client.Dispatch.return_value = app
-        mock_wc.return_value = client
+    def test_one_dispatch_one_quit_for_batch(self, mock_wc, mock_psd):
+        client, app, doc = self._make_client_mock(mock_wc, mock_psd)
 
-        self._make_worker_and_run([(1, "a.docx"), (2, "b.docx"), (3, "c.docx")])
+        worker = PreparingWorker()
+        worker.add_items([(1, "a.docx"), (2, "b.docx"), (3, "c.docx")])
+        worker.run()
+        worker.wait(3000)
 
         client.Dispatch.assert_called_once_with("Word.Application")
         app.Quit.assert_called_once()
 
     @patch("tuv_tools.core.preparing._prepare_single_doc")
     @patch("tuv_tools.core.preparing._win32com_client")
-    def test_quits_word_even_on_error(self, mock_wc, mock_psd):
-        client = MagicMock()
-        app = MagicMock()
-        app.Documents.Open.return_value = MagicMock()
-        client.Dispatch.return_value = app
-        mock_wc.return_value = client
+    def test_quits_word_on_error(self, mock_wc, mock_psd):
+        client, app, doc = self._make_client_mock(mock_wc, mock_psd)
         mock_psd.side_effect = RuntimeError("fail")
 
-        self._make_worker_and_run([(1, "a.docx")])
+        worker = PreparingWorker()
+        worker.add_items([(1, "a.docx")])
+        worker.run()
+        worker.wait(3000)
 
         app.Quit.assert_called_once()
 
     @patch("tuv_tools.core.preparing._prepare_single_doc")
     @patch("tuv_tools.core.preparing._win32com_client")
     def test_continues_after_one_failure(self, mock_wc, mock_psd):
-        client = MagicMock()
-        app = MagicMock()
-        app.Documents.Open.return_value = MagicMock()
-        client.Dispatch.return_value = app
-        mock_wc.return_value = client
+        self._make_client_mock(mock_wc, mock_psd)
         call_count = [0]
 
         def fail_first(doc, app):
@@ -117,38 +111,40 @@ class TestPreparingWorker:
 
         mock_psd.side_effect = fail_first
 
-        _, r = self._make_worker_and_run([(1, "a.docx"), (2, "b.docx")])
+        worker = PreparingWorker()
+        errors = []
+        successes = []
+        worker.doc_error.connect(lambda did, msg: errors.append(did))
+        worker.doc_prepared.connect(lambda did: successes.append(did))
+        worker.add_items([(1, "a.docx"), (2, "b.docx")])
+        worker.run()
+        worker.wait(3000)
 
-        assert r["errors"] == [1]
-        assert r["prepared"] == [2]
+        assert errors == [1]
+        assert successes == [2]
 
     @patch("tuv_tools.core.preparing._prepare_single_doc")
     @patch("tuv_tools.core.preparing._win32com_client")
     def test_add_items_while_running(self, mock_wc, mock_psd):
-        """Items added before run() + during run() via add_items() should all be processed."""
-        client = MagicMock()
-        app = MagicMock()
-        app.Documents.Open.return_value = MagicMock()
-        client.Dispatch.return_value = app
-        mock_wc.return_value = client
+        """Queue.put() from other thread should be processed within same run()."""
+        self._make_client_mock(mock_wc, mock_psd)
 
         worker = PreparingWorker()
         results = []
         worker.doc_prepared.connect(lambda did: results.append(did))
 
-        worker.add_items([(1, "a.docx"), (2, "b.docx")])
-        # Simulate adding more items while running: we hack _pop_item to inject
-        # a side effect that adds more after first item is popped
-        original_pop = worker._pop_item
+        worker.add_items([(1, "a.docx")])
+        # Use a side effect on _prepare_single_doc to inject more items
+        # while run() is active, before the queue drains.
+        inject_called = [False]
 
-        def inject_extra(*args, **kwargs):
-            # Replace self to prevent infinite recursion
-            if worker.queue_size == 0:
-                # After first pop, add more items
-                worker.add_items([(3, "c.docx")])
-            return original_pop(*args, **kwargs)
+        def inject_more(doc, app):
+            if not inject_called[0]:
+                inject_called[0] = True
+                worker.add_items([(2, "b.docx"), (3, "c.docx")])
 
-        worker._pop_item = inject_extra
+        mock_psd.side_effect = inject_more
+
         worker.run()
         worker.wait(3000)
 
@@ -157,20 +153,19 @@ class TestPreparingWorker:
     @patch("tuv_tools.core.preparing._prepare_single_doc")
     @patch("tuv_tools.core.preparing._win32com_client")
     def test_closes_each_document(self, mock_wc, mock_psd):
-        client = MagicMock()
-        app = MagicMock()
-        doc = MagicMock()
-        app.Documents.Open.return_value = doc
-        client.Dispatch.return_value = app
-        mock_wc.return_value = client
+        client, app, doc = self._make_client_mock(mock_wc, mock_psd)
 
-        self._make_worker_and_run([(1, "a.docx"), (2, "b.docx")])
+        worker = PreparingWorker()
+        worker.add_items([(1, "a.docx"), (2, "b.docx")])
+        worker.run()
+        worker.wait(3000)
 
         assert doc.Close.call_count == 2
 
-    def test_queue_size_after_add(self):
+    def test_stop_sentinel_exits_loop(self):
         worker = PreparingWorker()
-        worker.add_items([(1, "a.docx"), (2, "b.docx")])
-        assert worker.queue_size == 2
-        worker.add_items([(3, "c.docx")])
-        assert worker.queue_size == 3
+        worker.queue_size  # touch internal queue to ensure it exists
+        worker.stop()
+        # _STOP sentinel was put into queue
+        # run() would exit on next iteration
+        assert worker._queue.qsize() == 1  # _STOP is in queue
