@@ -12,7 +12,7 @@ from tuv_tools.core.splitter.exporting import _write_docx_from_template
 from tuv_tools.core.splitter.parsing import build_sections
 from tuv_tools.core.splitter.utils import safe_name
 
-from .models import BatchImportClause, BatchImportDocument, DocumentStatus, SplitMode
+from .models import BatchImportClause, BatchImportDocument, DocumentStatus, SplitMode, is_document_running
 from .repository import ChapterBatchRepository
 
 
@@ -191,6 +191,9 @@ class ChapterBatchService:
         return duplicate_ids
 
     def reset_document_for_resplit(self, document_id: int, split_mode: str) -> None:
+        current = self._repo.get_document(document_id)
+        if current is None or is_document_running(current.document_status):
+            return
         self._repo.replace_clauses(document_id, [])
         self._repo.update_document(
             document_id,
@@ -208,6 +211,9 @@ class ChapterBatchService:
     def save_confirmed_documents(self, document_updates: dict[int, dict]) -> list[int]:
         ready_ids: list[int] = []
         for document_id, fields in document_updates.items():
+            current = self._repo.get_document(document_id)
+            if current is None or is_document_running(current.document_status):
+                continue
             payload = {
                 "standard": fields.get("standard", ""),
                 "folder_id": fields.get("folder_id"),

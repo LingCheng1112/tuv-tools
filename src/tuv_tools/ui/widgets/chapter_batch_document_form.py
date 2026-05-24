@@ -54,3 +54,12 @@ class ChapterBatchDocumentForm(QWidget):
             "chapter_version": self._chapter_version_edit.text().strip(),
             "specific_product": self._specific_product_edit.text().strip(),
         }
+
+    def set_readonly(self, locked: bool) -> None:
+        self._standard_edit.setReadOnly(locked)
+        self._product_type_edit.setReadOnly(locked)
+        self._plan_sr_edit.setReadOnly(locked)
+        self._standard_version_edit.setReadOnly(locked)
+        self._chapter_version_edit.setReadOnly(locked)
+        self._specific_product_edit.setReadOnly(locked)
+        self._folder_selector.setEnabled(not locked)

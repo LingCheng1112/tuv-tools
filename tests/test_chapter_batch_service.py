@@ -91,6 +91,37 @@ class TestChapterBatchService:
         assert doc.total_clause_count == 0
         assert clauses == []
 
+    def test_reset_document_for_resplit_ignores_running_document(self):
+        service, repo = _new_service()
+        doc_id = repo.create_document(
+            BatchImportDocument(
+                file_path="C:/docs/running.docx",
+                file_name="running.docx",
+                split_mode=SplitMode.CLAUSE.value,
+                document_status=DocumentStatus.UPLOADING.value,
+            )
+        )
+        repo.replace_clauses(
+            doc_id,
+            [
+                BatchImportClause(
+                    sort_index=0,
+                    term="10.1",
+                    clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                    source_docx_path="C:/out/10_1.docx",
+                )
+            ],
+        )
+
+        service.reset_document_for_resplit(doc_id, SplitMode.SECTION.value)
+
+        doc = repo.get_document(doc_id)
+        clauses = repo.get_clauses(doc_id)
+        assert doc is not None
+        assert doc.document_status == DocumentStatus.UPLOADING.value
+        assert doc.split_mode == SplitMode.CLAUSE.value
+        assert len(clauses) == 1
+
     def test_duplicate_check_uses_folder_term_and_test_content(self):
         from tuv_tools.core.chapter_batch.service import check_duplicate_candidates
 
@@ -164,6 +195,36 @@ class TestChapterBatchService:
         assert saved is not None
         assert saved.document_status == DocumentStatus.PENDING_CREATE.value
         assert saved.standard == "60335-2-9"
+
+    def test_save_confirmed_documents_skips_running_document(self):
+        service, repo = _new_service()
+        doc_id = repo.create_document(
+            BatchImportDocument(
+                file_path="C:/docs/running.docx",
+                file_name="running.docx",
+                document_status=DocumentStatus.UPLOADING.value,
+                standard="locked-standard",
+            )
+        )
+
+        ready = service.save_confirmed_documents(
+            {
+                doc_id: {
+                    "standard": "60335-2-9",
+                    "folder_id": 1061,
+                    "folder_name": "60335-2-9",
+                    "product_type": "家电",
+                    "plan_sr": "1",
+                    "chapter_version": "1.0",
+                }
+            }
+        )
+
+        saved = repo.get_document(doc_id)
+        assert ready == []
+        assert saved is not None
+        assert saved.document_status == DocumentStatus.UPLOADING.value
+        assert saved.standard == "locked-standard"
 
     def test_split_document_creates_clause_rows_from_real_docx(self, tmp_path):
         service, repo = _new_service()

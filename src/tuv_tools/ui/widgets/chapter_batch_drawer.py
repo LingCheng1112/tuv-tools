@@ -153,12 +153,32 @@ class ChapterBatchDrawer(QWidget):
     def set_clauses(self, clauses: list[dict]) -> None:
         self._clause_table.load_clauses(clauses)
 
+    def set_edit_locked(self, locked: bool) -> None:
+        self._save_btn.setEnabled(not locked)
+        self._document_form.set_readonly(locked)
+
     def all_clause_fields(self) -> dict[int, dict[int, dict]]:
         self._cache_current_clause_fields()
         result = {}
         for document_id, fields in self._clause_field_cache.items():
             result[document_id] = fields
         return result
+
+    def clear_clause_cache(self, document_id: int | None = None) -> None:
+        if document_id is None:
+            self._clause_field_cache.clear()
+            return
+        self._clause_field_cache.pop(document_id, None)
+
+    def retain_clause_cache(self, document_id: int, clause_ids: set[int]) -> None:
+        cached = self._clause_field_cache.get(document_id)
+        if cached is None:
+            return
+        retained = {clause_id: fields for clause_id, fields in cached.items() if clause_id in clause_ids}
+        if retained:
+            self._clause_field_cache[document_id] = retained
+            return
+        self._clause_field_cache.pop(document_id, None)
 
     def _cache_current_clause_fields(self) -> None:
         if self._active_document_id is None:

@@ -754,6 +754,429 @@ def test_clause_table_loads_term_and_test_content(qapp):
     assert table.item(0, 5).text() == "same"
 
 
+def test_clause_table_shows_non_draft_backend_clause_as_readonly(qapp):
+    from PySide6.QtCore import Qt
+    from tuv_tools.core.chapter.models import ChapterStatus
+    from tuv_tools.core.chapter_batch.models import ClauseStatus
+    from tuv_tools.ui.widgets.chapter_batch_clause_table import ChapterBatchClauseTable
+
+    table = ChapterBatchClauseTable()
+    table.load_clauses(
+        [
+            {
+                "id": 10,
+                "term": "10.1",
+                "test_content": "Heating",
+                "clause_status": ClauseStatus.PENDING_UPLOAD.value,
+                "chapter_id": 123,
+                "editable": False,
+                "readonly_reason": "后端非草稿，禁止编辑",
+                "backend_chapter_status": int(ChapterStatus.VALID),
+            }
+        ]
+    )
+
+    assert bool(table.item(0, 0).flags() & Qt.ItemFlag.ItemIsEditable) is False
+    assert bool(table.item(0, 1).flags() & Qt.ItemFlag.ItemIsEditable) is False
+    assert table.item(0, 5).text() == "后端非草稿，禁止编辑"
+
+
+def test_running_document_disables_form_and_save_button(qapp):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/running.docx",
+            file_name="running.docx",
+            document_status=DocumentStatus.UPLOADING.value,
+            standard="60335-2-9",
+        )
+    )
+    doc = repo.get_document(doc_id)
+    assert doc is not None
+
+    view._open_drawer_for_documents([doc])
+
+    assert view._drawer._save_btn.isEnabled() is False
+    assert view._drawer._document_form._standard_edit.isReadOnly() is True
+
+
+def test_clause_with_unknown_backend_status_is_readonly_in_table(qapp):
+    from PySide6.QtCore import Qt
+    from tuv_tools.core.chapter_batch.models import ClauseStatus
+    from tuv_tools.ui.widgets.chapter_batch_clause_table import ChapterBatchClauseTable
+
+    table = ChapterBatchClauseTable()
+    table.load_clauses(
+        [
+            {
+                "id": 11,
+                "term": "10.2",
+                "test_content": "Abnormal",
+                "clause_status": ClauseStatus.PENDING_UPLOAD.value,
+                "chapter_id": 456,
+                "editable": False,
+                "readonly_reason": "后端状态未知，禁止编辑",
+                "backend_chapter_status": None,
+            }
+        ]
+    )
+
+    assert bool(table.item(0, 0).flags() & Qt.ItemFlag.ItemIsEditable) is False
+    assert bool(table.item(0, 1).flags() & Qt.ItemFlag.ItemIsEditable) is False
+    assert table.item(0, 5).text() == "后端状态未知，禁止编辑"
+
+
+def test_clause_table_filters_mutating_actions_when_readonly(qapp):
+    from tuv_tools.core.chapter_batch.models import ClauseStatus
+    from tuv_tools.ui.widgets.chapter_batch_clause_table import ChapterBatchClauseTable
+
+    table = ChapterBatchClauseTable()
+
+    assert table.available_actions_for_status(ClauseStatus.UPLOAD_FAILED.value, editable=False) == [
+        "打开本地 docx",
+        "打开后端 chapter 记录",
+    ]
+    assert table.available_actions_for_status(ClauseStatus.SKIPPED.value, editable=False) == ["打开本地 docx"]
+
+
+def test_on_clause_action_requested_ignores_mutating_action_for_readonly_clause(qapp):
+    from tuv_tools.core.chapter.models import ChapterStatus
+    from tuv_tools.core.chapter_batch.models import BatchImportClause, BatchImportDocument, ClauseStatus, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/readonly.docx",
+            file_name="readonly.docx",
+            document_status=DocumentStatus.PENDING_UPLOAD.value,
+        )
+    )
+    repo.replace_clauses(
+        doc_id,
+        [
+            BatchImportClause(
+                sort_index=0,
+                term="10.1",
+                clause_status=ClauseStatus.UPLOAD_FAILED.value,
+                chapter_id=123,
+                backend_chapter_status=int(ChapterStatus.VALID),
+                source_docx_path="C:/out/10_1.docx",
+            )
+        ],
+    )
+    clause = repo.get_clauses(doc_id)[0]
+
+    view._on_clause_action_requested("重试上传", clause.id)
+
+    updated = repo.get_clause(clause.id)
+    assert updated is not None
+    assert updated.clause_status == ClauseStatus.UPLOAD_FAILED.value
+
+
+def test_save_confirm_skips_running_documents_in_bulk(qapp, monkeypatch):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+
+    ready_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/ready.docx",
+            file_name="ready.docx",
+            document_status=DocumentStatus.PENDING_CONFIRM.value,
+        )
+    )
+    running_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/running.docx",
+            file_name="running.docx",
+            document_status=DocumentStatus.UPLOADING.value,
+            standard="locked-standard",
+        )
+    )
+    ready_doc = repo.get_document(ready_id)
+    running_doc = repo.get_document(running_id)
+    assert ready_doc is not None and running_doc is not None
+
+    view._documents = [ready_doc, running_doc]
+    view._drawer.set_documents([ready_doc, running_doc])
+    view._drawer._document_form.load_document(
+        {
+            "standard": "60335-2-9",
+            "folder_id": 1061,
+            "folder_name": "60335-2-9",
+            "product_type": "家电",
+            "plan_sr": "1",
+            "standard_version": "",
+            "chapter_version": "1.0",
+            "specific_product": "",
+        }
+    )
+    view._drawer._document_field_cache = {
+        ready_id: {
+            "standard": "60335-2-9",
+            "folder_id": 1061,
+            "folder_name": "60335-2-9",
+            "product_type": "家电",
+            "plan_sr": "1",
+            "standard_version": "",
+            "chapter_version": "1.0",
+            "specific_product": "",
+        },
+        running_id: {
+            "standard": "should-not-save",
+            "folder_id": 9999,
+            "folder_name": "locked",
+            "product_type": "locked",
+            "plan_sr": "9",
+            "standard_version": "",
+            "chapter_version": "9.9",
+            "specific_product": "",
+        },
+    }
+    monkeypatch.setattr(view, "_ask_post_confirm_action", lambda: "later")
+    monkeypatch.setattr(view, "_resolve_duplicate_candidates", lambda document_ids: document_ids == [ready_id])
+
+    view._on_save_confirm_requested([ready_id, running_id])
+
+    saved_ready = repo.get_document(ready_id)
+    saved_running = repo.get_document(running_id)
+    assert saved_ready is not None and saved_running is not None
+    assert saved_ready.standard == "60335-2-9"
+    assert saved_ready.document_status == DocumentStatus.PENDING_CREATE.value
+    assert saved_running.standard == "locked-standard"
+    assert saved_running.document_status == DocumentStatus.UPLOADING.value
+
+
+def test_save_confirm_rechecks_repo_state_for_running_documents(qapp, monkeypatch):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+
+    ready_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/ready.docx",
+            file_name="ready.docx",
+            document_status=DocumentStatus.PENDING_CONFIRM.value,
+        )
+    )
+    running_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/running.docx",
+            file_name="running.docx",
+            document_status=DocumentStatus.PENDING_CONFIRM.value,
+            standard="locked-standard",
+        )
+    )
+    ready_doc = repo.get_document(ready_id)
+    running_doc = repo.get_document(running_id)
+    assert ready_doc is not None and running_doc is not None
+
+    view._documents = [ready_doc, running_doc]
+    view._drawer.set_documents([ready_doc, running_doc])
+    view._drawer._document_form.load_document(
+        {
+            "standard": "60335-2-9",
+            "folder_id": 1061,
+            "folder_name": "60335-2-9",
+            "product_type": "家电",
+            "plan_sr": "1",
+            "standard_version": "",
+            "chapter_version": "1.0",
+            "specific_product": "",
+        }
+    )
+    view._drawer._document_field_cache = {
+        ready_id: {
+            "standard": "60335-2-9",
+            "folder_id": 1061,
+            "folder_name": "60335-2-9",
+            "product_type": "家电",
+            "plan_sr": "1",
+            "standard_version": "",
+            "chapter_version": "1.0",
+            "specific_product": "",
+        },
+        running_id: {
+            "standard": "should-not-save",
+            "folder_id": 9999,
+            "folder_name": "locked",
+            "product_type": "locked",
+            "plan_sr": "9",
+            "standard_version": "",
+            "chapter_version": "9.9",
+            "specific_product": "",
+        },
+    }
+    repo.update_document(running_id, document_status=DocumentStatus.UPLOADING.value)
+    monkeypatch.setattr(view, "_ask_post_confirm_action", lambda: "later")
+    monkeypatch.setattr(view, "_resolve_duplicate_candidates", lambda document_ids: True)
+
+    view._on_save_confirm_requested([ready_id, running_id])
+
+    saved_ready = repo.get_document(ready_id)
+    saved_running = repo.get_document(running_id)
+    assert saved_ready is not None and saved_running is not None
+    assert saved_ready.standard == "60335-2-9"
+    assert saved_ready.document_status == DocumentStatus.PENDING_CREATE.value
+    assert saved_running.standard == "locked-standard"
+    assert saved_running.document_status == DocumentStatus.UPLOADING.value
+
+
+def test_save_confirm_skips_post_confirm_prompt_when_service_filters_all_ready_ids(qapp, monkeypatch):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/running.docx",
+            file_name="running.docx",
+            document_status=DocumentStatus.PENDING_CONFIRM.value,
+        )
+    )
+    doc = repo.get_document(doc_id)
+    assert doc is not None
+
+    view._documents = [doc]
+    view._drawer.set_documents([doc])
+    view._drawer._document_form.load_document(
+        {
+            "standard": "60335-2-9",
+            "folder_id": 1061,
+            "folder_name": "60335-2-9",
+            "product_type": "家电",
+            "plan_sr": "1",
+            "standard_version": "",
+            "chapter_version": "1.0",
+            "specific_product": "",
+        }
+    )
+    repo.update_document(doc_id, document_status=DocumentStatus.UPLOADING.value)
+    asked = []
+    monkeypatch.setattr(view, "_resolve_duplicate_candidates", lambda document_ids: True)
+    monkeypatch.setattr(view, "_ask_post_confirm_action", lambda: asked.append(True) or "later")
+
+    view._on_save_confirm_requested([doc_id])
+
+    assert asked == []
+    saved = repo.get_document(doc_id)
+    assert saved is not None
+    assert saved.document_status == DocumentStatus.UPLOADING.value
+
+
+def test_save_confirm_does_not_apply_stale_clause_cache_after_document_locks(qapp, monkeypatch):
+    from tuv_tools.core.chapter_batch.models import BatchImportClause, BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    target_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/target.docx",
+            file_name="target.docx",
+            document_status=DocumentStatus.PENDING_CONFIRM.value,
+        )
+    )
+    other_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/other.docx",
+            file_name="other.docx",
+            document_status=DocumentStatus.PENDING_CONFIRM.value,
+        )
+    )
+    repo.replace_clauses(
+        target_id,
+        [BatchImportClause(sort_index=0, term="10.1", test_content="Original", source_docx_path="C:/out/10_1.docx")],
+    )
+    target_doc = repo.get_document(target_id)
+    other_doc = repo.get_document(other_id)
+    assert target_doc is not None and other_doc is not None
+
+    view._documents = [target_doc, other_doc]
+    view._drawer.set_documents([target_doc, other_doc])
+    view._load_drawer_clauses(target_id)
+    view._drawer._clause_table.item(0, 1).setText("Edited while unlocked")
+    view._repo.update_document(target_id, document_status=DocumentStatus.UPLOADING.value)
+    view._drawer._tabs.setCurrentRow(1)
+    view._drawer._document_form.load_document(
+        {
+            "standard": "60335-2-9",
+            "folder_id": 1061,
+            "folder_name": "60335-2-9",
+            "product_type": "家电",
+            "plan_sr": "1",
+            "standard_version": "",
+            "chapter_version": "1.0",
+            "specific_product": "",
+        }
+    )
+    monkeypatch.setattr(view, "_ask_post_confirm_action", lambda: "later")
+    monkeypatch.setattr(view, "_resolve_duplicate_candidates", lambda document_ids: True)
+
+    view._on_save_confirm_requested([other_id])
+
+    clause = repo.get_clauses(target_id)[0]
+    assert clause.test_content == "Original"
+
+
+def test_delete_documents_ignores_running_documents(qapp):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    running_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/running.docx",
+            file_name="running.docx",
+            document_status=DocumentStatus.UPLOADING.value,
+        )
+    )
+
+    view._delete_documents([running_id])
+
+    assert repo.get_document(running_id) is not None
+
+
+def test_resplit_document_ignores_running_documents(qapp, monkeypatch):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus, SplitMode
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    running_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/running.docx",
+            file_name="running.docx",
+            document_status=DocumentStatus.UPLOADING.value,
+            split_mode=SplitMode.CLAUSE.value,
+        )
+    )
+    calls = []
+    monkeypatch.setattr(view, "_choose_import_mode", lambda: SplitMode.SECTION.value)
+    monkeypatch.setattr(view._service, "reset_document_for_resplit", lambda did, mode: calls.append(("reset", did, mode)))
+    monkeypatch.setattr(view._service, "split_document", lambda did: calls.append(("split", did)))
+
+    view._resplit_document(running_id)
+
+    assert calls == []
+    saved = repo.get_document(running_id)
+    assert saved is not None
+    assert saved.split_mode == SplitMode.CLAUSE.value
+    assert saved.document_status == DocumentStatus.UPLOADING.value
+
+
 def test_clause_table_exports_edited_rows(qapp):
     from tuv_tools.ui.widgets.chapter_batch_clause_table import ChapterBatchClauseTable
 
@@ -817,6 +1240,40 @@ def test_clause_local_actions_update_status(qapp, monkeypatch):
     restored = repo.get_clause(clause.id)
     assert restored is not None
     assert restored.clause_status == ClauseStatus.PENDING_CREATE.value
+
+
+def test_direct_clause_mutation_helpers_ignore_readonly_clause(qapp):
+    from tuv_tools.core.chapter.models import ChapterStatus
+    from tuv_tools.core.chapter_batch.models import BatchImportClause, BatchImportDocument, ClauseStatus, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    doc_id = repo.create_document(
+        BatchImportDocument(file_path="C:/docs/readonly.docx", file_name="readonly.docx", document_status=DocumentStatus.PENDING_UPLOAD.value)
+    )
+    repo.replace_clauses(
+        doc_id,
+        [
+            BatchImportClause(
+                sort_index=0,
+                term="10.1",
+                clause_status=ClauseStatus.UPLOAD_FAILED.value,
+                chapter_id=123,
+                backend_chapter_status=int(ChapterStatus.VALID),
+                source_docx_path="C:/out/10_1.docx",
+            )
+        ],
+    )
+    clause = repo.get_clauses(doc_id)[0]
+
+    view._set_clause_status_for_retry(clause.id, ClauseStatus.UPLOAD_FAILED.value)
+    view._skip_clause(clause.id)
+    view._restore_clause(clause.id)
+
+    unchanged = repo.get_clause(clause.id)
+    assert unchanged is not None
+    assert unchanged.clause_status == ClauseStatus.UPLOAD_FAILED.value
 
 
 def test_open_backend_chapter_record_reports_id(qapp, monkeypatch):

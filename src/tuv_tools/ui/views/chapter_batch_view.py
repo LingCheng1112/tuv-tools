@@ -14,9 +14,9 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
-    QMenu,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -25,12 +25,19 @@ from PySide6.QtWidgets import (
 
 from tuv_tools.config import AppSettings
 from tuv_tools.config.database import DatabaseManager
+from tuv_tools.core.chapter.api import get_chapters
 from tuv_tools.core.chapter.auth import auto_login
 from tuv_tools.core.chapter.client import TuvClient
-from tuv_tools.core.chapter.api import get_chapters
 from tuv_tools.core.chapter_batch.api import create_chapter_and_return_id, import_chapter_doc
 from tuv_tools.core.chapter_batch.executor import ChapterBatchExecutionController, ChapterBatchExecutor
-from tuv_tools.core.chapter_batch.models import ClauseStatus, DocumentStatus, SplitMode, is_document_executable
+from tuv_tools.core.chapter_batch.models import (
+    ClauseStatus,
+    DocumentStatus,
+    SplitMode,
+    get_clause_edit_state,
+    is_document_executable,
+    is_document_running,
+)
 from tuv_tools.core.chapter_batch.repository import ChapterBatchRepository
 from tuv_tools.core.chapter_batch.service import ChapterBatchService
 from tuv_tools.ui.widgets import CHECKBOX_STYLE
@@ -77,6 +84,7 @@ class ChapterBatchView(QWidget):
     """条款批量导入工作台的最小页面骨架。"""
 
     COL_FILE_NAME = 1
+    VIEW_ONLY_CLAUSE_ACTIONS = {"打开本地 docx", "打开后端 chapter 记录"}
 
     def __init__(self, repo: ChapterBatchRepository | None = None):
         super().__init__()
@@ -157,9 +165,7 @@ class ChapterBatchView(QWidget):
         for row, document in enumerate(self._documents):
             checkbox = QCheckBox()
             checkbox.setStyleSheet(CHECKBOX_STYLE)
-            checkbox.toggled.connect(
-                lambda checked, doc_id=document.id: self._on_document_checked(doc_id, checked)
-            )
+            checkbox.toggled.connect(lambda checked, doc_id=document.id: self._on_document_checked(doc_id, checked))
             self._table.setCellWidget(row, 0, checkbox)
             self._table.setItem(row, 1, QTableWidgetItem(document.file_name))
             self._table.setItem(row, 2, QTableWidgetItem(document.standard))
@@ -174,12 +180,7 @@ class ChapterBatchView(QWidget):
             self._table.setItem(row, 6, QTableWidgetItem(""))
 
     def _import_files(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "选择 DOCX 文件",
-            "",
-            "Word Documents (*.docx)",
-        )
+        paths, _ = QFileDialog.getOpenFileNames(self, "选择 DOCX 文件", "", "Word Documents (*.docx)")
         if not paths:
             return
         self._import_selected_paths(paths)
@@ -222,6 +223,8 @@ class ChapterBatchView(QWidget):
         self._drawer.set_documents(list(documents))
         self._drawer.setGeometry(max(0, self.width() - 420), 0, 420, self.height())
         self._drawer.show()
+        current = documents[0] if documents else None
+        self._drawer.set_edit_locked(bool(current and is_document_running(current.document_status)))
         if documents and documents[0].id is not None:
             self._load_drawer_clauses(documents[0].id)
 
@@ -260,13 +263,20 @@ class ChapterBatchView(QWidget):
         open_action = menu.addAction("打开详情")
         open_action.triggered.connect(lambda: self._open_drawer_for_documents([document]))
         resplit_action = menu.addAction("重新拆分")
-        resplit_action.setEnabled(document.document_status not in {DocumentStatus.CREATING.value, DocumentStatus.UPLOADING.value, DocumentStatus.SPLITTING.value})
+        resplit_action.setEnabled(
+            document.document_status
+            not in {DocumentStatus.CREATING.value, DocumentStatus.UPLOADING.value, DocumentStatus.SPLITTING.value}
+        )
         resplit_action.triggered.connect(lambda: self._resplit_document(document.id))
         cancel_action = menu.addAction("取消执行")
         cancel_action.setEnabled(self._execution_worker is not None and document.is_queued)
         cancel_action.triggered.connect(self._cancel_execution)
         delete_action = menu.addAction("删除记录")
-        delete_action.setEnabled(not document.is_queued and document.document_status not in {DocumentStatus.CREATING.value, DocumentStatus.UPLOADING.value, DocumentStatus.SPLITTING.value})
+        delete_action.setEnabled(
+            not document.is_queued
+            and document.document_status
+            not in {DocumentStatus.CREATING.value, DocumentStatus.UPLOADING.value, DocumentStatus.SPLITTING.value}
+        )
         delete_action.triggered.connect(lambda: self._delete_documents([document.id]))
         menu.exec(self._table.viewport().mapToGlobal(pos))
 
@@ -287,18 +297,23 @@ class ChapterBatchView(QWidget):
         document_updates = {}
         all_fields = self._drawer.all_document_fields()
         for document_id in document_ids:
-            current = next((doc for doc in self._documents if doc.id == document_id), None)
-            if current is None:
+            current = self._repo.get_document(document_id)
+            if current is None or is_document_running(current.document_status):
                 continue
             document_updates[document_id] = all_fields.get(document_id, self._drawer.current_document_fields())
+        if not document_updates:
+            return
         missing = self._missing_required_document_fields(document_updates)
         if missing:
             QMessageBox.warning(self, "无法保存确认", "以下文档缺少必填字段：\n" + "\n".join(missing))
             return
-        if not self._resolve_duplicate_candidates(document_ids):
+        filtered_document_ids = list(document_updates)
+        if not self._resolve_duplicate_candidates(filtered_document_ids):
             return
         ready_ids = self._service.save_confirmed_documents(document_updates)
         self._load_documents()
+        if not ready_ids:
+            return
         action = self._ask_post_confirm_action()
         if action == "upload":
             for document_id in ready_ids:
@@ -315,9 +330,7 @@ class ChapterBatchView(QWidget):
             self,
             "确认完成",
             "请选择下一步操作：\n是：直接上传\n否：稍后处理\n取消：只保留本地已保存结果",
-            QMessageBox.StandardButton.Yes
-            | QMessageBox.StandardButton.No
-            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
         )
         if reply == QMessageBox.StandardButton.Yes:
             return "upload"
@@ -326,9 +339,26 @@ class ChapterBatchView(QWidget):
         return "cancel"
 
     def _save_clause_updates(self) -> None:
-        for _document_id, clauses in self._drawer.all_clause_fields().items():
+        for document_id, clauses in self._drawer.all_clause_fields().items():
+            document = self._repo.get_document(document_id)
+            if document is None or is_document_running(document.document_status):
+                self._drawer.clear_clause_cache(document_id)
+                continue
+            retained_clause_ids: set[int] = set()
             for clause_id, fields in clauses.items():
+                clause = self._repo.get_clause(clause_id)
+                if clause is None:
+                    continue
+                editable, _reason = get_clause_edit_state(
+                    clause_status=clause.clause_status,
+                    chapter_id=clause.chapter_id,
+                    backend_chapter_status=clause.backend_chapter_status,
+                )
+                if not editable:
+                    continue
                 self._repo.update_clause(clause_id, **fields)
+                retained_clause_ids.add(clause_id)
+            self._drawer.retain_clause_cache(document_id, retained_clause_ids)
 
     def _missing_required_document_fields(self, document_updates: dict[int, dict]) -> list[str]:
         missing = []
@@ -419,11 +449,7 @@ class ChapterBatchView(QWidget):
         if not document_ids or self._execution_worker is not None:
             return
         for order, document_id in enumerate(document_ids):
-            self._repo.update_document(
-                document_id,
-                is_queued=1,
-                queue_order=order,
-            )
+            self._repo.update_document(document_id, is_queued=1, queue_order=order)
         self._load_documents()
         self._execution_worker = ChapterBatchExecutionWorker(self._repo, document_ids)
         self._execution_worker.finished_ok.connect(self._on_execution_finished)
@@ -440,11 +466,9 @@ class ChapterBatchView(QWidget):
         deletable_ids = [
             document.id
             for document in self._selected_documents()
-            if document.id is not None and document.document_status not in {
-                DocumentStatus.CREATING.value,
-                DocumentStatus.UPLOADING.value,
-                DocumentStatus.SPLITTING.value,
-            }
+            if document.id is not None
+            and document.document_status
+            not in {DocumentStatus.CREATING.value, DocumentStatus.UPLOADING.value, DocumentStatus.SPLITTING.value}
         ]
         if not deletable_ids:
             return
@@ -459,11 +483,24 @@ class ChapterBatchView(QWidget):
         self._delete_documents(deletable_ids)
 
     def _delete_documents(self, document_ids: list[int]) -> None:
-        self._repo.delete_documents(document_ids)
+        deletable_ids = []
+        for document_id in document_ids:
+            document = self._repo.get_document(document_id)
+            if document is None:
+                continue
+            if document.is_queued or is_document_running(document.document_status):
+                continue
+            deletable_ids.append(document_id)
+        if not deletable_ids:
+            return
+        self._repo.delete_documents(deletable_ids)
         self._selected_document_ids = []
         self._load_documents()
 
     def _resplit_document(self, document_id: int) -> None:
+        current = self._repo.get_document(document_id)
+        if current is None or is_document_running(current.document_status):
+            return
         split_mode = self._choose_import_mode()
         if split_mode is None:
             return
@@ -471,7 +508,11 @@ class ChapterBatchView(QWidget):
         try:
             self._service.split_document(document_id)
         except Exception as exc:
-            self._repo.update_document(document_id, document_status=DocumentStatus.FAILED.value, last_error=str(exc))
+            self._repo.update_document(
+                document_id,
+                document_status=DocumentStatus.FAILED.value,
+                last_error=str(exc),
+            )
             QMessageBox.warning(self, "重新拆分失败", str(exc))
         self._load_documents()
 
@@ -486,9 +527,20 @@ class ChapterBatchView(QWidget):
         self._execution_worker = None
 
     def _load_drawer_clauses(self, document_id: int) -> None:
+        document = self._repo.get_document(document_id)
+        locked = bool(document and is_document_running(document.document_status))
+        self._drawer.set_edit_locked(locked)
+        if locked:
+            self._drawer.clear_clause_cache(document_id)
         clauses = self._repo.get_clauses(document_id)
-        self._drawer.set_clauses(
-            [
+        clause_rows = []
+        for clause in clauses:
+            editable, readonly_reason = get_clause_edit_state(
+                clause_status=clause.clause_status,
+                chapter_id=clause.chapter_id,
+                backend_chapter_status=clause.backend_chapter_status,
+            )
+            clause_rows.append(
                 {
                     "term": clause.term,
                     "test_content": clause.test_content,
@@ -499,12 +551,15 @@ class ChapterBatchView(QWidget):
                     "duplicate_reason": clause.duplicate_reason,
                     "create_error": clause.create_error,
                     "upload_error": clause.upload_error,
+                    "editable": editable and not locked,
+                    "readonly_reason": "文档执行中，禁止编辑" if locked else readonly_reason,
                 }
-                for clause in clauses
-            ]
-        )
+            )
+        self._drawer.set_clauses(clause_rows)
 
     def _on_clause_action_requested(self, action_name: str, clause_id: int) -> None:
+        if not self._can_apply_clause_action(action_name, clause_id):
+            return
         if action_name == "重试创建":
             self._set_clause_status_for_retry(clause_id, ClauseStatus.CREATE_FAILED.value)
         elif action_name == "重试上传":
@@ -523,9 +578,27 @@ class ChapterBatchView(QWidget):
             self._load_drawer_clauses(current.id)
         self._load_documents()
 
+    def _can_apply_clause_action(self, action_name: str, clause_id: int) -> bool:
+        if action_name in self.VIEW_ONLY_CLAUSE_ACTIONS:
+            return True
+        clause = self._repo.get_clause(clause_id)
+        if clause is None:
+            return False
+        document = self._repo.get_document(clause.document_id) if clause.document_id is not None else None
+        if document is not None and is_document_running(document.document_status):
+            return False
+        editable, _reason = get_clause_edit_state(
+            clause_status=clause.clause_status,
+            chapter_id=clause.chapter_id,
+            backend_chapter_status=clause.backend_chapter_status,
+        )
+        return editable
+
     def _set_clause_status_for_retry(self, clause_id: int, from_status: str) -> None:
         clause = self._repo.get_clause(clause_id)
         if clause is None or clause.clause_status != from_status:
+            return
+        if not self._can_mutate_clause(clause):
             return
         self._repo.update_clause(
             clause_id,
@@ -536,17 +609,31 @@ class ChapterBatchView(QWidget):
         )
 
     def _skip_clause(self, clause_id: int) -> None:
+        clause = self._repo.get_clause(clause_id)
+        if clause is None or not self._can_mutate_clause(clause):
+            return
         self._repo.update_clause(clause_id, clause_status=ClauseStatus.SKIPPED.value, user_decision="skip")
 
     def _restore_clause(self, clause_id: int) -> None:
         clause = self._repo.get_clause(clause_id)
-        if clause is None:
+        if clause is None or not self._can_mutate_clause(clause):
             return
         self._repo.update_clause(
             clause_id,
             clause_status=ClauseStatus.PENDING_UPLOAD.value if clause.chapter_id else ClauseStatus.PENDING_CREATE.value,
             user_decision="",
         )
+
+    def _can_mutate_clause(self, clause) -> bool:
+        document = self._repo.get_document(clause.document_id) if clause.document_id is not None else None
+        if document is not None and is_document_running(document.document_status):
+            return False
+        editable, _reason = get_clause_edit_state(
+            clause_status=clause.clause_status,
+            chapter_id=clause.chapter_id,
+            backend_chapter_status=clause.backend_chapter_status,
+        )
+        return editable
 
     def _open_local_docx(self, clause_id: int) -> None:
         clause = self._repo.get_clause(clause_id)

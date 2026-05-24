@@ -8,6 +8,9 @@ from PySide6.QtWidgets import QMenu, QTableWidget, QTableWidgetItem
 from tuv_tools.core.chapter_batch.models import ClauseStatus
 
 
+VIEW_ONLY_ACTIONS = {"打开本地 docx", "打开后端 chapter 记录"}
+
+
 class ChapterBatchClauseTable(QTableWidget):
     """展示某个文档下的条款明细。"""
 
@@ -23,20 +26,40 @@ class ChapterBatchClauseTable(QTableWidget):
     def load_clauses(self, clauses: list[dict]) -> None:
         self.setRowCount(len(clauses))
         for row, clause in enumerate(clauses):
+            editable = clause.get("editable", True)
+            readonly_reason = clause.get("readonly_reason", "")
+
             term_item = QTableWidgetItem(clause.get("term", ""))
             term_item.setData(Qt.ItemDataRole.UserRole, clause.get("id"))
+            term_item.setData(Qt.ItemDataRole.UserRole + 1, editable)
+            if not editable:
+                term_item.setFlags(term_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.setItem(row, 0, term_item)
-            self.setItem(row, 1, QTableWidgetItem(clause.get("test_content", "")))
+
+            content_item = QTableWidgetItem(clause.get("test_content", ""))
+            if not editable:
+                content_item.setFlags(content_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.setItem(row, 1, content_item)
+
             status_item = QTableWidgetItem(clause.get("clause_status", ""))
             status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.setItem(row, 2, status_item)
+
             chapter_item = QTableWidgetItem(str(clause.get("chapter_id") or ""))
             chapter_item.setFlags(chapter_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.setItem(row, 3, chapter_item)
+
             duplicate_item = QTableWidgetItem("是" if clause.get("duplicate_flag") else "")
             duplicate_item.setFlags(duplicate_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.setItem(row, 4, duplicate_item)
-            error_text = clause.get("create_error") or clause.get("upload_error") or clause.get("duplicate_reason") or ""
+
+            error_text = (
+                clause.get("create_error")
+                or clause.get("upload_error")
+                or clause.get("duplicate_reason")
+                or readonly_reason
+                or ""
+            )
             error_item = QTableWidgetItem(error_text)
             error_item.setFlags(error_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.setItem(row, 5, error_item)
@@ -57,18 +80,22 @@ class ChapterBatchClauseTable(QTableWidget):
             }
         return updates
 
-    def available_actions_for_status(self, status: str) -> list[str]:
+    def available_actions_for_status(self, status: str, editable: bool = True) -> list[str]:
         if status == ClauseStatus.CREATE_FAILED.value:
-            return ["重试创建", "跳过此条", "打开本地 docx"]
-        if status == ClauseStatus.UPLOAD_FAILED.value:
-            return ["重试上传", "跳过此条", "打开本地 docx", "打开后端 chapter 记录"]
-        if status == ClauseStatus.SKIPPED.value:
-            return ["恢复跳过", "打开本地 docx"]
-        if status == ClauseStatus.PENDING_UPLOAD.value:
-            return ["重试上传", "打开本地 docx", "打开后端 chapter 记录"]
-        if status == ClauseStatus.PENDING_CREATE.value:
-            return ["跳过此条", "打开本地 docx"]
-        return ["打开本地 docx"]
+            actions = ["重试创建", "跳过此条", "打开本地 docx"]
+        elif status == ClauseStatus.UPLOAD_FAILED.value:
+            actions = ["重试上传", "跳过此条", "打开本地 docx", "打开后端 chapter 记录"]
+        elif status == ClauseStatus.SKIPPED.value:
+            actions = ["恢复跳过", "打开本地 docx"]
+        elif status == ClauseStatus.PENDING_UPLOAD.value:
+            actions = ["重试上传", "打开本地 docx", "打开后端 chapter 记录"]
+        elif status == ClauseStatus.PENDING_CREATE.value:
+            actions = ["跳过此条", "打开本地 docx"]
+        else:
+            actions = ["打开本地 docx"]
+        if editable:
+            return actions
+        return [action for action in actions if action in VIEW_ONLY_ACTIONS]
 
     def _show_context_menu(self, pos) -> None:
         row = self.rowAt(pos.y())
@@ -81,8 +108,11 @@ class ChapterBatchClauseTable(QTableWidget):
         clause_id = term_item.data(Qt.ItemDataRole.UserRole)
         if clause_id is None:
             return
+        editable = bool(term_item.data(Qt.ItemDataRole.UserRole + 1))
         menu = QMenu(self)
-        for action_name in self.available_actions_for_status(status_item.text()):
+        for action_name in self.available_actions_for_status(status_item.text(), editable):
             action = menu.addAction(action_name)
-            action.triggered.connect(lambda _checked=False, name=action_name, cid=int(clause_id): self.action_requested.emit(name, cid))
+            action.triggered.connect(
+                lambda _checked=False, name=action_name, cid=int(clause_id): self.action_requested.emit(name, cid)
+            )
         menu.exec(self.viewport().mapToGlobal(pos))
