@@ -28,7 +28,7 @@ from tuv_tools.ui.widgets import CHECKBOX_STYLE
 from tuv_tools.ui.widgets.clause_panel import ClauseOverlay
 from tuv_tools.ui.widgets.document_list import DocumentTable
 from tuv_tools.ui.widgets.toast import Toast
-from tuv_tools.core.preparing import PreparingWorker
+from tuv_tools.core.preparing.worker import PreparingWorker
 
 
 class SplitWorker(QThread):
