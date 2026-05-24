@@ -10,6 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from tuv_tools.config import database as db_module
 from tuv_tools.ui.views.splitter_view import SplitterView
 
 
@@ -22,6 +23,12 @@ def qapp():
 
 
 class TestSplitterView:
+    @staticmethod
+    def _use_temp_db(monkeypatch, tmp_path):
+        monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
+        db_module.DatabaseManager._instance = None
+        db_module.DatabaseManager._initialized = False
+
     def test_dropped_files_reuse_add_paths_flow(self, qapp, monkeypatch):
         captured: list[list[str]] = []
 
@@ -42,7 +49,7 @@ class TestSplitterView:
 
         assert hasattr(view, "_resume_preparing_if_needed")
 
-    def test_prepare_paused_is_excluded_from_normal_batch_selection(self, qapp, monkeypatch, tmp_path):
+    def test_prepare_paused_can_be_batch_selected_for_delete(self, qapp, monkeypatch, tmp_path):
         path = tmp_path / "paused.docx"
         path.write_text("x", encoding="utf-8")
 
@@ -61,7 +68,153 @@ class TestSplitterView:
         ])
 
         view._table.set_all_checked(True)
-        assert view._table.checked_ids() == []
+        assert view._table.checked_ids() == [1]
+
+    def test_split_button_disabled_when_checked_docs_include_prepare_paused(self, qapp, monkeypatch, tmp_path):
+        pending = tmp_path / "pending.docx"
+        paused = tmp_path / "paused.docx"
+        pending.write_text("x", encoding="utf-8")
+        paused.write_text("x", encoding="utf-8")
+
+        monkeypatch.setattr(SplitterView, "_load_documents", lambda self: None)
+        monkeypatch.setattr(SplitterView, "_resume_preparing_if_needed", lambda self: None)
+
+        view = SplitterView()
+        view._table.load_documents([
+            {
+                "id": 1,
+                "file_path": str(pending),
+                "file_name": pending.name,
+                "standard_number": None,
+                "status": "pending",
+                "last_section_count": None,
+                "last_split_at": None,
+            },
+            {
+                "id": 2,
+                "file_path": str(paused),
+                "file_name": paused.name,
+                "standard_number": None,
+                "status": "prepare_paused",
+                "last_section_count": None,
+                "last_split_at": None,
+            },
+        ])
+
+        view._table.set_all_checked(True)
+        view._update_selected_label()
+
+        assert set(view._table.checked_ids()) == {1, 2}
+        assert view._delete_btn.isEnabled() is True
+        assert view._split_btn.isEnabled() is False
+
+    def test_split_button_disabled_when_checked_docs_include_prepare_failed(self, qapp, monkeypatch, tmp_path):
+        pending = tmp_path / "pending.docx"
+        failed = tmp_path / "failed.docx"
+        pending.write_text("x", encoding="utf-8")
+        failed.write_text("x", encoding="utf-8")
+
+        monkeypatch.setattr(SplitterView, "_load_documents", lambda self: None)
+        monkeypatch.setattr(SplitterView, "_resume_preparing_if_needed", lambda self: None)
+
+        view = SplitterView()
+        view._table.load_documents([
+            {
+                "id": 1,
+                "file_path": str(pending),
+                "file_name": pending.name,
+                "standard_number": None,
+                "status": "pending",
+                "last_section_count": None,
+                "last_split_at": None,
+            },
+            {
+                "id": 2,
+                "file_path": str(failed),
+                "file_name": failed.name,
+                "standard_number": None,
+                "status": "prepare_failed",
+                "last_section_count": None,
+                "last_split_at": None,
+            },
+        ])
+
+        view._table.set_all_checked(True)
+        view._update_selected_label()
+
+        assert set(view._table.checked_ids()) == {1, 2}
+        assert view._delete_btn.isEnabled() is True
+        assert view._split_btn.isEnabled() is False
+
+    def test_delete_button_tracks_checked_selection(self, qapp, monkeypatch, tmp_path):
+        path = tmp_path / "pending.docx"
+        path.write_text("x", encoding="utf-8")
+
+        monkeypatch.setattr(SplitterView, "_load_documents", lambda self: None)
+        monkeypatch.setattr(SplitterView, "_resume_preparing_if_needed", lambda self: None)
+
+        view = SplitterView()
+        view._table.load_documents([
+            {
+                "id": 1,
+                "file_path": str(path),
+                "file_name": path.name,
+                "standard_number": None,
+                "status": "pending",
+                "last_section_count": None,
+                "last_split_at": None,
+            }
+        ])
+
+        view._update_selected_label()
+        assert view._delete_btn.isEnabled() is False
+
+        view._table.set_all_checked(True)
+        view._update_selected_label()
+
+        assert view._delete_btn.isEnabled() is True
+
+    def test_delete_selected_removes_checked_docs_after_confirmation(self, qapp, monkeypatch, tmp_path):
+        self._use_temp_db(monkeypatch, tmp_path)
+        monkeypatch.setattr(SplitterView, "_resume_preparing_if_needed", lambda self: None)
+        monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+
+        first = tmp_path / "first.docx"
+        second = tmp_path / "second.docx"
+        first.write_text("x", encoding="utf-8")
+        second.write_text("x", encoding="utf-8")
+
+        view = SplitterView()
+        first_id = view._db.add_document(str(first))
+        second_id = view._db.add_document(str(second))
+        view._table.load_documents([
+            view._db.get_document(first_id),
+            view._db.get_document(second_id),
+        ])
+        view._table.set_all_checked(True)
+
+        view._delete_selected()
+
+        assert view._db.get_document(first_id) is None
+        assert view._db.get_document(second_id) is None
+
+    def test_delete_selected_keeps_docs_when_cancelled(self, qapp, monkeypatch, tmp_path):
+        self._use_temp_db(monkeypatch, tmp_path)
+        monkeypatch.setattr(SplitterView, "_resume_preparing_if_needed", lambda self: None)
+        monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.No)
+
+        path = tmp_path / "keep.docx"
+        path.write_text("x", encoding="utf-8")
+
+        view = SplitterView()
+        doc_id = view._db.add_document(str(path))
+        view._table.load_documents([view._db.get_document(doc_id)])
+        view._table.set_all_checked(True)
+
+        view._delete_selected()
+
+        assert view._db.get_document(doc_id) is not None
+        view._db.delete_document(doc_id)
 
     def test_resume_preparing_if_needed_accepts_and_queues_existing_docs(self, qapp, monkeypatch, tmp_path):
         path = tmp_path / "resume.docx"

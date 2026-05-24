@@ -204,6 +204,18 @@ class TestDatabaseManager:
         db.delete_document(doc_id)
         assert len(db.get_documents()) == 0
 
+    def test_document_batch_delete(self):
+        db, _ = self._new_db()
+        first = db.add_document(str(Path(tempfile.mkdtemp()) / "first.docx"))
+        second = db.add_document(str(Path(tempfile.mkdtemp()) / "second.docx"))
+        third = db.add_document(str(Path(tempfile.mkdtemp()) / "third.docx"))
+
+        db.delete_documents([first, third])
+
+        assert db.get_document(first) is None
+        assert db.get_document(third) is None
+        assert db.get_document(second) is not None
+
     def test_document_standard_number(self):
         db, _ = self._new_db()
         file_path = str(Path(tempfile.mkdtemp()) / "IEC_60335-1.docx")

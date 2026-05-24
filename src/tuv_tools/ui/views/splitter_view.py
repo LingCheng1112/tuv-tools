@@ -188,6 +188,11 @@ class SplitterView(QWidget):
         self._table.checked_changed.connect(self._update_selected_label)
         bottom.addWidget(self._selected_label)
         bottom.addStretch()
+        self._delete_btn = QPushButton("删除选中")
+        self._delete_btn.setStyleSheet(self._action_btn_style("#d9534f"))
+        self._delete_btn.setEnabled(False)
+        self._delete_btn.clicked.connect(self._delete_selected)
+        bottom.addWidget(self._delete_btn)
         self._split_btn = QPushButton("开始拆分选中")
         self._split_btn.setStyleSheet(self._action_btn_style("#4a9eff"))
         self._split_btn.clicked.connect(self._start_batch_split)
@@ -380,12 +385,33 @@ class SplitterView(QWidget):
         checked = self._table.checked_count()
         total = self._table.total_count()
         self._selected_label.setText(f"已选 {checked}/{total} 项")
-        self._split_btn.setEnabled(checked > 0)
+        self._delete_btn.setEnabled(checked > 0)
+        self._split_btn.setEnabled(checked > 0 and not self._table.has_checked_batch_split_blockers())
 
     def _split_single(self, doc_id: int) -> None:
         self._table.set_single_checked(doc_id)
         self._update_selected_label()
         self._start_batch_split()
+
+    def _delete_selected(self) -> None:
+        checked_ids = self._table.checked_ids()
+        if not checked_ids:
+            return
+
+        count = len(checked_ids)
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"是否删除选中的 {count} 条导入记录？（不会删除原始文件）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._db.delete_documents(checked_ids)
+        self._preparing_pending_ids.difference_update(checked_ids)
+        self._load_documents()
+        Toast(self, f"已删除 {count} 条导入记录")
 
     def _resume_preparing(self, doc_id: int) -> None:
         doc = self._db.get_document(doc_id)

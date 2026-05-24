@@ -398,6 +398,15 @@ class DatabaseManager:
         self._conn.execute("DELETE FROM imported_documents WHERE id = ?", (doc_id,))
         self._conn.commit()
 
+    def delete_documents(self, doc_ids: list[int]) -> None:
+        if not doc_ids:
+            return
+        self._conn.executemany(
+            "DELETE FROM imported_documents WHERE id = ?",
+            [(doc_id,) for doc_id in doc_ids],
+        )
+        self._conn.commit()
+
     def close(self) -> None:
         if hasattr(self._local, "conn") and self._local.conn:
             self._local.conn.close()

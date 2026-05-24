@@ -623,3 +623,5 @@ class TestSplitterUiHelpers:
         assert is_selectable_document_status("completed") is True
         assert is_selectable_document_status("preparing") is False
         assert is_selectable_document_status("processing") is False
+        assert is_selectable_document_status("prepare_paused") is True
+        assert is_selectable_document_status("prepare_failed") is True

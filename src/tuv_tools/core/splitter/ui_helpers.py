@@ -16,7 +16,8 @@ STATUS_LABELS: dict[str, str] = {
     "prepare_paused": "⏸ 预处理已暂停",
 }
 
-NON_SELECTABLE_STATUSES = frozenset({"preparing", "processing", "prepare_paused", "prepare_failed"})
+NON_SELECTABLE_STATUSES = frozenset({"preparing", "processing"})
+NON_BATCH_SPLIT_STATUSES = frozenset({"prepare_paused", "prepare_failed"})
 
 
 def is_importable_docx(file_name: str) -> bool:
@@ -27,6 +28,11 @@ def is_importable_docx(file_name: str) -> bool:
 def is_selectable_document_status(status: str) -> bool:
     """判断当前状态的文档是否允许被勾选或发起拆分。"""
     return status not in NON_SELECTABLE_STATUSES
+
+
+def blocks_batch_split(status: str) -> bool:
+    """判断当前状态是否应阻止批量拆分。"""
+    return status in NON_BATCH_SPLIT_STATUSES
 
 
 def resolve_output_root(docx_path: Path, output_root: str, output_subdir: str = "") -> Path:

@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction
 from tuv_tools.core.splitter.ui_helpers import (
     STATUS_LABELS,
+    blocks_batch_split,
     is_importable_docx,
     is_selectable_document_status,
 )
@@ -195,11 +196,7 @@ class DocumentTable(QTableWidget):
         doc = self._data[row]
         menu = QMenu(self)
 
-        if is_selectable_document_status(doc["status"]):
-            split_action = QAction("拆分此文档", self)
-            split_action.triggered.connect(lambda: self.split_requested.emit(doc["id"]))
-            menu.addAction(split_action)
-        elif doc.get("status") == "prepare_paused":
+        if doc.get("status") == "prepare_paused":
             resume_action = QAction("继续预处理", self)
             resume_action.triggered.connect(lambda: self.resume_preparing_requested.emit(doc["id"]))
             menu.addAction(resume_action)
@@ -225,6 +222,10 @@ class DocumentTable(QTableWidget):
                 lambda: self.skip_preparing_split_requested.emit(doc["id"])
             )
             menu.addAction(skip_action)
+        elif is_selectable_document_status(doc["status"]):
+            split_action = QAction("拆分此文档", self)
+            split_action.triggered.connect(lambda: self.split_requested.emit(doc["id"]))
+            menu.addAction(split_action)
         elif doc.get("status") == "failed":
             retry_split_action = QAction("重新拆分此文档", self)
             retry_split_action.triggered.connect(lambda: self.split_requested.emit(doc["id"]))
@@ -269,6 +270,12 @@ class DocumentTable(QTableWidget):
 
     def total_count(self) -> int:
         return len(self._data)
+
+    def checked_documents(self) -> list[dict]:
+        return [doc for doc in self._data if doc["id"] in self._checked]
+
+    def has_checked_batch_split_blockers(self) -> bool:
+        return any(blocks_batch_split(doc.get("status", "pending")) for doc in self.checked_documents())
 
     def set_single_checked(self, doc_id: int) -> None:
         """仅勾选指定文档，取消其余"""

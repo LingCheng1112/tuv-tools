@@ -124,7 +124,7 @@ class TestDocumentTable:
 
         assert received == [[str(direct), str(nested)]]
 
-    def test_prepare_paused_is_not_selectable(self, qapp, tmp_path):
+    def test_prepare_paused_is_selectable_for_batch_delete(self, qapp, tmp_path):
         path = tmp_path / "paused.docx"
         path.write_text("x", encoding="utf-8")
 
@@ -134,8 +134,8 @@ class TestDocumentTable:
 
         checkbox = table.cellWidget(0, table.COL_CHECK)
         assert isinstance(checkbox, QCheckBox)
-        assert checkbox.isEnabled() is False
-        assert table.checked_ids() == []
+        assert checkbox.isEnabled() is True
+        assert table.checked_ids() == [1]
 
     def test_prepare_paused_context_actions_emit_signals(self, qapp, tmp_path):
         path = tmp_path / "paused.docx"
@@ -155,7 +155,7 @@ class TestDocumentTable:
         assert resumed == [7]
         assert skipped == [7]
 
-    def test_prepare_failed_is_not_selectable(self, qapp, tmp_path):
+    def test_prepare_failed_is_selectable_for_batch_delete(self, qapp, tmp_path):
         path = tmp_path / "prepare_failed.docx"
         path.write_text("x", encoding="utf-8")
 
@@ -165,5 +165,5 @@ class TestDocumentTable:
 
         checkbox = table.cellWidget(0, table.COL_CHECK)
         assert isinstance(checkbox, QCheckBox)
-        assert checkbox.isEnabled() is False
-        assert table.checked_ids() == []
+        assert checkbox.isEnabled() is True
+        assert table.checked_ids() == [9]
