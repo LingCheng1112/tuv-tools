@@ -46,8 +46,12 @@ from tuv_tools.core.splitter.exporting import (
     _collapse_sections_for_version,
     _merge_table_slices_xml,
 )
-from tuv_tools.ui.views.splitter_view import resolve_output_root
-from tuv_tools.ui.widgets.document_list import DocumentTable
+from tuv_tools.core.splitter.ui_helpers import (
+    STATUS_LABELS,
+    is_importable_docx,
+    is_selectable_document_status,
+    resolve_output_root,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "Test Plan for IEC 60335-2-24.doc.docx"
 
@@ -604,15 +608,18 @@ class TestSplitterUiHelpers:
         assert resolve_output_root(docx_path, str(output_root)) == output_root
 
     def test_document_table_filters_word_lock_files(self):
-        assert DocumentTable._is_importable_docx("sample.docx") is True
-        assert DocumentTable._is_importable_docx("~$sample.docx") is False
-        assert DocumentTable._is_importable_docx("sample.doc") is False
+        assert is_importable_docx("sample.docx") is True
+        assert is_importable_docx("~$sample.docx") is False
+        assert is_importable_docx("sample.doc") is False
 
     def test_document_table_cancelled_status_label_exists(self):
-        from tuv_tools.ui.widgets.document_list import STATUS_LABELS
-
         assert STATUS_LABELS["cancelled"]
 
     def test_preparing_status_label_exists(self):
-        from tuv_tools.ui.widgets.document_list import STATUS_LABELS
         assert STATUS_LABELS["preparing"] == "⟳ 预处理中"
+
+    def test_selectable_status_helper(self):
+        assert is_selectable_document_status("pending") is True
+        assert is_selectable_document_status("completed") is True
+        assert is_selectable_document_status("preparing") is False
+        assert is_selectable_document_status("processing") is False

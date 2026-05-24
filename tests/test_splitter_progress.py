@@ -1,8 +1,8 @@
 """测试文档拆分进度映射和节流 helper"""
 
 from tuv_tools.core.splitter.models import CoreProgressEvent, SplitCancelled
+from tuv_tools.core.splitter.ui_helpers import build_split_summary
 from tuv_tools.ui.views.splitter_progress import ProgressThrottler, SplitProgressMapper
-from tuv_tools.ui.views.splitter_view import build_split_summary
 
 
 class FakeClock:

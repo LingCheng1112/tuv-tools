@@ -7,6 +7,11 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction
+from tuv_tools.core.splitter.ui_helpers import (
+    STATUS_LABELS,
+    is_importable_docx,
+    is_selectable_document_status,
+)
 from . import CHECKBOX_STYLE
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -19,19 +24,10 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
 )
 
-STATUS_LABELS: dict[str, str] = {
-    "pending": "◷ 未处理",
-    "completed": "✅ 已拆分",
-    "failed": "✗ 失败",
-    "processing": "⟳ 处理中",
-    "cancelled": "已取消",
-    "preparing": "⟳ 预处理中",
-}
-
-
 class DocumentTable(QTableWidget):
     """文档列表表格"""
 
+    files_dropped = Signal(list)  # 拖拽导入文件路径
     checked_changed = Signal()  # 勾选变化
     split_requested = Signal(int)  # 请求拆分单条 (doc_id)
     open_output_requested = Signal(int)  # 请求打开输出目录 (doc_id)
@@ -130,7 +126,7 @@ class DocumentTable(QTableWidget):
         cb.setStyleSheet(CHECKBOX_STYLE)
         cb.setChecked(doc["id"] in self._checked)
         cb.toggled.connect(lambda checked, d=doc: self._on_toggle(d["id"], checked))
-        can_select = doc["status"] not in ("preparing", "processing")
+        can_select = is_selectable_document_status(doc["status"])
         cb.setEnabled(can_select)
         self.setCellWidget(row, self.COL_CHECK, cb)
 
@@ -196,7 +192,7 @@ class DocumentTable(QTableWidget):
         doc = self._data[row]
         menu = QMenu(self)
 
-        if doc["status"] not in ("preparing", "processing"):
+        if is_selectable_document_status(doc["status"]):
             split_action = QAction("拆分此文档", self)
             split_action.triggered.connect(lambda: self.split_requested.emit(doc["id"]))
             menu.addAction(split_action)
@@ -240,14 +236,17 @@ class DocumentTable(QTableWidget):
     def set_single_checked(self, doc_id: int) -> None:
         """仅勾选指定文档，取消其余"""
         self._checked.clear()
-        self._checked.add(doc_id)
+        doc = next((item for item in self._data if item["id"] == doc_id), None)
+        if doc and is_selectable_document_status(doc.get("status", "pending")):
+            self._checked.add(doc_id)
         self._rebuild_checkboxes()
 
     def set_all_checked(self, checked: bool) -> None:
         self._checked.clear()
         if checked:
             for doc in self._data:
-                self._checked.add(doc["id"])
+                if is_selectable_document_status(doc.get("status", "pending")):
+                    self._checked.add(doc["id"])
         self._rebuild_checkboxes()
 
     def update_row_status(self, doc_id: int, status: str, section_count: int | None = None) -> None:
@@ -262,6 +261,18 @@ class DocumentTable(QTableWidget):
                 existing_count = doc.get("last_section_count")
                 count_text = str(existing_count) if existing_count else "-"
                 self.setItem(row, self.COL_COUNT, self._make_item(count_text))
+                cb = self.cellWidget(row, self.COL_CHECK)
+                selection_changed = False
+                if isinstance(cb, QCheckBox):
+                    if not is_selectable_document_status(status) and doc_id in self._checked:
+                        self._checked.discard(doc_id)
+                        selection_changed = True
+                    cb.blockSignals(True)
+                    cb.setEnabled(is_selectable_document_status(status))
+                    cb.setChecked(doc_id in self._checked)
+                    cb.blockSignals(False)
+                if selection_changed:
+                    self.checked_changed.emit()
                 break
 
     def _rebuild_checkboxes(self) -> None:
@@ -297,18 +308,12 @@ class DocumentTable(QTableWidget):
                 self._drag_files.append(path)
 
         if self._drag_files:
-            from tuv_tools.config.database import DatabaseManager
-            db = DatabaseManager()
-            for fp in self._drag_files:
-                try:
-                    db.add_document(fp)
-                except Exception:
-                    pass
-            self.load_documents(db.get_documents())
+            unique_paths = sorted(dict.fromkeys(self._drag_files))
+            self.files_dropped.emit(unique_paths)
 
     @staticmethod
     def _is_importable_docx(file_name: str) -> bool:
-        return file_name.lower().endswith(".docx") and not file_name.startswith("~$")
+        return is_importable_docx(file_name)
 
     # ---- 搜索筛选 ----
 

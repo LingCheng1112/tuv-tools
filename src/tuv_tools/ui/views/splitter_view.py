@@ -22,6 +22,7 @@ from tuv_tools.config import AppSettings
 from tuv_tools.core.splitter import build_sections, export_docx_outputs
 from tuv_tools.core.splitter.exporting import get_output_base_dir_name
 from tuv_tools.core.splitter.models import CoreProgressEvent, SplitCancelled
+from tuv_tools.core.splitter.ui_helpers import build_split_summary, resolve_output_root
 from tuv_tools.core.splitter.utils import CleanPatterns, safe_name
 from tuv_tools.ui.views.splitter_progress import ProgressThrottler, SplitProgressMapper
 from tuv_tools.ui.widgets import CHECKBOX_STYLE
@@ -101,25 +102,6 @@ class SplitWorker(QThread):
             except Exception as exc:
                 self.doc_error.emit(doc_id, str(exc))
 
-
-def resolve_output_root(docx_path: Path, output_root: str, output_subdir: str = "") -> Path:
-    """根据配置解析导出根目录；未配置时回退到原文档所在目录。"""
-    if output_subdir:
-        return Path(output_subdir)
-    if output_root:
-        return Path(output_root)
-    return docx_path.parent
-
-
-def build_split_summary(success: int, failed: int, cancelled: bool, total: int) -> str:
-    if cancelled:
-        remaining = max(total - success - failed, 0)
-        return f"已取消拆分：完成 {success} 个，剩余 {remaining} 个"
-    if success == 0 and failed > 0:
-        return f"拆分失败：{failed} 个文档未完成"
-    return f"拆分完成：成功 {success} 个，失败 {failed} 个"
-
-
 class ParseWorker(QThread):
     """后台解析工作线程（用于条款面板预览）"""
     result_ready = Signal(list)
@@ -184,6 +166,7 @@ class SplitterView(QWidget):
         layout.addLayout(toolbar)
 
         self._table = DocumentTable()
+        self._table.files_dropped.connect(self._add_paths)
         self._table.split_requested.connect(self._split_single)
         self._table.open_output_requested.connect(self._open_output_dir)
         self._table.double_clicked.connect(self._show_clause_panel)
