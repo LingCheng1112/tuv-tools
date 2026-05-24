@@ -301,3 +301,145 @@ def test_executor_cancel_can_be_requested_by_worker(tmp_path):
     executor.run_documents([doc_id])
 
     assert controller.cancel_requested() is True
+
+
+def test_cancel_after_create_before_upload_marks_document_pending_upload(tmp_path):
+    from tuv_tools.core.chapter_batch.executor import ChapterBatchExecutionController, ChapterBatchExecutor
+
+    repo = _new_repo(tmp_path)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/h.docx",
+            file_name="h.docx",
+            document_status=DocumentStatus.PENDING_CREATE.value,
+        )
+    )
+    repo.replace_clauses(
+        doc_id,
+        [BatchImportClause(sort_index=0, term="10.1", source_docx_path="C:/out/10_1.docx")],
+    )
+    controller = ChapterBatchExecutionController()
+    executor = ChapterBatchExecutor(
+        repo,
+        create_chapter=lambda _payload: 1,
+        upload_chapter_doc=lambda _chapter_id, _path: controller.request_cancel(),
+        controller=controller,
+    )
+
+    executor.run_documents([doc_id])
+
+    saved = repo.get_document(doc_id)
+    clause = repo.get_clauses(doc_id)[0]
+    assert saved is not None
+    assert saved.document_status == DocumentStatus.PENDING_UPLOAD.value
+    assert saved.success_clause_count == 0
+    assert clause.clause_status == ClauseStatus.PENDING_UPLOAD.value
+
+
+def test_cancel_after_partial_upload_marks_document_partial(tmp_path):
+    from tuv_tools.core.chapter_batch.executor import ChapterBatchExecutor
+
+    repo = _new_repo(tmp_path)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/i.docx",
+            file_name="i.docx",
+            document_status=DocumentStatus.PENDING_UPLOAD.value,
+        )
+    )
+    repo.replace_clauses(
+        doc_id,
+        [
+            BatchImportClause(
+                sort_index=0,
+                term="10.1",
+                clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                chapter_id=1,
+                source_docx_path="C:/out/10_1.docx",
+            ),
+            BatchImportClause(
+                sort_index=1,
+                term="10.2",
+                clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                chapter_id=2,
+                source_docx_path="C:/out/10_2.docx",
+            ),
+        ],
+    )
+    calls = {"count": 0}
+    executor: ChapterBatchExecutor | None = None
+
+    def upload_doc(_chapter_id, _path):
+        calls["count"] += 1
+        if calls["count"] == 2 and executor is not None:
+            executor.request_cancel()
+
+    executor = ChapterBatchExecutor(
+        repo,
+        create_chapter=lambda _payload: 999,
+        upload_chapter_doc=upload_doc,
+    )
+
+    executor.run_documents([doc_id])
+
+    saved = repo.get_document(doc_id)
+    clauses = repo.get_clauses(doc_id)
+    assert saved is not None
+    assert saved.document_status == DocumentStatus.PARTIAL.value
+    assert saved.success_clause_count == 1
+    assert clauses[0].clause_status == ClauseStatus.UPLOAD_SUCCESS.value
+    assert clauses[1].clause_status == ClauseStatus.PENDING_UPLOAD.value
+
+
+def test_cancel_on_last_upload_still_uses_explicit_cancel_aggregation(tmp_path):
+    from tuv_tools.core.chapter_batch.executor import ChapterBatchExecutor
+
+    repo = _new_repo(tmp_path)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/j.docx",
+            file_name="j.docx",
+            document_status=DocumentStatus.PENDING_UPLOAD.value,
+        )
+    )
+    repo.replace_clauses(
+        doc_id,
+        [
+            BatchImportClause(
+                sort_index=0,
+                term="10.1",
+                clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                chapter_id=1,
+                source_docx_path="C:/out/10_1.docx",
+            )
+        ],
+    )
+    forced_statuses = []
+    original_reaggregate = repo.reaggregate_document
+
+    def tracking_reaggregate(document_id, *, forced_status=None):
+        forced_statuses.append(forced_status)
+        return original_reaggregate(document_id, forced_status=forced_status)
+
+    repo.reaggregate_document = tracking_reaggregate  # type: ignore[method-assign]
+    executor: ChapterBatchExecutor | None = None
+
+    def upload_doc(_chapter_id, _path):
+        if executor is not None:
+            executor.request_cancel()
+
+    executor = ChapterBatchExecutor(
+        repo,
+        create_chapter=lambda _payload: 999,
+        upload_chapter_doc=upload_doc,
+    )
+
+    executor.run_documents([doc_id])
+
+    saved = repo.get_document(doc_id)
+    clause = repo.get_clauses(doc_id)[0]
+    assert saved is not None
+    assert saved.document_status == DocumentStatus.PENDING_UPLOAD.value
+    assert saved.success_clause_count == 0
+    assert clause.clause_status == ClauseStatus.PENDING_UPLOAD.value
+    assert DocumentStatus.PENDING_UPLOAD.value in forced_statuses

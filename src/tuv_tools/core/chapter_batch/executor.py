@@ -184,6 +184,9 @@ class ChapterBatchExecutor:
             if clause.clause_status != ClauseStatus.PENDING_UPLOAD.value or clause.chapter_id is None:
                 continue
             self._upload_clause(clause)
+            if self._cancel_requested():
+                self._apply_cancel(document_id)
+                return
         self._repo.update_document(document_id, is_queued=0)
         self._repo.reaggregate_document(document_id)
 
@@ -214,6 +217,8 @@ class ChapterBatchExecutor:
             return
         try:
             self._upload_chapter_doc(clause.chapter_id, clause.source_docx_path)
+            if self._cancel_requested():
+                return
             self._repo.update_clause(
                 clause.id,
                 clause_status=ClauseStatus.UPLOAD_SUCCESS.value,
@@ -243,8 +248,27 @@ class ChapterBatchExecutor:
         )
 
     def _apply_cancel(self, document_id: int) -> None:
+        clauses = self._repo.get_clauses(document_id)
+        processed_statuses: list[str] = []
+        remaining_statuses: list[str] = []
+        for clause in clauses:
+            if clause.clause_status in {
+                ClauseStatus.PENDING_CREATE.value,
+                ClauseStatus.PENDING_UPLOAD.value,
+            }:
+                remaining_statuses.append(clause.clause_status)
+                continue
+            if clause.clause_status != ClauseStatus.SKIPPED.value:
+                processed_statuses.append(clause.clause_status)
         self._repo.update_document(document_id, is_queued=0)
-        self._repo.reaggregate_document(document_id)
+        result = apply_cancel_result(
+            processed_statuses=processed_statuses,
+            remaining_statuses=remaining_statuses,
+        )
+        self._repo.reaggregate_document(
+            document_id,
+            forced_status=result["document_status"],
+        )
         self._clear_queued_flags()
 
     def _clear_queued_flags(self) -> None:

@@ -211,7 +211,7 @@ class ChapterBatchRepository:
         )
         self._conn.commit()
 
-    def reaggregate_document(self, document_id: int) -> None:
+    def reaggregate_document(self, document_id: int, *, forced_status: str | None = None) -> None:
         clauses = self.get_clauses(document_id)
         current = self.get_document(document_id)
         success = sum(c.clause_status == ClauseStatus.UPLOAD_SUCCESS.value for c in clauses)
@@ -235,6 +235,8 @@ class ChapterBatchRepository:
             status = DocumentStatus.FAILED.value
         else:
             status = DocumentStatus.PENDING_CONFIRM.value
+        if forced_status is not None:
+            status = forced_status
 
         self.update_document(
             document_id,

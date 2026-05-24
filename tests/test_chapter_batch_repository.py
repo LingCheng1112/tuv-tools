@@ -142,3 +142,77 @@ class TestChapterBatchRepository:
         clauses = repo.get_clauses(doc_id)
 
         assert clauses == []
+
+    def test_reaggregate_document_accepts_forced_status(self):
+        repo = _new_repo()
+        doc_id = repo.create_document(
+            BatchImportDocument(
+                file_path="C:/docs/d.docx",
+                file_name="d.docx",
+                document_status=DocumentStatus.UPLOADING.value,
+            )
+        )
+        repo.replace_clauses(
+            doc_id,
+            [
+                BatchImportClause(
+                    sort_index=0,
+                    term="10.1",
+                    clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                    source_docx_path="C:/out/10_1.docx",
+                )
+            ],
+        )
+
+        repo.reaggregate_document(doc_id, forced_status=DocumentStatus.FAILED.value)
+        doc = repo.get_document(doc_id)
+
+        assert doc is not None
+        assert doc.document_status == DocumentStatus.FAILED.value
+        assert doc.total_clause_count == 1
+        assert doc.success_clause_count == 0
+        assert doc.failed_clause_count == 0
+        assert doc.skipped_clause_count == 0
+
+    def test_reaggregate_document_forced_status_preserves_aggregate_counts(self):
+        repo = _new_repo()
+        doc_id = repo.create_document(
+            BatchImportDocument(
+                file_path="C:/docs/e.docx",
+                file_name="e.docx",
+                document_status=DocumentStatus.UPLOADING.value,
+            )
+        )
+        repo.replace_clauses(
+            doc_id,
+            [
+                BatchImportClause(
+                    sort_index=0,
+                    term="10.1",
+                    clause_status=ClauseStatus.UPLOAD_SUCCESS.value,
+                    source_docx_path="C:/out/10_1.docx",
+                ),
+                BatchImportClause(
+                    sort_index=1,
+                    term="10.2",
+                    clause_status=ClauseStatus.UPLOAD_FAILED.value,
+                    source_docx_path="C:/out/10_2.docx",
+                ),
+                BatchImportClause(
+                    sort_index=2,
+                    term="10.3",
+                    clause_status=ClauseStatus.SKIPPED.value,
+                    source_docx_path="C:/out/10_3.docx",
+                ),
+            ],
+        )
+
+        repo.reaggregate_document(doc_id, forced_status=DocumentStatus.PENDING_UPLOAD.value)
+        doc = repo.get_document(doc_id)
+
+        assert doc is not None
+        assert doc.document_status == DocumentStatus.PENDING_UPLOAD.value
+        assert doc.total_clause_count == 3
+        assert doc.success_clause_count == 1
+        assert doc.failed_clause_count == 1
+        assert doc.skipped_clause_count == 1
