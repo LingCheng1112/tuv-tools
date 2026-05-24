@@ -371,6 +371,8 @@ def _split_table_into_sections(
     block: Block,
     progress: CoreProgressCallback | None = None,
     should_cancel: CancelCallback | None = None,
+    scanned_row_offset: int = 0,
+    scanned_row_total: int | None = None,
 ) -> list[tuple[ClauseMatch, TableSlice]]:
     """将表格按行中的条款号切分为多个 (ClauseMatch, TableSlice) 对"""
     rows = block.element.findall("./w:tr", NS)
@@ -378,13 +380,15 @@ def _split_table_into_sections(
     total_rows = len(rows)
     for idx, row in enumerate(rows):
         _check_cancel(should_cancel)
+        current = scanned_row_offset + idx + 1
+        total = scanned_row_total if scanned_row_total is not None else total_rows
         _emit_progress(
             progress,
             "splitting_tables",
             "拆分表格",
-            idx + 1,
-            total_rows,
-            f"解析表格行 {idx + 1}/{total_rows}",
+            current,
+            total,
+            f"解析表格行 {current}/{total}",
         )
         cell_els = row.findall("./w:tc", NS)
         row_cells = [cell_text(cell) for cell in cell_els]
@@ -434,6 +438,12 @@ def build_sections(
     blocks = parse_document(docx_path, progress=progress, should_cancel=should_cancel)
     sections: list[Section] = []
     current: Section | None = None
+    total_scanned_table_rows = sum(
+        len(block.element.findall("./w:tr", NS))
+        for block in blocks
+        if block.block_type == "table"
+    )
+    scanned_row_offset = 0
 
     for block in blocks:
         _check_cancel(should_cancel)
@@ -457,7 +467,10 @@ def build_sections(
             block,
             progress=progress,
             should_cancel=should_cancel,
+            scanned_row_offset=scanned_row_offset,
+            scanned_row_total=total_scanned_table_rows,
         )
+        scanned_row_offset += len(block.element.findall("./w:tr", NS))
         is_ignored = _should_ignore_table(block)
 
         for clause, table_slice in table_sections:

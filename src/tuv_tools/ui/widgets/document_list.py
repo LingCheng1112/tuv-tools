@@ -30,6 +30,8 @@ class DocumentTable(QTableWidget):
     files_dropped = Signal(list)  # 拖拽导入文件路径
     checked_changed = Signal()  # 勾选变化
     split_requested = Signal(int)  # 请求拆分单条 (doc_id)
+    resume_preparing_requested = Signal(int)  # 请求继续预处理 (doc_id)
+    skip_preparing_split_requested = Signal(int)  # 请求跳过预处理并拆分 (doc_id)
     open_output_requested = Signal(int)  # 请求打开输出目录 (doc_id)
     double_clicked = Signal(int)  # 双击行 (doc_id)
     selection_empty = Signal()  # 列表为空时发出
@@ -196,6 +198,16 @@ class DocumentTable(QTableWidget):
             split_action = QAction("拆分此文档", self)
             split_action.triggered.connect(lambda: self.split_requested.emit(doc["id"]))
             menu.addAction(split_action)
+        elif doc.get("status") == "prepare_paused":
+            resume_action = QAction("继续预处理", self)
+            resume_action.triggered.connect(lambda: self.resume_preparing_requested.emit(doc["id"]))
+            menu.addAction(resume_action)
+
+            skip_action = QAction("跳过预处理并拆分", self)
+            skip_action.triggered.connect(
+                lambda: self.skip_preparing_split_requested.emit(doc["id"])
+            )
+            menu.addAction(skip_action)
 
         open_file_action = QAction("打开文件位置", self)
         open_file_action.triggered.connect(lambda: self._open_file_location(doc))

@@ -317,6 +317,13 @@ class DatabaseManager:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_preparing_documents(self) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM imported_documents WHERE status = ? ORDER BY updated_at DESC",
+            ("preparing",),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def add_document(self, file_path: str) -> int:
         """添加文档记录，已存在则跳过。返回记录 ID（已存在时返回已有 ID）"""
         from datetime import datetime
@@ -377,6 +384,15 @@ class DatabaseManager:
                 (status, error, now, doc_id),
             )
         self._conn.commit()
+
+    def update_documents_status(
+        self,
+        doc_ids: list[int],
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        for doc_id in doc_ids:
+            self.update_document_status(doc_id, status, error=error)
 
     def delete_document(self, doc_id: int) -> None:
         self._conn.execute("DELETE FROM imported_documents WHERE id = ?", (doc_id,))

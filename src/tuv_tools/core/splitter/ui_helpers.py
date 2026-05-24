@@ -12,9 +12,10 @@ STATUS_LABELS: dict[str, str] = {
     "processing": "⟳ 处理中",
     "cancelled": "已取消",
     "preparing": "⟳ 预处理中",
+    "prepare_paused": "⏸ 预处理已暂停",
 }
 
-NON_SELECTABLE_STATUSES = frozenset({"preparing", "processing"})
+NON_SELECTABLE_STATUSES = frozenset({"preparing", "processing", "prepare_paused"})
 
 
 def is_importable_docx(file_name: str) -> bool:

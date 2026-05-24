@@ -68,6 +68,26 @@ class TestSplitProgressMapper:
 
         assert ui_event.overall_percent == 100
 
+    def test_same_phase_events_never_move_backward(self):
+        mapper = SplitProgressMapper(doc_id=1, file_name="tables.docx", doc_index=1, doc_total=1)
+
+        first = mapper.to_ui_event(CoreProgressEvent(
+            phase="splitting_tables",
+            phase_label="拆分表格",
+            current=10,
+            total=10,
+            message="10/10",
+        ))
+        second = mapper.to_ui_event(CoreProgressEvent(
+            phase="splitting_tables",
+            phase_label="拆分表格",
+            current=1,
+            total=5,
+            message="1/5",
+        ))
+
+        assert second.overall_percent >= first.overall_percent
+
 
 class TestProgressThrottler:
     def test_phase_change_is_emitted_immediately(self):

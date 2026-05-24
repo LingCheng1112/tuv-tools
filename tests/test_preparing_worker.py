@@ -1,5 +1,7 @@
 """Tests for PreparingWorker — patch worker-local dependencies only."""
 
+import queue
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -130,3 +132,42 @@ class TestPreparingWorker:
         worker = PreparingWorker()
         worker.stop()
         assert worker._queue.qsize() == 1
+
+    @patch("tuv_tools.core.preparing.worker.prepare_single_doc")
+    @patch("tuv_tools.core.preparing.worker._win32com_client")
+    def test_stop_does_not_process_later_queued_items(self, mock_wc, mock_psd):
+        _make_client_mock(mock_wc, mock_psd)
+        worker = PreparingWorker()
+        prepared = []
+        worker.doc_prepared.connect(lambda did: prepared.append(did))
+        worker.add_items([(1, "a.docx"), (2, "b.docx"), (3, "c.docx")])
+
+        call_count = [0]
+
+        def stop_after_first(doc, app):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                worker.stop()
+
+        mock_psd.side_effect = stop_after_first
+
+        worker.run()
+
+        assert prepared == [1]
+        assert mock_psd.call_count == 1
+
+    def test_stop_wakes_idle_worker_without_waiting_full_timeout(self):
+        worker = PreparingWorker()
+        popped = []
+
+        def target():
+            popped.append(worker._pop_item(timeout=60))
+
+        thread = threading.Thread(target=target)
+        thread.start()
+        worker.stop()
+        thread.join(timeout=1)
+
+        assert thread.is_alive() is False
+        assert len(popped) == 1
+        assert popped[0] is not None

@@ -30,6 +30,7 @@ class SplitProgressMapper:
         self._file_name = file_name
         self._doc_index = doc_index
         self._doc_total = max(doc_total, 1)
+        self._last_percent = 0
 
     def to_ui_event(self, event: CoreProgressEvent) -> SplitProgressEvent:
         completed_doc_fraction = max(self._doc_index - 1, 0) / self._doc_total
@@ -38,6 +39,8 @@ class SplitProgressMapper:
         if event.phase == "completed":
             percent = int(round((self._doc_index / self._doc_total) * 100))
         percent = min(max(percent, 0), 100)
+        percent = max(percent, self._last_percent)
+        self._last_percent = percent
 
         return SplitProgressEvent(
             doc_id=self._doc_id,

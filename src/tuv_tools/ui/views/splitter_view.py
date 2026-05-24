@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
@@ -136,6 +137,7 @@ class SplitterView(QWidget):
         self._db = DatabaseManager()
         self._setup_ui()
         self._load_documents()
+        self._resume_preparing_if_needed()
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -168,6 +170,8 @@ class SplitterView(QWidget):
         self._table = DocumentTable()
         self._table.files_dropped.connect(self._add_paths)
         self._table.split_requested.connect(self._split_single)
+        self._table.resume_preparing_requested.connect(self._resume_preparing)
+        self._table.skip_preparing_split_requested.connect(self._skip_preparing_and_split)
         self._table.open_output_requested.connect(self._open_output_dir)
         self._table.double_clicked.connect(self._show_clause_panel)
         self._table.selection_empty.connect(self._on_empty)
@@ -307,6 +311,61 @@ class SplitterView(QWidget):
         if not docs:
             self._on_empty()
 
+    def _resume_preparing_if_needed(self) -> None:
+        """启动时检查是否存在残留 preparing 文档。"""
+        docs = self._db.get_preparing_documents()
+        if not docs:
+            return
+
+        preview = "\n".join(doc["file_name"] for doc in docs[:5])
+        extra = ""
+        if len(docs) > 5:
+            extra = f"\n以及另外 {len(docs) - 5} 个文件"
+        message = (
+            "检测到上次退出时未完成的预处理任务。\n"
+            f"共 {len(docs)} 个文件：\n{preview}{extra}\n\n"
+            "是否继续后台预处理？"
+        )
+        reply = QMessageBox.question(
+            self,
+            "检测到未完成的预处理任务",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            queued: list[tuple[int, str]] = []
+            failed_ids: list[int] = []
+            for doc in docs:
+                file_path = doc["file_path"]
+                if os.path.exists(file_path):
+                    queued.append((doc["id"], file_path))
+                else:
+                    failed_ids.append(doc["id"])
+                    self._db.update_document_status(doc["id"], "failed", error="Source file missing")
+            if queued:
+                self._ensure_preparing_worker()
+                self._preparing_worker.add_items(queued)  # type: ignore[union-attr]
+            for doc in docs:
+                refreshed = self._db.get_document(doc["id"])
+                if refreshed is not None:
+                    self._table.update_row_status(
+                        doc["id"],
+                        refreshed["status"],
+                        refreshed.get("last_section_count"),
+                    )
+            return
+
+        self._db.update_documents_status([doc["id"] for doc in docs], "prepare_paused")
+        for doc in docs:
+            refreshed = self._db.get_document(doc["id"])
+            if refreshed is not None:
+                self._table.update_row_status(
+                    doc["id"],
+                    refreshed["status"],
+                    refreshed.get("last_section_count"),
+                )
+
     def _on_empty(self) -> None:
         self._split_btn.setEnabled(False)
 
@@ -323,6 +382,63 @@ class SplitterView(QWidget):
         self._table.set_single_checked(doc_id)
         self._update_selected_label()
         self._start_batch_split()
+
+    def _resume_preparing(self, doc_id: int) -> None:
+        doc = self._db.get_document(doc_id)
+        if not doc:
+            return
+        self._db.update_document_status(doc_id, "preparing")
+        self._table.update_row_status(doc_id, "preparing")
+        if not os.path.exists(doc["file_path"]):
+            self._db.update_document_status(doc_id, "failed", error="Source file missing")
+            self._table.update_row_status(doc_id, "failed")
+            return
+        self._ensure_preparing_worker()
+        self._preparing_worker.add_items([(doc_id, doc["file_path"])])  # type: ignore[union-attr]
+
+    def _skip_preparing_and_split(self, doc_id: int) -> None:
+        reply = QMessageBox.question(
+            self,
+            "确认跳过预处理",
+            "该文档尚未完成预处理，继续拆分可能导致复选框未统一。是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        doc = self._db.get_document(doc_id)
+        if not doc or not os.path.exists(doc["file_path"]):
+            Toast(self, "没有可拆分的文档")
+            return
+
+        patterns = self._settings.load_inline_clean_patterns()
+        output_root = self._db.get_config("splitter.output_path", "")
+
+        self._progress_title.setVisible(True)
+        self._progress_title.setText("准备拆分文档...")
+        self._progress_detail.setVisible(True)
+        self._progress_detail.setText("")
+        self._progress.setVisible(True)
+        self._progress.setMaximum(100)
+        self._progress.setValue(0)
+        self._cancel_btn.setVisible(True)
+        self._cancel_btn.setEnabled(True)
+        self._cancel_btn.setText("取消")
+        self._split_btn.setEnabled(False)
+        self._split_success = 0
+        self._split_failed = 0
+        self._split_cancelled = False
+        self._split_total = 1
+
+        self._worker = SplitWorker([(doc_id, doc["file_path"], "")], output_root, patterns)
+        self._worker.doc_started.connect(self._on_doc_started)
+        self._worker.progress_detail.connect(self._on_progress_detail)
+        self._worker.doc_done.connect(self._on_doc_done)
+        self._worker.doc_error.connect(self._on_doc_error)
+        self._worker.doc_cancelled.connect(self._on_doc_cancelled)
+        self._worker.batch_cancelled.connect(self._on_batch_cancelled)
+        self._worker.finished.connect(self._on_all_done)
+        self._worker.start()
 
     def _start_batch_split(self) -> None:
         if self._worker and self._worker.isRunning():

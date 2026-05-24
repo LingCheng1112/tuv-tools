@@ -174,6 +174,29 @@ class TestDatabaseManager:
         assert pending["last_split_at"] == completed["last_split_at"]
         assert pending["error_message"] is None
 
+    def test_get_preparing_documents_filters_by_status(self):
+        db, _ = self._new_db()
+        first = db.add_document(str(Path(tempfile.mkdtemp()) / "a.docx"))
+        second = db.add_document(str(Path(tempfile.mkdtemp()) / "b.docx"))
+        db.update_document_status(first, "preparing")
+        db.update_document_status(second, "failed", error="x")
+
+        docs = db.get_preparing_documents()
+
+        assert [doc["id"] for doc in docs] == [first]
+
+    def test_update_documents_status_applies_same_transition_to_many_rows(self):
+        db, _ = self._new_db()
+        first = db.add_document(str(Path(tempfile.mkdtemp()) / "a.docx"))
+        second = db.add_document(str(Path(tempfile.mkdtemp()) / "b.docx"))
+
+        db.update_documents_status([first, second], "prepare_paused")
+
+        first_doc = db.get_document(first)
+        second_doc = db.get_document(second)
+        assert first_doc["status"] == "prepare_paused"
+        assert second_doc["status"] == "prepare_paused"
+
     def test_document_delete(self):
         db, _ = self._new_db()
         file_path = str(Path(tempfile.mkdtemp()) / "test.docx")

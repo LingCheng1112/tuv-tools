@@ -123,3 +123,34 @@ class TestDocumentTable:
         table.dropEvent(FakeDropEvent([direct, folder]))
 
         assert received == [[str(direct), str(nested)]]
+
+    def test_prepare_paused_is_not_selectable(self, qapp, tmp_path):
+        path = tmp_path / "paused.docx"
+        path.write_text("x", encoding="utf-8")
+
+        table = DocumentTable()
+        table.load_documents([_doc(1, path, "prepare_paused")])
+        table.set_all_checked(True)
+
+        checkbox = table.cellWidget(0, table.COL_CHECK)
+        assert isinstance(checkbox, QCheckBox)
+        assert checkbox.isEnabled() is False
+        assert table.checked_ids() == []
+
+    def test_prepare_paused_context_actions_emit_signals(self, qapp, tmp_path):
+        path = tmp_path / "paused.docx"
+        path.write_text("x", encoding="utf-8")
+
+        table = DocumentTable()
+        table.load_documents([_doc(7, path, "prepare_paused")])
+
+        resumed = []
+        skipped = []
+        table.resume_preparing_requested.connect(lambda did: resumed.append(did))
+        table.skip_preparing_split_requested.connect(lambda did: skipped.append(did))
+
+        table.resume_preparing_requested.emit(7)
+        table.skip_preparing_split_requested.emit(7)
+
+        assert resumed == [7]
+        assert skipped == [7]

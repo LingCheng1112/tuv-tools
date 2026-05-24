@@ -27,6 +27,7 @@ class PreparingWorker(QThread):
     def __init__(self):
         super().__init__()
         self._queue: queue.Queue[tuple[int, str] | object] = queue.Queue()
+        self._stop_requested = False
 
     def add_items(self, items: list[tuple[int, str]]) -> None:
         """追加队列项（线程安全，可在主线程调用）"""
@@ -45,7 +46,8 @@ class PreparingWorker(QThread):
         return self._queue.qsize()
 
     def stop(self) -> None:
-        """发出停止信号，处理完当前文档后退出"""
+        """发出停止信号，唤醒空闲等待并在当前文档完成后退出"""
+        self._stop_requested = True
         self._queue.put(_STOP)
 
     def run(self) -> None:
@@ -57,6 +59,8 @@ class PreparingWorker(QThread):
             app.ScreenUpdating = False
 
             while True:
+                if self._stop_requested:
+                    break
                 item = self._pop_item(timeout=self._IDLE_TIMEOUT)
                 if item is None or item is _STOP:
                     break
@@ -75,6 +79,8 @@ class PreparingWorker(QThread):
                             doc.Close()
                         except Exception:
                             pass
+                if self._stop_requested:
+                    break
         finally:
             if app is not None:
                 try:

@@ -119,19 +119,32 @@
 
 ### 2. PreparingWorker 停止语义
 
-`PreparingWorker` 需要从“哨兵排队”改成“显式停止标记 + 当前任务后退出”。
+`PreparingWorker` 不能只从“哨兵排队”改成“纯布尔停止标记”。  
+当前实现空闲时阻塞在 `queue.get(timeout=_IDLE_TIMEOUT)`，如果 `stop()` 只改 `_stop_requested = True` 而不唤醒阻塞等待，窗口关闭时仍可能卡到 30 秒。
+
+因此停止机制必须同时满足两个目标：
+
+1. **唤醒空闲 worker**
+2. **停止后不再消费新的文档队列项**
 
 建议调整：
 
 - 新增 `_stop_requested: bool = False`
-- `stop()` 只设置 `_stop_requested = True`
-- `run()` 主循环在每次准备取新任务前检查 `_stop_requested`
-- 如果已经开始处理某个文档，则允许当前文档执行到结束；当前文档完成后若 `_stop_requested` 为真，立即退出，不再消费下一个队列项
+- 保留 `_STOP`，但语义从“普通排队哨兵”改成“唤醒阻塞等待的停止信号”
+- `stop()` 的行为改为：
+  - 设置 `_stop_requested = True`
+  - 向队列压入 `_STOP`，仅用于唤醒可能阻塞在 `get()` 上的 worker
+- `run()` 的行为改为：
+  - 每次准备开始下一个文档前，先检查 `_stop_requested`
+  - 若取到 `_STOP`，立即退出
+  - 若已经开始处理某个文档，则允许当前文档执行到结束
+  - 当前文档完成后若 `_stop_requested` 为真，立即退出，不再消费任何后续文档
 
 这意味着：
 
 - 关闭窗口时不会强杀当前 Word 操作
-- 但不会再继续消耗剩余队列
+- 空闲 worker 可以被立即唤醒，不会再因为 30 秒 idle timeout 卡住退出
+- 队列中尚未开始的文档不会在本次会话中继续处理
 
 ### 3. 残留预处理恢复流程
 
@@ -144,7 +157,7 @@
 3. 若有残留，弹出模态确认框：
    - 标题：`检测到未完成的预处理任务`
    - 文案说明这些文档来自上次退出时未完成的后台预处理
-   - 显示数量；文件名列表只展示前若干项，避免弹窗过长
+   - 显示数量；文件名列表固定展示前 5 项，若超过 5 项则追加“以及另外 N 个文件”
    - 按钮：`继续处理` / `暂不处理`
 4. 用户选择：
    - `继续处理`：保持这些文档为 `preparing`，重建恢复队列，重新交给 `PreparingWorker`
@@ -172,7 +185,7 @@
 
 因此 `is_selectable_document_status()` 需要把 `prepare_paused` 也纳入不可选集合。
 
-#### 4.3 右键菜单
+#### 4.3 右键菜单与信号契约
 
 对 `prepare_paused` 文档新增两个显式动作：
 
@@ -180,6 +193,15 @@
 - `跳过预处理并拆分`
 
 普通“拆分此文档”入口不对 `prepare_paused` 显示，避免用户误把它当成已完成预处理文档。
+
+为避免 `DocumentTable` 与 `SplitterView` 直接耦合，动作必须通过显式信号上抛，建议新增：
+
+- `resume_preparing_requested = Signal(int)`  
+  语义：请求继续预处理指定 `doc_id`
+- `skip_preparing_split_requested = Signal(int)`  
+  语义：请求对指定 `doc_id` 执行“跳过预处理并拆分”
+
+`DocumentTable` 只负责菜单触发和信号发射，不直接访问数据库，也不直接调用 `SplitterView` 的内部方法。
 
 ### 5. SplitterView 行为设计
 
@@ -195,6 +217,7 @@
 - 就地刷新行状态
 - 确保 `PreparingWorker` 已启动
 - 将该文档加入后台预处理队列
+- 若源文件已不存在，则不进入队列，直接更新为 `failed`
 
 #### 5.3 跳过预处理并拆分
 
@@ -215,6 +238,16 @@
 
 为避免污染普通批量拆分路径，建议为 `SplitterView` 增加一个单独的显式入口方法，而不是在 `checked_ids()` 批量逻辑里塞条件分支。
 
+#### 5.4 批量拆分行为
+
+普通批量拆分入口不处理 `prepare_paused` 文档：
+
+- checkbox 禁用
+- `checked_ids()` 不包含它们
+- `_start_batch_split()` 不为它们添加兜底分支
+
+也就是说，“跳过预处理并拆分”只存在于单文档显式入口，不会被批量操作复用。
+
 ### 6. 进度修复设计
 
 根因在于 `splitting_tables` 事件是“每张表局部计数”，但 UI 把它当“全文件同 phase 全局计数”来映射。
@@ -230,6 +263,14 @@
 - `build_sections()` 预扫描 table blocks，累计总行数
 - `_split_table_into_sections()` 接收一个累计偏移量或 progress context
 - 对外发送的 `CoreProgressEvent("splitting_tables", ...)` 使用全局累计值，而不是表内局部值
+
+统计口径必须写死：
+
+- **总行数 = `build_sections()` 中所有 table block 被 `_split_table_into_sections()` 实际扫描的行数总和**
+- 不是“命中条款的行数”
+- 也不是“导出后保留下来的行数”
+
+这样 `current/total` 才能稳定代表 core 实际完成了多少扫描工作。
 
 这样 `SplitProgressMapper` 看到的 `current/total` 就重新具有单调语义。
 
@@ -267,7 +308,7 @@
 | `src/tuv_tools/core/splitter/parsing.py` | 修改 | `splitting_tables` 进度改为全局累计 |
 | `src/tuv_tools/ui/views/splitter_progress.py` | 修改 | 进度百分比单调保护 |
 | `src/tuv_tools/core/splitter/ui_helpers.py` | 修改 | 状态标签、可选中规则 |
-| `src/tuv_tools/config/database.py` | 可能修改 | 若需要新增轻量查询 helper，可集中放在这里 |
+| `src/tuv_tools/config/database.py` | 修改 | 增加残留预处理查询与批量状态更新 helper |
 | `tests/test_preparing_worker.py` | 修改 | stop 语义回归 |
 | `tests/test_document_table.py` | 修改 | `prepare_paused` 行为回归 |
 | `tests/test_splitter_view.py` | 修改 | 恢复弹窗与显式单文档动作回归 |
@@ -281,10 +322,12 @@
 - `test_preparing_worker.py`
   - stop 后仅允许当前文档完成
   - stop 后剩余未开始项不再触发 `doc_prepared`
+  - worker 空闲阻塞时，`stop()` 能唤醒并退出，不依赖完整 idle timeout
 - `test_document_table.py`
   - `prepare_paused` 状态标签存在
   - `prepare_paused` checkbox 禁用
   - `prepare_paused` 不参与全选
+  - `prepare_paused` 行发出 `resume_preparing_requested` / `skip_preparing_split_requested`
 - `test_splitter_progress.py`
   - 多表 `splitting_tables` 事件映射后整体百分比单调不下降
   - `completed` 仍然收敛到 100%
@@ -296,6 +339,7 @@
   - 启动时有残留，用户选择继续处理时会恢复队列
   - 用户拒绝时状态变为 `prepare_paused`
   - `跳过预处理并拆分` 需要确认框
+  - 普通批量拆分不会带上 `prepare_paused` 文档
 
 ### 集成验证
 
@@ -304,6 +348,15 @@
   - 导入多份文档后立即关闭窗口，重启时验证恢复弹窗
   - 验证拒绝恢复后列表状态与右键菜单
   - 用多表文档观察进度条不再倒退
+
+## 数据访问约定
+
+为避免把恢复逻辑散落在 UI 中，`DatabaseManager` 应至少明确提供以下 helper 之一：
+
+- `get_preparing_documents() -> list[dict[str, Any]]`
+- `update_documents_status(doc_ids: list[int], status: str, error: str | None = None) -> None`
+
+如果实现时不做批量更新 helper，也至少要把“查询残留 preparing 文档”的动作收敛成单独方法，而不是让 `SplitterView` 自己拼 SQL。
 
 ## 风险与约束
 
