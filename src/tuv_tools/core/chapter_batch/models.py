@@ -118,6 +118,8 @@ class BatchImportDocument:
     is_queued: bool = False
     queue_order: int | None = None
     last_error: str = ""
+    created_at: str = ""
+    updated_at: str = ""
 
 
 @dataclass(slots=True)

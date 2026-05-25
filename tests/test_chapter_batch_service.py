@@ -17,6 +17,8 @@ from tuv_tools.core.chapter_batch.models import (
     SplitMode,
 )
 from tuv_tools.core.chapter_batch.repository import ChapterBatchRepository
+from tuv_tools.core.splitter.parsing import build_sections
+from tuv_tools.core.splitter.ui_helpers import extract_clause_test_content
 
 
 def _new_service():
@@ -56,6 +58,76 @@ class TestChapterBatchService:
         assert saved is not None
         assert saved.standard == ""
         assert saved.split_mode == SplitMode.SECTION.value
+
+    def test_import_documents_auto_fills_folder_and_product_type_from_tree(self):
+        service, repo = _new_service()
+
+        class Node:
+            def __init__(self, node_id, pid, name, has_children=False):
+                self.id = node_id
+                self.pid = pid
+                self.folder_name = name
+                self.has_children = has_children
+
+        service._load_full_folder_tree = lambda: [
+            Node(10, 2, "家电", True),
+            Node(11, 10, "60335-2-9", False),
+        ]
+
+        docs = service.import_documents(
+            [r"C:\docs\IEC60335-2-9 fryer.docx"],
+            split_mode=SplitMode.CLAUSE.value,
+        )
+
+        saved = repo.get_document(docs[0].id)
+        assert saved is not None
+        assert saved.standard == "60335-2-9"
+        assert saved.folder_id == 11
+        assert saved.folder_name == "60335-2-9"
+        assert saved.product_type == "家电"
+
+    def test_import_documents_product_type_uses_root_child_ancestor(self):
+        service, repo = _new_service()
+
+        class Node:
+            def __init__(self, node_id, pid, name, has_children=False):
+                self.id = node_id
+                self.pid = pid
+                self.folder_name = name
+                self.has_children = has_children
+
+        service._load_full_folder_tree = lambda: [
+            Node(10, 2, "家电", True),
+            Node(20, 10, "60335", True),
+            Node(21, 20, "60335-2-9", False),
+        ]
+
+        docs = service.import_documents(
+            [r"C:\docs\IEC60335-2-9 fryer.docx"],
+            split_mode=SplitMode.CLAUSE.value,
+        )
+
+        saved = repo.get_document(docs[0].id)
+        assert saved is not None
+        assert saved.folder_id == 21
+        assert saved.folder_name == "60335-2-9"
+        assert saved.product_type == "家电"
+
+    def test_import_documents_keeps_folder_empty_when_tree_has_no_match(self):
+        service, repo = _new_service()
+        service._load_full_folder_tree = lambda: []
+
+        docs = service.import_documents(
+            [r"C:\docs\IEC60335-2-9 fryer.docx"],
+            split_mode=SplitMode.CLAUSE.value,
+        )
+
+        saved = repo.get_document(docs[0].id)
+        assert saved is not None
+        assert saved.standard == "60335-2-9"
+        assert saved.folder_id is None
+        assert saved.folder_name == ""
+        assert saved.product_type == ""
 
     def test_reset_document_for_resplit_clears_local_result_only(self):
         service, repo = _new_service()
@@ -243,6 +315,10 @@ class TestChapterBatchService:
         assert clauses[0].term
         assert Path(clauses[0].source_docx_path).exists()
 
+        sections = build_sections(fixture)
+        expected = [extract_clause_test_content(section.title) or "null" for section in sections]
+        assert [clause.test_content for clause in clauses] == expected
+
     def test_split_document_section_mode_uses_major_version_rows(self, tmp_path):
         service, repo = _new_service()
         service._output_root = tmp_path
@@ -259,3 +335,20 @@ class TestChapterBatchService:
         assert "10" in terms
         assert all("." not in term for term in terms if term.isdigit())
         assert all(clause.test_content == clause.term for clause in clauses)
+
+    def test_clause_mode_uses_null_when_display_content_is_empty(self, tmp_path, monkeypatch):
+        service, repo = _new_service()
+        service._output_root = tmp_path
+        fixture = Path(__file__).parent / "fixtures" / "Test Plan for IEC 60335-2-24.doc.docx"
+        docs = service.import_documents([str(fixture)], split_mode=SplitMode.CLAUSE.value)
+
+        monkeypatch.setattr(
+            "tuv_tools.core.chapter_batch.service.extract_clause_test_content",
+            lambda _raw: "",
+        )
+
+        service.split_document(docs[0].id)
+
+        clauses = repo.get_clauses(docs[0].id)
+        assert len(clauses) > 0
+        assert all(clause.test_content == "null" for clause in clauses)

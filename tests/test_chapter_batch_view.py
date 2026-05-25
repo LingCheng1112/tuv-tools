@@ -131,6 +131,47 @@ def test_checkboxes_update_selected_document_ids_in_list_order(qapp):
     assert view._selected_document_ids == ordered_ids
 
 
+def test_reload_preserves_checked_documents_and_footer_state(qapp):
+    from PySide6.QtWidgets import QCheckBox
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    first_id = repo.create_document(
+        BatchImportDocument(file_path="C:/docs/first.docx", file_name="first.docx", document_status="待确认")
+    )
+    repo.create_document(
+        BatchImportDocument(file_path="C:/docs/second.docx", file_name="second.docx", document_status="待确认")
+    )
+
+    view._load_documents()
+    for row, document in enumerate(view._documents):
+        if document.id != first_id:
+            continue
+        checkbox = view._table.cellWidget(row, 0)
+        assert isinstance(checkbox, QCheckBox)
+        checkbox.setChecked(True)
+        break
+
+    assert view._selected_document_ids == [first_id]
+    assert view._selected_label.text() == "已选 1/2 项"
+    assert view._bulk_confirm_btn.isEnabled() is True
+
+    repo.update_document(first_id, product_type="家电")
+    view._load_documents()
+
+    assert view._selected_document_ids == [first_id]
+    assert view._selected_label.text() == "已选 1/2 项"
+    checked_ids = []
+    for row, document in enumerate(view._documents):
+        checkbox = view._table.cellWidget(row, 0)
+        assert isinstance(checkbox, QCheckBox)
+        if checkbox.isChecked():
+            checked_ids.append(document.id)
+    assert checked_ids == [first_id]
+
+
 def test_double_click_document_opens_drawer(qapp):
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
     from tuv_tools.core.chapter_batch.models import BatchImportClause, BatchImportDocument
@@ -168,7 +209,88 @@ def test_double_click_document_opens_drawer(qapp):
     assert view._drawer.isVisible() is True
     assert view._drawer._title.text() == "sample.docx"
     assert view._drawer._clause_table.rowCount() == 1
-    assert view._drawer._clause_table.item(0, 0).text() == "10.1"
+    assert view._drawer._clause_table.item(0, 1).text() == "10.1"
+
+
+def test_double_click_drawer_uses_opaque_wider_layout(qapp):
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument
+
+    view = ChapterBatchView(repo=_new_repo())
+    view.resize(1200, 760)
+    view.show()
+    qapp.processEvents()
+
+    doc_id = view._repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/layout.docx",
+            file_name="layout.docx",
+            split_mode="条款",
+            document_status="待确认",
+        )
+    )
+    doc = view._repo.get_document(doc_id)
+    assert doc is not None
+    view._documents = [doc]
+    view._table.setRowCount(1)
+
+    view._on_table_double_clicked(0, 0)
+    qapp.processEvents()
+
+    assert view._drawer.isVisible() is True
+    assert view._drawer.width() == view.width()
+    assert view._drawer.height() == view.height()
+    assert view._drawer._panel.width() >= 560
+    assert view._drawer._panel.pos().x() == view.width() - view._drawer._panel.width()
+    assert view._drawer.testAttribute(__import__("PySide6.QtCore").QtCore.Qt.WidgetAttribute.WA_StyledBackground)
+    assert "#chapterBatchDrawer" in view._drawer.styleSheet()
+
+
+def test_clicking_left_of_drawer_closes_it(qapp):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument
+
+    view = ChapterBatchView(repo=_new_repo())
+    view.resize(1200, 760)
+    view.show()
+    qapp.processEvents()
+
+    doc_id = view._repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/click-close.docx",
+            file_name="click-close.docx",
+            split_mode="条款",
+            document_status="待确认",
+        )
+    )
+    doc = view._repo.get_document(doc_id)
+    assert doc is not None
+
+    view._open_drawer_for_documents([doc])
+    qapp.processEvents()
+    assert view._drawer.isVisible() is True
+
+    event = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        QPointF(10, 10),
+        QPointF(10, 10),
+        QPointF(10, 10),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    assert view._drawer.eventFilter(view._drawer._dismiss_zone, event) is True
+    assert view._drawer.isVisible() is False
+
+
+def test_drawer_close_button_uses_cross_symbol(qapp):
+    from tuv_tools.ui.widgets.chapter_batch_drawer import ChapterBatchDrawer
+
+    drawer = ChapterBatchDrawer()
+
+    assert drawer._close_btn.text() == "×"
 
 
 def test_bulk_confirm_opens_drawer_with_selected_documents_in_table_order(qapp):
@@ -202,21 +324,20 @@ def test_bulk_confirm_opens_drawer_with_selected_documents_in_table_order(qapp):
     view._open_bulk_confirm()
 
     assert view._drawer.isVisible() is True
-    assert view._drawer._tabs.count() == 2
-    assert view._drawer._tabs.item(0).text() == view._documents[0].file_name
-    assert view._drawer._tabs.item(1).text() == view._documents[1].file_name
+    assert view._drawer.current_document() is not None
+    assert view._drawer.current_document().id == view._documents[0].id
 
 
-def test_drawer_only_exposes_save_confirm_button(qapp):
+def test_drawer_exposes_save_and_upload_buttons(qapp):
     from PySide6.QtWidgets import QPushButton
     from tuv_tools.ui.widgets.chapter_batch_drawer import ChapterBatchDrawer
 
     drawer = ChapterBatchDrawer()
     button_texts = [button.text() for button in drawer.findChildren(QPushButton)]
 
-    assert "保存确认" in button_texts
-    assert "直接上传" not in button_texts
-    assert "稍后处理" not in button_texts
+    assert "保存" in button_texts
+    assert "上传" in button_texts
+    assert "保存确认" not in button_texts
 
 
 def test_save_confirm_updates_local_document_and_marks_pending_create(qapp, monkeypatch):
@@ -253,12 +374,7 @@ def test_save_confirm_updates_local_document_and_marks_pending_create(qapp, monk
         }
     )
 
-    monkeypatch.setattr(
-        "PySide6.QtWidgets.QMessageBox.question",
-        lambda *args, **kwargs: __import__("PySide6.QtWidgets").QtWidgets.QMessageBox.StandardButton.No,
-    )
-
-    view._on_save_confirm_requested([doc_id])
+    view._save_documents([doc_id])
 
     saved = repo.get_document(doc_id)
     assert saved is not None
@@ -290,7 +406,7 @@ def test_save_confirm_requires_required_fields(qapp, monkeypatch):
         lambda *args, **kwargs: warnings.append(args),
     )
 
-    view._on_save_confirm_requested([doc_id])
+    view._save_documents([doc_id])
 
     saved = repo.get_document(doc_id)
     assert saved is not None
@@ -342,12 +458,7 @@ def test_save_confirm_allows_user_to_skip_duplicate_clause(qapp, monkeypatch):
         "_ask_duplicate_decision",
         lambda clause: "skip",
     )
-    monkeypatch.setattr(
-        "PySide6.QtWidgets.QMessageBox.question",
-        lambda *args, **kwargs: __import__("PySide6.QtWidgets").QtWidgets.QMessageBox.StandardButton.No,
-    )
-
-    view._on_save_confirm_requested([doc_id])
+    view._save_documents([doc_id])
 
     clause = repo.get_clauses(doc_id)[0]
     assert clause.duplicate_flag is True
@@ -378,8 +489,8 @@ def test_save_confirm_updates_clause_edits(qapp, monkeypatch):
     view._documents = [doc]
     view._drawer.set_documents([doc])
     view._load_drawer_clauses(doc_id)
-    view._drawer._clause_table.item(0, 0).setText("10.2")
-    view._drawer._clause_table.item(0, 1).setText("Updated")
+    view._drawer._clause_table.item(0, 1).setText("10.2")
+    view._drawer._clause_table.item(0, 2).setText("Updated")
     view._drawer._document_form.load_document(
         {
             "standard": "60335-2-9",
@@ -392,12 +503,7 @@ def test_save_confirm_updates_clause_edits(qapp, monkeypatch):
             "specific_product": "",
         }
     )
-    monkeypatch.setattr(
-        "PySide6.QtWidgets.QMessageBox.question",
-        lambda *args, **kwargs: __import__("PySide6.QtWidgets").QtWidgets.QMessageBox.StandardButton.No,
-    )
-
-    view._on_save_confirm_requested([doc_id])
+    view._save_documents([doc_id])
 
     clause = repo.get_clauses(doc_id)[0]
     assert clause.term == "10.2"
@@ -542,7 +648,7 @@ def test_save_confirm_slightly_later_keeps_document_not_queued(qapp, monkeypatch
         lambda *args, **kwargs: __import__("PySide6.QtWidgets").QtWidgets.QMessageBox.StandardButton.No,
     )
 
-    view._on_save_confirm_requested([doc_id])
+    view._save_documents([doc_id])
 
     saved = repo.get_document(doc_id)
     assert saved is not None
@@ -550,9 +656,9 @@ def test_save_confirm_slightly_later_keeps_document_not_queued(qapp, monkeypatch
     assert saved.is_queued is False
 
 
-def test_save_confirm_direct_upload_starts_ready_documents(qapp, monkeypatch):
+def test_upload_requested_starts_checked_clauses(qapp, monkeypatch):
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
-    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+    from tuv_tools.core.chapter_batch.models import BatchImportClause, BatchImportDocument, DocumentStatus
 
     repo = _new_repo()
     view = ChapterBatchView(repo=repo)
@@ -582,19 +688,25 @@ def test_save_confirm_direct_upload_starts_ready_documents(qapp, monkeypatch):
             "specific_product": "",
         }
     )
+    repo.replace_clauses(
+        doc_id,
+        [BatchImportClause(sort_index=0, term="10.1", test_content="Heating", source_docx_path="C:/out/10_1.docx")],
+    )
+    view._load_drawer_clauses(doc_id)
     started = []
-    monkeypatch.setattr(view, "_ask_post_confirm_action", lambda: "upload")
-    monkeypatch.setattr(view, "_start_documents", lambda document_ids: started.append(document_ids))
+    monkeypatch.setattr(view, "_start_clause_upload", lambda document_id, clause_ids: started.append((document_id, clause_ids)))
 
-    view._on_save_confirm_requested([doc_id])
+    clause_id = repo.get_clauses(doc_id)[0].id
+    assert clause_id is not None
+    view._on_upload_requested(doc_id, [clause_id])
 
     saved = repo.get_document(doc_id)
     assert saved is not None
-    assert started == [[doc_id]]
-    assert saved.is_queued is True
+    assert started == [(doc_id, [clause_id])]
+    assert saved.is_queued is False
 
 
-def test_save_confirm_cancel_keeps_saved_data_without_queue(qapp, monkeypatch):
+def test_save_documents_keeps_saved_data_without_queue(qapp, monkeypatch):
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
     from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
 
@@ -623,9 +735,7 @@ def test_save_confirm_cancel_keeps_saved_data_without_queue(qapp, monkeypatch):
             "specific_product": "",
         }
     )
-    monkeypatch.setattr(view, "_ask_post_confirm_action", lambda: "cancel")
-
-    view._on_save_confirm_requested([doc_id])
+    view._save_documents([doc_id])
 
     saved = repo.get_document(doc_id)
     assert saved is not None
@@ -634,7 +744,7 @@ def test_save_confirm_cancel_keeps_saved_data_without_queue(qapp, monkeypatch):
     assert saved.is_queued is False
 
 
-def test_bulk_confirm_preserves_fields_per_document_across_tabs(qapp, monkeypatch):
+def test_bulk_confirm_opens_first_selected_document(qapp):
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
     from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
 
@@ -665,47 +775,10 @@ def test_bulk_confirm_preserves_fields_per_document_across_tabs(qapp, monkeypatc
     view._set_selected_document_ids([first_id, second_id])
     view._open_bulk_confirm()
 
-    view._drawer._document_form.load_document(
-        {
-            "standard": "60335-2-9",
-            "folder_id": 101,
-            "folder_name": "60335-2-9",
-            "product_type": "家电",
-            "plan_sr": "1",
-            "standard_version": "",
-            "chapter_version": "1.0",
-            "specific_product": "",
-        }
-    )
+    current = view._drawer.current_document()
 
-    view._drawer._tabs.setCurrentRow(1)
-    view._drawer._document_form.load_document(
-        {
-            "standard": "60335-2-3",
-            "folder_id": 202,
-            "folder_name": "60335-2-3",
-            "product_type": "厨房",
-            "plan_sr": "2",
-            "standard_version": "",
-            "chapter_version": "1.1",
-            "specific_product": "",
-        }
-    )
-
-    monkeypatch.setattr(
-        "PySide6.QtWidgets.QMessageBox.question",
-        lambda *args, **kwargs: __import__("PySide6.QtWidgets").QtWidgets.QMessageBox.StandardButton.No,
-    )
-
-    view._on_save_confirm_requested([first_id, second_id])
-
-    first_saved = repo.get_document(first_id)
-    second_saved = repo.get_document(second_id)
-    assert first_saved is not None and second_saved is not None
-    assert first_saved.standard == "60335-2-9"
-    assert first_saved.folder_id == 101
-    assert second_saved.standard == "60335-2-3"
-    assert second_saved.folder_id == 202
+    assert current is not None
+    assert current.id == first_id
 
 
 def test_document_form_loads_public_fields(qapp):
@@ -730,6 +803,32 @@ def test_document_form_loads_public_fields(qapp):
     assert form._folder_selector.selected_folder() == (1061, "60335-2-9")
 
 
+def test_bulk_workspace_drawer_shows_auto_filled_folder_and_product_type(qapp):
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/auto.docx",
+            file_name="auto.docx",
+            standard="60335-2-9",
+            folder_id=1061,
+            folder_name="60335-2-9",
+            product_type="家电",
+            document_status="待确认",
+        )
+    )
+    doc = repo.get_document(doc_id)
+    assert doc is not None
+
+    view._open_drawer_for_documents([doc])
+
+    assert view._drawer._document_form._folder_selector.selected_folder() == (1061, "60335-2-9")
+    assert view._drawer._document_form._product_type_edit.text() == "家电"
+
+
 def test_clause_table_loads_term_and_test_content(qapp):
     from tuv_tools.ui.widgets.chapter_batch_clause_table import ChapterBatchClauseTable
 
@@ -748,10 +847,19 @@ def test_clause_table_loads_term_and_test_content(qapp):
     )
 
     assert table.rowCount() == 1
-    assert table.item(0, 0).text() == "10.1"
-    assert table.item(0, 1).text() == "Heating"
-    assert table.item(0, 4).text() == "是"
-    assert table.item(0, 5).text() == "same"
+    assert table.item(0, 1).text() == "10.1"
+    assert table.item(0, 2).text() == "Heating"
+    assert table.columnCount() == 5
+    assert table.item(0, 1).data(__import__("PySide6.QtCore").QtCore.Qt.ItemDataRole.UserRole + 2) is True
+    assert table.item(0, 1).data(__import__("PySide6.QtCore").QtCore.Qt.ItemDataRole.UserRole + 3) == "same"
+
+
+def test_splitter_overlay_and_batch_service_share_clause_content_rule():
+    from tuv_tools.core.splitter.ui_helpers import extract_clause_test_content
+
+    raw = "10.1 | ☐ Ambient temperature : 23°C | Heating test"
+
+    assert extract_clause_test_content(raw) == "Heating test"
 
 
 def test_clause_table_shows_non_draft_backend_clause_as_readonly(qapp):
@@ -776,9 +884,9 @@ def test_clause_table_shows_non_draft_backend_clause_as_readonly(qapp):
         ]
     )
 
-    assert bool(table.item(0, 0).flags() & Qt.ItemFlag.ItemIsEditable) is False
     assert bool(table.item(0, 1).flags() & Qt.ItemFlag.ItemIsEditable) is False
-    assert table.item(0, 5).text() == "后端非草稿，禁止编辑"
+    assert bool(table.item(0, 2).flags() & Qt.ItemFlag.ItemIsEditable) is False
+    assert table.item(0, 1).data(Qt.ItemDataRole.UserRole + 6) == "后端非草稿，禁止编辑"
 
 
 def test_running_document_disables_form_and_save_button(qapp):
@@ -825,9 +933,19 @@ def test_clause_with_unknown_backend_status_is_readonly_in_table(qapp):
         ]
     )
 
-    assert bool(table.item(0, 0).flags() & Qt.ItemFlag.ItemIsEditable) is False
     assert bool(table.item(0, 1).flags() & Qt.ItemFlag.ItemIsEditable) is False
-    assert table.item(0, 5).text() == "后端状态未知，禁止编辑"
+    assert bool(table.item(0, 2).flags() & Qt.ItemFlag.ItemIsEditable) is False
+    assert table.item(0, 1).data(Qt.ItemDataRole.UserRole + 6) == "后端状态未知，禁止编辑"
+
+
+def test_clause_table_includes_view_error_action(qapp):
+    from tuv_tools.core.chapter_batch.models import ClauseStatus
+    from tuv_tools.ui.widgets.chapter_batch_clause_table import ChapterBatchClauseTable
+
+    table = ChapterBatchClauseTable()
+
+    assert "查看错误信息" in table.available_actions_for_status(ClauseStatus.UPLOAD_FAILED.value, editable=True)
+    assert "查看错误信息" in table.available_actions_for_status(ClauseStatus.UPLOAD_FAILED.value, editable=False)
 
 
 def test_clause_table_filters_mutating_actions_when_readonly(qapp):
@@ -839,8 +957,12 @@ def test_clause_table_filters_mutating_actions_when_readonly(qapp):
     assert table.available_actions_for_status(ClauseStatus.UPLOAD_FAILED.value, editable=False) == [
         "打开本地 docx",
         "打开后端 chapter 记录",
+        "查看错误信息",
     ]
-    assert table.available_actions_for_status(ClauseStatus.SKIPPED.value, editable=False) == ["打开本地 docx"]
+    assert table.available_actions_for_status(ClauseStatus.SKIPPED.value, editable=False) == [
+        "打开本地 docx",
+        "查看错误信息",
+    ]
 
 
 def test_on_clause_action_requested_ignores_mutating_action_for_readonly_clause(qapp):
@@ -941,10 +1063,9 @@ def test_save_confirm_skips_running_documents_in_bulk(qapp, monkeypatch):
             "specific_product": "",
         },
     }
-    monkeypatch.setattr(view, "_ask_post_confirm_action", lambda: "later")
     monkeypatch.setattr(view, "_resolve_duplicate_candidates", lambda document_ids: document_ids == [ready_id])
 
-    view._on_save_confirm_requested([ready_id, running_id])
+    view._save_documents([ready_id, running_id])
 
     saved_ready = repo.get_document(ready_id)
     saved_running = repo.get_document(running_id)
@@ -1018,10 +1139,9 @@ def test_save_confirm_rechecks_repo_state_for_running_documents(qapp, monkeypatc
         },
     }
     repo.update_document(running_id, document_status=DocumentStatus.UPLOADING.value)
-    monkeypatch.setattr(view, "_ask_post_confirm_action", lambda: "later")
     monkeypatch.setattr(view, "_resolve_duplicate_candidates", lambda document_ids: True)
 
-    view._on_save_confirm_requested([ready_id, running_id])
+    view._save_documents([ready_id, running_id])
 
     saved_ready = repo.get_document(ready_id)
     saved_running = repo.get_document(running_id)
@@ -1032,7 +1152,7 @@ def test_save_confirm_rechecks_repo_state_for_running_documents(qapp, monkeypatc
     assert saved_running.document_status == DocumentStatus.UPLOADING.value
 
 
-def test_save_confirm_skips_post_confirm_prompt_when_service_filters_all_ready_ids(qapp, monkeypatch):
+def test_save_documents_skips_running_document(qapp, monkeypatch):
     from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
@@ -1063,13 +1183,10 @@ def test_save_confirm_skips_post_confirm_prompt_when_service_filters_all_ready_i
         }
     )
     repo.update_document(doc_id, document_status=DocumentStatus.UPLOADING.value)
-    asked = []
     monkeypatch.setattr(view, "_resolve_duplicate_candidates", lambda document_ids: True)
-    monkeypatch.setattr(view, "_ask_post_confirm_action", lambda: asked.append(True) or "later")
 
-    view._on_save_confirm_requested([doc_id])
+    view._save_documents([doc_id])
 
-    assert asked == []
     saved = repo.get_document(doc_id)
     assert saved is not None
     assert saved.document_status == DocumentStatus.UPLOADING.value
@@ -1104,11 +1221,11 @@ def test_save_confirm_does_not_apply_stale_clause_cache_after_document_locks(qap
     assert target_doc is not None and other_doc is not None
 
     view._documents = [target_doc, other_doc]
-    view._drawer.set_documents([target_doc, other_doc])
+    view._drawer.set_documents([target_doc])
     view._load_drawer_clauses(target_id)
-    view._drawer._clause_table.item(0, 1).setText("Edited while unlocked")
+    view._drawer._clause_table.item(0, 2).setText("Edited while unlocked")
     view._repo.update_document(target_id, document_status=DocumentStatus.UPLOADING.value)
-    view._drawer._tabs.setCurrentRow(1)
+    view._drawer.set_documents([other_doc])
     view._drawer._document_form.load_document(
         {
             "standard": "60335-2-9",
@@ -1121,10 +1238,9 @@ def test_save_confirm_does_not_apply_stale_clause_cache_after_document_locks(qap
             "specific_product": "",
         }
     )
-    monkeypatch.setattr(view, "_ask_post_confirm_action", lambda: "later")
     monkeypatch.setattr(view, "_resolve_duplicate_candidates", lambda document_ids: True)
 
-    view._on_save_confirm_requested([other_id])
+    view._save_documents([other_id])
 
     clause = repo.get_clauses(target_id)[0]
     assert clause.test_content == "Original"
@@ -1192,8 +1308,8 @@ def test_clause_table_exports_edited_rows(qapp):
             }
         ]
     )
-    table.item(0, 0).setText("10.2")
-    table.item(0, 1).setText("Updated")
+    table.item(0, 1).setText("10.2")
+    table.item(0, 2).setText("Updated")
 
     assert table.to_clause_updates() == {10: {"term": "10.2", "test_content": "Updated"}}
 
@@ -1208,6 +1324,7 @@ def test_clause_table_actions_follow_status(qapp):
     assert "重试上传" in table.available_actions_for_status(ClauseStatus.UPLOAD_FAILED.value)
     assert "恢复跳过" in table.available_actions_for_status(ClauseStatus.SKIPPED.value)
     assert "打开后端 chapter 记录" in table.available_actions_for_status(ClauseStatus.PENDING_UPLOAD.value)
+    assert "上传" in table.available_actions_for_status(ClauseStatus.PENDING_CREATE.value)
 
 
 def test_clause_local_actions_update_status(qapp, monkeypatch):
@@ -1306,3 +1423,103 @@ def test_open_backend_chapter_record_reports_id(qapp, monkeypatch):
 
     assert messages
     assert "123" in messages[0][2]
+
+
+def test_on_save_requested_respects_user_confirmation(qapp, monkeypatch):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/confirm-cancel.docx",
+            file_name="confirm-cancel.docx",
+            document_status=DocumentStatus.PENDING_CONFIRM.value,
+        )
+    )
+    doc = repo.get_document(doc_id)
+    assert doc is not None
+    view._drawer.set_documents([doc])
+    view._drawer._document_form.load_document(
+        {
+            "standard": "60335-2-9",
+            "folder_id": 1061,
+            "folder_name": "60335-2-9",
+            "product_type": "家电",
+            "plan_sr": "1",
+            "standard_version": "",
+            "chapter_version": "1.0",
+            "specific_product": "",
+        }
+    )
+    monkeypatch.setattr(
+        "PySide6.QtWidgets.QMessageBox.question",
+        lambda *args, **kwargs: __import__("PySide6.QtWidgets").QtWidgets.QMessageBox.StandardButton.No,
+    )
+
+    view._on_save_requested(doc_id)
+
+    saved = repo.get_document(doc_id)
+    assert saved is not None
+    assert saved.document_status == DocumentStatus.PENDING_CONFIRM.value
+
+
+def test_clause_table_supports_check_and_select_all(qapp):
+    from tuv_tools.ui.widgets.chapter_batch_clause_table import ChapterBatchClauseTable
+
+    table = ChapterBatchClauseTable()
+    table.load_clauses(
+        [
+            {"id": 1, "term": "10.1", "test_content": "Heating", "clause_status": "待创建", "chapter_id": None},
+            {"id": 2, "term": "10.2", "test_content": "Abnormal", "clause_status": "待上传", "chapter_id": 22},
+        ]
+    )
+
+    table.set_checked_clause_ids([2])
+    assert table.checked_clause_ids() == [2]
+
+    table.set_all_checked(True)
+    assert table.checked_clause_ids() == [1, 2]
+
+
+def test_clause_upload_action_starts_single_clause_upload(qapp, monkeypatch):
+    from tuv_tools.core.chapter_batch.models import BatchImportClause, BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/single-upload.docx",
+            file_name="single-upload.docx",
+            document_status=DocumentStatus.PENDING_CONFIRM.value,
+        )
+    )
+    repo.replace_clauses(
+        doc_id,
+        [BatchImportClause(sort_index=0, term="10.1", test_content="Heating", source_docx_path="C:/out/10_1.docx")],
+    )
+    doc = repo.get_document(doc_id)
+    assert doc is not None
+    view._drawer.set_documents([doc])
+    view._drawer._document_form.load_document(
+        {
+            "standard": "60335-2-9",
+            "folder_id": 1061,
+            "folder_name": "60335-2-9",
+            "product_type": "家电",
+            "plan_sr": "1",
+            "standard_version": "",
+            "chapter_version": "1.0",
+            "specific_product": "",
+        }
+    )
+    clause_id = repo.get_clauses(doc_id)[0].id
+    assert clause_id is not None
+    started = []
+    monkeypatch.setattr(view, "_start_clause_upload", lambda document_id, clause_ids: started.append((document_id, clause_ids)))
+
+    view._on_clause_action_requested("上传", clause_id)
+
+    assert started == [(doc_id, [clause_id])]

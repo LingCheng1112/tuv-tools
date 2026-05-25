@@ -7,9 +7,11 @@ import subprocess
 
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QHeaderView,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -80,10 +82,53 @@ class ChapterBatchExecutionWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class ChapterClauseExecutionWorker(QThread):
+    """后台执行单文档内指定条款的创建和上传。"""
+
+    finished_ok = Signal()
+    failed = Signal(str)
+
+    def __init__(self, repo: ChapterBatchRepository, document_id: int, clause_ids: list[int]):
+        super().__init__()
+        self._repo = repo
+        self._document_id = document_id
+        self._clause_ids = clause_ids
+        self._controller = ChapterBatchExecutionController()
+
+    def request_cancel(self) -> None:
+        self._controller.request_cancel()
+
+    def run(self) -> None:
+        try:
+            settings = AppSettings()
+            config = settings.load_api_config()
+            if config is None:
+                raise RuntimeError("请先在设置中配置后端接口账号。")
+            client = TuvClient(config.base_url, config.request_timeout)
+            if not auto_login(client, config):
+                raise RuntimeError("后端登录失败。")
+            executor = ChapterBatchExecutor(
+                self._repo,
+                create_chapter=lambda chapter: create_chapter_and_return_id(client, chapter),
+                upload_chapter_doc=lambda chapter_id, path: import_chapter_doc(client, chapter_id, path),
+                controller=self._controller,
+            )
+            executor.run_clauses(self._document_id, self._clause_ids)
+            self.finished_ok.emit()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class ChapterBatchView(QWidget):
     """条款批量导入工作台的最小页面骨架。"""
 
+    COL_CHECK = 0
     COL_FILE_NAME = 1
+    COL_STANDARD = 2
+    COL_MODE = 3
+    COL_STATUS = 4
+    COL_SUMMARY = 5
+    COL_UPDATED_AT = 6
     VIEW_ONLY_CLAUSE_ACTIONS = {"打开本地 docx", "打开后端 chapter 记录"}
 
     def __init__(self, repo: ChapterBatchRepository | None = None):
@@ -93,39 +138,49 @@ class ChapterBatchView(QWidget):
         self._documents = []
         self._selected_document_ids: list[int] = []
         self._execution_worker: ChapterBatchExecutionWorker | None = None
+        self._clause_execution_worker: ChapterClauseExecutionWorker | None = None
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
 
+        title_row = QHBoxLayout()
         title = QLabel("条款批量导入")
         title.setStyleSheet("font-size: 18px; font-weight: bold;")
-        layout.addWidget(title)
+        title_row.addWidget(title)
+        title_row.addStretch()
+        layout.addLayout(title_row)
 
         toolbar = QHBoxLayout()
         self._import_file_btn = QPushButton("导入文件")
         self._import_dir_btn = QPushButton("导入文件夹")
-        self._bulk_confirm_btn = QPushButton("批量确认")
-        self._start_btn = QPushButton("开始执行")
-        self._delete_btn = QPushButton("删除记录")
         toolbar.addWidget(self._import_file_btn)
         toolbar.addWidget(self._import_dir_btn)
-        toolbar.addWidget(self._bulk_confirm_btn)
-        toolbar.addWidget(self._start_btn)
-        toolbar.addWidget(self._delete_btn)
-        toolbar.addStretch()
+        toolbar.addSpacing(16)
+
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("搜索文档名或标准号...")
+        self._search_edit.setClearButtonEnabled(True)
+        toolbar.addWidget(self._search_edit, stretch=1)
         layout.addLayout(toolbar)
 
         filters = QHBoxLayout()
-        self._search_edit = QLineEdit()
-        self._search_edit.setPlaceholderText("搜索文档名 / 标准")
         self._status_filter = QComboBox()
-        self._status_filter.addItems(["全部", "待确认", "待创建", "待上传", "部分完成", "失败", "已完成"])
+        self._status_filter.addItems(
+            [
+                "全部",
+                DocumentStatus.PENDING_CONFIRM.value,
+                DocumentStatus.PENDING_CREATE.value,
+                DocumentStatus.PENDING_UPLOAD.value,
+                DocumentStatus.PARTIAL.value,
+                DocumentStatus.FAILED.value,
+                DocumentStatus.COMPLETED.value,
+            ]
+        )
         self._mode_filter = QComboBox()
         self._mode_filter.addItems(["全部", "章节", "条款"])
-        self._display_filter = QComboBox()
-        self._display_filter.addItems(["全部", "指定状态"])
-        filters.addWidget(self._search_edit, stretch=1)
         filters.addWidget(self._status_filter)
         filters.addWidget(self._mode_filter)
-        filters.addWidget(self._display_filter)
+        filters.addStretch()
         layout.addLayout(filters)
 
         self._search_edit.textChanged.connect(self._load_documents)
@@ -133,14 +188,37 @@ class ChapterBatchView(QWidget):
         self._mode_filter.currentIndexChanged.connect(self._load_documents)
 
         self._table = QTableWidget()
-        self._table.setColumnCount(7)
-        self._table.setHorizontalHeaderLabels(
-            ["选择", "文档名", "标准", "模式", "文档状态", "条款结果摘要", "更新时间"]
-        )
+        self._configure_table()
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.cellDoubleClicked.connect(self._on_table_double_clicked)
         self._table.customContextMenuRequested.connect(self._show_document_context_menu)
         layout.addWidget(self._table, stretch=1)
+
+        bottom = QHBoxLayout()
+        self._select_all_cb = QCheckBox("全选")
+        self._select_all_cb.setStyleSheet(CHECKBOX_STYLE)
+        self._select_all_cb.toggled.connect(self._on_select_all_toggled)
+        bottom.addWidget(self._select_all_cb)
+
+        self._selected_label = QLabel("已选 0/0 项")
+        bottom.addWidget(self._selected_label)
+        bottom.addStretch()
+
+        self._bulk_confirm_btn = QPushButton("批量确认")
+        self._bulk_confirm_btn.setStyleSheet(self._action_btn_style("#6a6d72"))
+        self._bulk_confirm_btn.setEnabled(False)
+        bottom.addWidget(self._bulk_confirm_btn)
+
+        self._start_btn = QPushButton("开始执行")
+        self._start_btn.setStyleSheet(self._action_btn_style("#4a9eff"))
+        self._start_btn.setEnabled(False)
+        bottom.addWidget(self._start_btn)
+
+        self._delete_btn = QPushButton("删除记录")
+        self._delete_btn.setStyleSheet(self._action_btn_style("#d9534f"))
+        self._delete_btn.setEnabled(False)
+        bottom.addWidget(self._delete_btn)
+        layout.addLayout(bottom)
 
         self._import_file_btn.clicked.connect(self._import_files)
         self._import_dir_btn.clicked.connect(self._import_dir)
@@ -150,34 +228,186 @@ class ChapterBatchView(QWidget):
 
         self._drawer = ChapterBatchDrawer(self)
         self._drawer.document_selected.connect(self._load_drawer_clauses)
-        self._drawer.save_confirm_requested.connect(self._on_save_confirm_requested)
+        self._drawer.save_requested.connect(self._on_save_requested)
+        self._drawer.upload_requested.connect(self._on_upload_requested)
         self._drawer.clause_action_requested.connect(self._on_clause_action_requested)
         self._drawer.hide()
 
         self._load_documents()
 
+    def _configure_table(self) -> None:
+        self._table.setColumnCount(7)
+        self._table.setHorizontalHeaderLabels(
+            ["", "文档名", "标准", "拆分方式", "文档状态", "条款结果摘要", "更新时间"]
+        )
+        header = self._table.horizontalHeader()
+        header.setSectionResizeMode(self.COL_FILE_NAME, QHeaderView.ResizeMode.Stretch)
+        self._table.setColumnWidth(self.COL_CHECK, 36)
+        self._table.setColumnWidth(self.COL_STANDARD, 120)
+        self._table.setColumnWidth(self.COL_MODE, 90)
+        self._table.setColumnWidth(self.COL_STATUS, 110)
+        self._table.setColumnWidth(self.COL_SUMMARY, 220)
+        self._table.setColumnWidth(self.COL_UPDATED_AT, 145)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setAlternatingRowColors(True)
+        self._table.setShowGrid(False)
+        self._table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self._table.setStyleSheet(
+            """
+            QTableWidget {
+                background-color: #2b2d30;
+                alternate-background-color: #303336;
+                color: #dcdcdc;
+                border: none;
+                font-size: 13px;
+                outline: none;
+            }
+            QTableWidget::item {
+                padding: 8px 10px;
+                border: none;
+            }
+            QTableWidget::item:selected {
+                background-color: #3c3f41;
+                color: #ffffff;
+            }
+            QHeaderView::section {
+                background-color: #2b2d30;
+                color: #999;
+                border: none;
+                border-bottom: 2px solid #4a4d50;
+                padding: 8px 10px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            """
+        )
+
+    @staticmethod
+    def _action_btn_style(color: str) -> str:
+        return f"""
+            QPushButton {{
+                background-color: {color};
+                color: white;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 16px;
+            }}
+            QPushButton:hover {{ background-color: {color}; opacity: 0.9; }}
+            QPushButton:disabled {{ background-color: #666666; }}
+        """
+
+    @staticmethod
+    def _make_item(
+        text: str,
+        tooltip: str = "",
+        *,
+        alignment: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignCenter,
+    ) -> QTableWidgetItem:
+        item = QTableWidgetItem(text)
+        item.setTextAlignment(alignment)
+        if tooltip:
+            item.setToolTip(tooltip)
+        return item
+
+    @staticmethod
+    def _build_summary_text(document) -> str:
+        return (
+            f"成功 {document.success_clause_count} / "
+            f"失败 {document.failed_clause_count} / "
+            f"跳过 {document.skipped_clause_count}"
+        )
+
+    @staticmethod
+    def _build_status_tooltip(document) -> str:
+        parts = [document.document_status]
+        if document.is_queued:
+            parts.append("已加入当前执行队列")
+        if document.last_error:
+            parts.append(f"错误：{document.last_error}")
+        return "\n".join(parts)
+
     def _load_documents(self) -> None:
+        selected = {document_id for document_id in self._selected_document_ids if document_id is not None}
         status = self._status_filter.currentText()
         mode = self._mode_filter.currentText()
         keyword = self._search_edit.text().strip()
         self._documents = self._repo.list_documents(status=status, split_mode=mode, keyword=keyword)
+        self._selected_document_ids = [doc.id for doc in self._documents if doc.id in selected]
+        selected = set(self._selected_document_ids)
+
+        self._table.clearContents()
         self._table.setRowCount(len(self._documents))
         for row, document in enumerate(self._documents):
             checkbox = QCheckBox()
             checkbox.setStyleSheet(CHECKBOX_STYLE)
+            checkbox.blockSignals(True)
+            checkbox.setChecked(document.id in selected)
+            checkbox.blockSignals(False)
             checkbox.toggled.connect(lambda checked, doc_id=document.id: self._on_document_checked(doc_id, checked))
-            self._table.setCellWidget(row, 0, checkbox)
-            self._table.setItem(row, 1, QTableWidgetItem(document.file_name))
-            self._table.setItem(row, 2, QTableWidgetItem(document.standard))
-            self._table.setItem(row, 3, QTableWidgetItem(document.split_mode))
-            self._table.setItem(row, 4, QTableWidgetItem(document.document_status))
-            summary = (
-                f"成功 {document.success_clause_count} / "
-                f"失败 {document.failed_clause_count} / "
-                f"跳过 {document.skipped_clause_count}"
+            self._table.setCellWidget(row, self.COL_CHECK, checkbox)
+            self._table.setItem(
+                row,
+                self.COL_FILE_NAME,
+                self._make_item(
+                    document.file_name or "-",
+                    document.file_path or document.file_name,
+                    alignment=Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                ),
             )
-            self._table.setItem(row, 5, QTableWidgetItem(summary))
-            self._table.setItem(row, 6, QTableWidgetItem(""))
+            standard = document.standard or "-"
+            self._table.setItem(row, self.COL_STANDARD, self._make_item(standard, standard))
+            self._table.setItem(row, self.COL_MODE, self._make_item(document.split_mode or "-"))
+            self._table.setItem(
+                row,
+                self.COL_STATUS,
+                self._make_item(document.document_status or "-", self._build_status_tooltip(document)),
+            )
+            summary = self._build_summary_text(document)
+            self._table.setItem(
+                row,
+                self.COL_SUMMARY,
+                self._make_item(
+                    summary,
+                    document.last_error or summary,
+                    alignment=Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                ),
+            )
+            updated_at = document.updated_at or "-"
+            display_time = updated_at[:16] if len(updated_at) > 16 else updated_at
+            self._table.setItem(row, self.COL_UPDATED_AT, self._make_item(display_time, updated_at))
+        self._update_selected_label()
+
+    def _update_selected_label(self) -> None:
+        checked = len(self._selected_document_ids)
+        total = len(self._documents)
+        self._selected_label.setText(f"已选 {checked}/{total} 项")
+        self._select_all_cb.blockSignals(True)
+        self._select_all_cb.setChecked(total > 0 and checked == total)
+        self._select_all_cb.blockSignals(False)
+
+        selected_documents = self._selected_documents()
+        has_selection = checked > 0
+        has_executable = any(
+            document.id is not None and is_document_executable(document.document_status)
+            for document in selected_documents
+        )
+        has_deletable = any(
+            document.id is not None
+            and not document.is_queued
+            and not is_document_running(document.document_status)
+            for document in selected_documents
+        )
+        self._bulk_confirm_btn.setEnabled(has_selection)
+        self._start_btn.setEnabled(
+            has_executable
+            and self._execution_worker is None
+            and self._clause_execution_worker is None
+        )
+        self._delete_btn.setEnabled(has_deletable)
 
     def _import_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "选择 DOCX 文件", "", "Word Documents (*.docx)")
@@ -220,23 +450,34 @@ class ChapterBatchView(QWidget):
         self._open_drawer_for_documents([self._documents[row]])
 
     def _open_drawer_for_documents(self, documents) -> None:
-        self._drawer.set_documents(list(documents))
-        self._drawer.setGeometry(max(0, self.width() - 420), 0, 420, self.height())
+        self._drawer.set_documents(list(documents[:1]))
+        self._layout_drawer()
         self._drawer.show()
         current = documents[0] if documents else None
         self._drawer.set_edit_locked(bool(current and is_document_running(current.document_status)))
         if documents and documents[0].id is not None:
             self._load_drawer_clauses(documents[0].id)
 
+    def _layout_drawer(self) -> None:
+        self._drawer.apply_layout(self.width(), self.height())
+
     def _set_selected_document_ids(self, document_ids: list[int]) -> None:
-        self._selected_document_ids = document_ids
-        selected = set(document_ids)
+        selected = {document_id for document_id in document_ids if document_id is not None}
+        self._selected_document_ids = [doc.id for doc in self._documents if doc.id in selected]
+        selected = set(self._selected_document_ids)
         for row, document in enumerate(self._documents):
-            checkbox = self._table.cellWidget(row, 0)
+            checkbox = self._table.cellWidget(row, self.COL_CHECK)
             if isinstance(checkbox, QCheckBox):
                 checkbox.blockSignals(True)
                 checkbox.setChecked(document.id in selected)
                 checkbox.blockSignals(False)
+        self._update_selected_label()
+
+    def _on_select_all_toggled(self, checked: bool) -> None:
+        if checked:
+            self._set_selected_document_ids([doc.id for doc in self._documents if doc.id is not None])
+            return
+        self._set_selected_document_ids([])
 
     def _selected_documents(self):
         selected = []
@@ -250,7 +491,7 @@ class ChapterBatchView(QWidget):
         documents = self._selected_documents()
         if not documents:
             return
-        self._open_drawer_for_documents(documents)
+        self._open_drawer_for_documents([documents[0]])
 
     def _show_document_context_menu(self, pos) -> None:
         row = self._table.rowAt(pos.y())
@@ -289,10 +530,32 @@ class ChapterBatchView(QWidget):
         else:
             current.discard(document_id)
         self._selected_document_ids = [doc.id for doc in self._documents if doc.id in current]
+        self._update_selected_label()
 
-    def _on_save_confirm_requested(self, document_ids: list[int]) -> None:
-        if not document_ids:
+    def _on_save_requested(self, document_id: int) -> None:
+        reply = QMessageBox.question(
+            self,
+            "保存",
+            "是否保存当前文档？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
             return
+        if self._save_documents([document_id]):
+            QMessageBox.information(self, "保存", "已保存当前文档。")
+
+    def _on_upload_requested(self, document_id: int, clause_ids: list[int]) -> None:
+        ready_ids = self._save_documents([document_id])
+        if not ready_ids:
+            return
+        if not clause_ids:
+            QMessageBox.information(self, "上传", "请先勾选要上传的条款。")
+            return
+        self._start_clause_upload(document_id, clause_ids)
+
+    def _save_documents(self, document_ids: list[int]) -> list[int]:
+        if not document_ids:
+            return []
         self._save_clause_updates()
         document_updates = {}
         all_fields = self._drawer.all_document_fields()
@@ -302,41 +565,17 @@ class ChapterBatchView(QWidget):
                 continue
             document_updates[document_id] = all_fields.get(document_id, self._drawer.current_document_fields())
         if not document_updates:
-            return
+            return []
         missing = self._missing_required_document_fields(document_updates)
         if missing:
-            QMessageBox.warning(self, "无法保存确认", "以下文档缺少必填字段：\n" + "\n".join(missing))
-            return
+            QMessageBox.warning(self, "无法保存", "以下文档缺少必填字段：\n" + "\n".join(missing))
+            return []
         filtered_document_ids = list(document_updates)
         if not self._resolve_duplicate_candidates(filtered_document_ids):
-            return
+            return []
         ready_ids = self._service.save_confirmed_documents(document_updates)
         self._load_documents()
-        if not ready_ids:
-            return
-        action = self._ask_post_confirm_action()
-        if action == "upload":
-            for document_id in ready_ids:
-                self._repo.update_document(document_id, is_queued=1)
-            self._load_documents()
-            self._start_documents(ready_ids)
-            return
-        for document_id in ready_ids:
-            self._repo.update_document(document_id, is_queued=0)
-        self._load_documents()
-
-    def _ask_post_confirm_action(self) -> str:
-        reply = QMessageBox.question(
-            self,
-            "确认完成",
-            "请选择下一步操作：\n是：直接上传\n否：稍后处理\n取消：只保留本地已保存结果",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            return "upload"
-        if reply == QMessageBox.StandardButton.No:
-            return "later"
-        return "cancel"
+        return ready_ids
 
     def _save_clause_updates(self) -> None:
         for document_id, clauses in self._drawer.all_clause_fields().items():
@@ -446,7 +685,11 @@ class ChapterBatchView(QWidget):
         self._start_documents(document_ids)
 
     def _start_documents(self, document_ids: list[int]) -> None:
-        if not document_ids or self._execution_worker is not None:
+        if (
+            not document_ids
+            or self._execution_worker is not None
+            or self._clause_execution_worker is not None
+        ):
             return
         for order, document_id in enumerate(document_ids):
             self._repo.update_document(document_id, is_queued=1, queue_order=order)
@@ -456,11 +699,35 @@ class ChapterBatchView(QWidget):
         self._execution_worker.failed.connect(self._on_execution_failed)
         self._execution_worker.finished.connect(self._clear_execution_worker)
         self._execution_worker.start()
+        self._update_selected_label()
+
+    def _start_clause_upload(self, document_id: int, clause_ids: list[int]) -> None:
+        if self._execution_worker is not None or self._clause_execution_worker is not None:
+            return
+        document = self._repo.get_document(document_id)
+        if document is None or is_document_running(document.document_status):
+            return
+        ordered_clause_ids = [
+            clause.id
+            for clause in self._repo.get_clauses(document_id)
+            if clause.id in set(clause_ids)
+        ]
+        if not ordered_clause_ids:
+            return
+        self._repo.update_document(document_id, is_queued=1, queue_order=0)
+        self._load_documents()
+        self._clause_execution_worker = ChapterClauseExecutionWorker(self._repo, document_id, ordered_clause_ids)
+        self._clause_execution_worker.finished_ok.connect(self._on_execution_finished)
+        self._clause_execution_worker.failed.connect(self._on_execution_failed)
+        self._clause_execution_worker.finished.connect(self._clear_clause_execution_worker)
+        self._clause_execution_worker.start()
+        self._update_selected_label()
 
     def _cancel_execution(self) -> None:
-        if self._execution_worker is None:
-            return
-        self._execution_worker.request_cancel()
+        if self._execution_worker is not None:
+            self._execution_worker.request_cancel()
+        if self._clause_execution_worker is not None:
+            self._clause_execution_worker.request_cancel()
 
     def _delete_selected_documents(self) -> None:
         deletable_ids = [
@@ -525,6 +792,11 @@ class ChapterBatchView(QWidget):
 
     def _clear_execution_worker(self) -> None:
         self._execution_worker = None
+        self._update_selected_label()
+
+    def _clear_clause_execution_worker(self) -> None:
+        self._clause_execution_worker = None
+        self._update_selected_label()
 
     def _load_drawer_clauses(self, document_id: int) -> None:
         document = self._repo.get_document(document_id)
@@ -564,10 +836,12 @@ class ChapterBatchView(QWidget):
             self._set_clause_status_for_retry(clause_id, ClauseStatus.CREATE_FAILED.value)
         elif action_name == "重试上传":
             self._set_clause_status_for_retry(clause_id, ClauseStatus.UPLOAD_FAILED.value)
-        elif action_name == "跳过此条":
-            self._skip_clause(clause_id)
+        elif action_name == "上传":
+            self._upload_single_clause(clause_id)
         elif action_name == "恢复跳过":
             self._restore_clause(clause_id)
+        elif action_name == "查看错误信息":
+            self._show_clause_issue_detail(clause_id)
         elif action_name == "打开本地 docx":
             self._open_local_docx(clause_id)
         elif action_name == "打开后端 chapter 记录":
@@ -593,6 +867,15 @@ class ChapterBatchView(QWidget):
             backend_chapter_status=clause.backend_chapter_status,
         )
         return editable
+
+    def _upload_single_clause(self, clause_id: int) -> None:
+        clause = self._repo.get_clause(clause_id)
+        if clause is None or clause.document_id is None:
+            return
+        ready_ids = self._save_documents([clause.document_id])
+        if clause.document_id not in ready_ids:
+            return
+        self._start_clause_upload(clause.document_id, [clause_id])
 
     def _set_clause_status_for_retry(self, clause_id: int, from_status: str) -> None:
         clause = self._repo.get_clause(clause_id)
@@ -648,7 +931,26 @@ class ChapterBatchView(QWidget):
             return
         QMessageBox.information(self, "后端条款记录", f"chapter ID: {clause.chapter_id}")
 
+    def _show_clause_issue_detail(self, clause_id: int) -> None:
+        clause = self._repo.get_clause(clause_id)
+        if clause is None:
+            return
+        lines = []
+        if clause.duplicate_flag:
+            lines.append("疑似重复")
+            if clause.duplicate_reason:
+                lines.append(clause.duplicate_reason)
+        if clause.create_error:
+            lines.append("创建错误")
+            lines.append(clause.create_error)
+        if clause.upload_error:
+            lines.append("上传错误")
+            lines.append(clause.upload_error)
+        if not lines:
+            lines.append("当前条款没有可查看的错误或重复信息。")
+        QMessageBox.information(self, "条款详情", "\n".join(lines))
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if self._drawer.isVisible():
-            self._drawer.setGeometry(max(0, self.width() - 420), 0, 420, self.height())
+            self._layout_drawer()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 
 STATUS_LABELS: dict[str, str] = {
@@ -52,3 +53,31 @@ def build_split_summary(success: int, failed: int, cancelled: bool, total: int) 
     if success == 0 and failed > 0:
         return f"拆分失败：{failed} 个文档未完成"
     return f"拆分完成：成功 {success} 个，失败 {failed} 个"
+
+
+def extract_clause_test_content(raw_title: str) -> str:
+    """提取与条款面板一致的测试内容展示文本。"""
+    text = raw_title or ""
+
+    text = re.sub(r"\(Testing equipment[^)]*\)", "", text)
+    text = re.sub(r"\(please specify[^)]*\)", "", text)
+
+    text = re.sub(r"☐\s*(Test date|Ambient temperature|Equipment ID|Sample ID|Equipment No)\s*:?[^\n|]*", "", text)
+    text = text.replace("☐", "")
+
+    text = re.sub(r"^[\d.,&\s]+\|?\s*", "", text)
+    text = re.sub(r"^Annex\s+[A-Z]{1,2}\s*[,&]?\s*[\d.]*\s*[-–—]\s*", "", text)
+    text = re.sub(r"^TABLE:\s*", "", text)
+
+    for part in text.split("|"):
+        part = part.strip()
+        if part and re.search(r"[A-Za-z]{3,}", part):
+            text = part
+            break
+    else:
+        text = ""
+
+    text = re.sub(r"\s+", " ", text).strip(" .:;|-\t")
+    if not text or re.match(r"^[\d.,&\s]+$", text):
+        return ""
+    return text

@@ -125,6 +125,46 @@ class ChapterBatchExecutor:
             self._run_document(document_id)
         self._clear_queued_flags()
 
+    def run_clauses(self, document_id: int, clause_ids: list[int]) -> None:
+        document = self._repo.get_document(document_id)
+        if document is None:
+            return
+        clause_id_set = {int(clause_id) for clause_id in clause_ids}
+        if not clause_id_set:
+            return
+        clauses = [clause for clause in self._repo.get_clauses(document_id) if clause.id in clause_id_set]
+        if not clauses:
+            return
+
+        self._repo.update_document(
+            document_id,
+            document_status=DocumentStatus.CREATING.value,
+            is_queued=1,
+            last_error="",
+        )
+        for clause in clauses:
+            if self._cancel_requested():
+                self._apply_cancel(document_id)
+                return
+            self._prepare_clause_for_execution(clause)
+            clause = self._repo.get_clause(clause.id) if clause.id is not None else clause
+            if clause is None or clause.clause_status == ClauseStatus.SKIPPED.value:
+                continue
+            if clause.clause_status == ClauseStatus.PENDING_CREATE.value:
+                self._create_clause(document, clause)
+
+        self._repo.update_document(document_id, document_status=DocumentStatus.UPLOADING.value)
+        for clause in self._repo.get_clauses(document_id):
+            if clause.id not in clause_id_set:
+                continue
+            if self._cancel_requested():
+                self._apply_cancel(document_id)
+                return
+            if clause.clause_status == ClauseStatus.PENDING_UPLOAD.value and clause.chapter_id is not None:
+                self._upload_clause(clause)
+        self._repo.update_document(document_id, is_queued=0)
+        self._repo.reaggregate_document(document_id)
+
     def _run_document(self, document_id: int) -> None:
         document = self._repo.get_document(document_id)
         if document is None:
@@ -149,25 +189,10 @@ class ChapterBatchExecutor:
             if self._cancel_requested():
                 self._apply_cancel(document_id)
                 return
-            if clause.clause_status == ClauseStatus.SKIPPED.value:
+            self._prepare_clause_for_execution(clause)
+            clause = self._repo.get_clause(clause.id) if clause.id is not None else clause
+            if clause is None:
                 continue
-            if clause.clause_status in {
-                ClauseStatus.CREATE_FAILED.value,
-                ClauseStatus.UPLOAD_FAILED.value,
-            }:
-                self._repo.update_clause(
-                    clause.id,
-                    clause_status=(
-                        ClauseStatus.PENDING_UPLOAD.value
-                        if clause.chapter_id
-                        else ClauseStatus.PENDING_CREATE.value
-                    ),
-                    create_error="",
-                    upload_error="",
-                )
-                clause = self._repo.get_clause(clause.id) if clause.id is not None else clause
-                if clause is None:
-                    continue
             if clause.clause_status == ClauseStatus.PENDING_UPLOAD.value and clause.chapter_id:
                 continue
             if clause.clause_status != ClauseStatus.PENDING_CREATE.value:
@@ -189,6 +214,26 @@ class ChapterBatchExecutor:
                 return
         self._repo.update_document(document_id, is_queued=0)
         self._repo.reaggregate_document(document_id)
+
+    def _prepare_clause_for_execution(self, clause: BatchImportClause) -> None:
+        if clause.id is None:
+            return
+        if clause.clause_status == ClauseStatus.SKIPPED.value:
+            return
+        if clause.clause_status in {
+            ClauseStatus.CREATE_FAILED.value,
+            ClauseStatus.UPLOAD_FAILED.value,
+        }:
+            self._repo.update_clause(
+                clause.id,
+                clause_status=(
+                    ClauseStatus.PENDING_UPLOAD.value
+                    if clause.chapter_id
+                    else ClauseStatus.PENDING_CREATE.value
+                ),
+                create_error="",
+                upload_error="",
+            )
 
     def _create_clause(self, document: BatchImportDocument, clause: BatchImportClause) -> None:
         if clause.id is None:

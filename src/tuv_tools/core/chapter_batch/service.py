@@ -8,12 +8,18 @@ from pathlib import Path
 
 from tuv_tools.config.database import _extract_standard_number
 from tuv_tools.config.settings import AppSettings
+from tuv_tools.core.chapter.api import get_folders
+from tuv_tools.core.chapter.auth import auto_login
+from tuv_tools.core.chapter.client import TuvClient
 from tuv_tools.core.splitter.exporting import _write_docx_from_template
 from tuv_tools.core.splitter.parsing import build_sections
+from tuv_tools.core.splitter.ui_helpers import extract_clause_test_content
 from tuv_tools.core.splitter.utils import safe_name
 
 from .models import BatchImportClause, BatchImportDocument, DocumentStatus, SplitMode, is_document_running
 from .repository import ChapterBatchRepository
+
+CHAPTER_ROOT_FOLDER_ID = 2
 
 
 @dataclass(slots=True)
@@ -44,6 +50,7 @@ class ChapterBatchService:
     def __init__(self, repo: ChapterBatchRepository, output_root: Path | None = None):
         self._repo = repo
         self._output_root = output_root or (Path.home() / ".tuv-tools" / "chapter-batch")
+        self._folder_context_cache: dict[str, tuple[int, str, str]] = {}
 
     def import_documents(self, paths: list[str], split_mode: str) -> list[BatchImportDocument]:
         created: list[BatchImportDocument] = []
@@ -63,11 +70,80 @@ class ChapterBatchService:
                 plan_sr="1",
                 chapter_version="1.0",
             )
+            self._apply_default_folder_context(document)
             document.id = self._repo.create_document(document)
             saved = self._repo.get_document(document.id)
             if saved is not None:
                 created.append(saved)
         return created
+
+    def _apply_default_folder_context(self, document: BatchImportDocument) -> None:
+        standard = (document.standard or "").strip()
+        if not standard:
+            return
+        context = self._resolve_folder_context_for_standard(standard)
+        if context is None:
+            return
+        folder_id, folder_name, product_type = context
+        document.folder_id = folder_id
+        document.folder_name = folder_name
+        document.product_type = product_type or document.product_type or "家电"
+
+    def _resolve_folder_context_for_standard(self, standard: str) -> tuple[int, str, str] | None:
+        cached = self._folder_context_cache.get(standard)
+        if cached is not None:
+            return cached
+        nodes = self._load_full_folder_tree()
+        if not nodes:
+            return None
+
+        node_map = {node.id: node for node in nodes}
+        target = next((node for node in nodes if node.folder_name.strip() == standard), None)
+        if target is None:
+            return None
+
+        product_type = "家电"
+        category_node = target
+        while category_node.pid != CHAPTER_ROOT_FOLDER_ID:
+            parent = node_map.get(category_node.pid) if category_node.pid is not None else None
+            if parent is None:
+                break
+            category_node = parent
+        if category_node.pid == CHAPTER_ROOT_FOLDER_ID and category_node.folder_name.strip():
+            product_type = category_node.folder_name.strip()
+
+        result = (target.id, target.folder_name, product_type)
+        self._folder_context_cache[standard] = result
+        return result
+
+    def _load_full_folder_tree(self) -> list:
+        try:
+            config = AppSettings().load_api_config()
+            if config is None:
+                return []
+            client = TuvClient(config.base_url, config.request_timeout)
+            if not auto_login(client, config):
+                return []
+        except Exception:
+            return []
+
+        results = []
+        queue = [CHAPTER_ROOT_FOLDER_ID]
+        visited: set[int] = set()
+        while queue:
+            pid = queue.pop(0)
+            if pid in visited:
+                continue
+            visited.add(pid)
+            try:
+                children = get_folders(client, pid=pid)
+            except Exception:
+                continue
+            for child in children:
+                results.append(child)
+                if child.has_children:
+                    queue.append(child.id)
+        return results
 
     def import_and_split_documents(self, paths: list[str], split_mode: str) -> list[BatchImportDocument]:
         """导入文档后立即执行本地拆分，失败只落到对应文档记录。"""
@@ -139,7 +215,7 @@ class ChapterBatchService:
                 BatchImportClause(
                     sort_index=index,
                     term=section.clause_id,
-                    test_content=section.title or "null",
+                    test_content=extract_clause_test_content(section.title) or "null",
                     source_docx_path=str(output_path),
                 )
             )

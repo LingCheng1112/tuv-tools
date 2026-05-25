@@ -443,3 +443,45 @@ def test_cancel_on_last_upload_still_uses_explicit_cancel_aggregation(tmp_path):
     assert saved.success_clause_count == 0
     assert clause.clause_status == ClauseStatus.PENDING_UPLOAD.value
     assert DocumentStatus.PENDING_UPLOAD.value in forced_statuses
+
+
+def test_executor_run_clauses_only_processes_selected_clause_ids(tmp_path):
+    from tuv_tools.core.chapter_batch.executor import ChapterBatchExecutor
+
+    repo = _new_repo(tmp_path)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/k.docx",
+            file_name="k.docx",
+            document_status=DocumentStatus.PENDING_CREATE.value,
+            standard="60335-2-9",
+            folder_id=7,
+            product_type="家电",
+            plan_sr="1",
+            chapter_version="1.0",
+        )
+    )
+    repo.replace_clauses(
+        doc_id,
+        [
+            BatchImportClause(sort_index=0, term="10.1", source_docx_path="C:/out/10_1.docx"),
+            BatchImportClause(sort_index=1, term="10.2", source_docx_path="C:/out/10_2.docx"),
+        ],
+    )
+    clause_ids = [clause.id for clause in repo.get_clauses(doc_id)]
+    created = []
+    uploaded = []
+
+    executor = ChapterBatchExecutor(
+        repo,
+        create_chapter=lambda payload: created.append(payload.term) or (501 if payload.term == "10.2" else 500),
+        upload_chapter_doc=lambda chapter_id, path: uploaded.append((chapter_id, path)),
+    )
+
+    executor.run_clauses(doc_id, [clause_ids[1]])
+
+    clauses = repo.get_clauses(doc_id)
+    assert created == ["10.2"]
+    assert uploaded == [(501, "C:/out/10_2.docx")]
+    assert clauses[0].clause_status == ClauseStatus.PENDING_CREATE.value
+    assert clauses[1].clause_status == ClauseStatus.UPLOAD_SUCCESS.value

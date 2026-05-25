@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from tuv_tools.core.splitter.ui_helpers import extract_clause_test_content
 
 
 class ClauseOverlay(QWidget):
@@ -184,7 +185,7 @@ class ClauseOverlay(QWidget):
         self._empty_label.setVisible(False)
         self._list.setVisible(True)
         for s in sections:
-            title = self._clean_title(s.title)
+            title = extract_clause_test_content(s.title) or "(无测试内容)"
             text = f"{s.clause_id}: {title[:120]}"
             item = QListWidgetItem(text)
             item.setToolTip(title)
