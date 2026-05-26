@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from hashlib import sha1
 from pathlib import Path
+import re
 
 from tuv_tools.config.database import _extract_standard_number
-from tuv_tools.config.settings import AppSettings
+from tuv_tools.config.settings import AppSettings, RESOURCES_DIR
 from tuv_tools.core.chapter.api import get_folders
 from tuv_tools.core.chapter.auth import auto_login
 from tuv_tools.core.chapter.client import TuvClient
@@ -26,12 +28,50 @@ from .models import (
 from .repository import ChapterBatchRepository
 
 CHAPTER_ROOT_FOLDER_ID = 2
+STANDARD_CHAPTER_TITLE_FILES: dict[str, Path] = {
+    "60335": RESOURCES_DIR / "60335_chapter_titles.txt",
+}
 
 
 @dataclass(slots=True)
 class DuplicateCheckResult:
     is_duplicate: bool
     reason: str = ""
+
+
+@lru_cache(maxsize=None)
+def _load_standard_chapter_titles(standard_family: str) -> dict[str, str]:
+    """加载标准章节号到测试内容的映射。"""
+    mapping_path = STANDARD_CHAPTER_TITLE_FILES.get(standard_family)
+    if mapping_path is None or not mapping_path.exists():
+        return {}
+
+    chapter_titles: dict[str, str] = {}
+    for raw_line in mapping_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.match(r"^(\d+)\s*-\s*(.+?)\s*$", line)
+        if match is None:
+            continue
+        chapter_titles[match.group(1)] = match.group(2).strip()
+    return chapter_titles
+
+
+def _resolve_standard_family(standard: str) -> str:
+    """从标准号中提取标准族，如 60335。"""
+    match = re.match(r"\s*(\d{4,5})", standard or "")
+    if match is None:
+        return ""
+    return match.group(1)
+
+
+def _resolve_major_term(term: str) -> str:
+    """提取条款号对应的主章节号。"""
+    match = re.match(r"\s*(\d+)", term or "")
+    if match is None:
+        return ""
+    return match.group(1)
 
 
 def _same_specific_product(left: str | None, right: str | None) -> bool:
@@ -78,6 +118,17 @@ def check_duplicate_candidates(
     if row is not None:
         return DuplicateCheckResult(True, "同一归属文件夹下 term + testContent + specificProduct 相同")
     return DuplicateCheckResult(False, "")
+
+
+def _lookup_standard_chapter_title(standard: str, term: str) -> str:
+    """按标准号和条款号查询章节级测试内容。"""
+    standard_family = _resolve_standard_family(standard)
+    if not standard_family:
+        return ""
+    major_term = _resolve_major_term(term)
+    if not major_term:
+        return ""
+    return _load_standard_chapter_titles(standard_family).get(major_term, "")
 
 
 class ChapterBatchService:
@@ -181,6 +232,21 @@ class ChapterBatchService:
                     queue.append(child.id)
         return results
 
+    def _lookup_standard_chapter_title(self, standard: str, term: str) -> str:
+        """实例级封装，便于测试替换章节测试内容映射。"""
+        return _lookup_standard_chapter_title(standard, term)
+
+    def _resolve_clause_test_content(self, *, term: str, raw_title: str, standard: str) -> str:
+        """生成条款拆分模式下的测试内容。"""
+        extracted = extract_clause_test_content(raw_title)
+        if extracted:
+            return extracted
+        return self._lookup_standard_chapter_title(standard, term) or "null"
+
+    def _resolve_section_test_content(self, *, term: str, standard: str) -> str:
+        """生成章节拆分模式下的测试内容。"""
+        return self._lookup_standard_chapter_title(standard, term) or term or standard or "null"
+
     def import_and_split_documents(self, paths: list[str], split_mode: str) -> list[BatchImportDocument]:
         """导入文档后立即执行本地拆分，失败只落到对应文档记录。"""
         documents = self.import_documents(paths, split_mode)
@@ -224,7 +290,13 @@ class ChapterBatchService:
                 document.standard,
             )
         else:
-            clauses = self._export_clause_mode(docx_path, doc_output_dir, sections, clean_patterns)
+            clauses = self._export_clause_mode(
+                docx_path,
+                doc_output_dir,
+                sections,
+                clean_patterns,
+                document.standard,
+            )
         self._repo.replace_clauses(document_id, clauses)
         self._repo.update_document(
             document_id,
@@ -236,7 +308,7 @@ class ChapterBatchService:
             last_error="",
         )
 
-    def _export_clause_mode(self, docx_path, output_dir, sections, clean_patterns) -> list[BatchImportClause]:
+    def _export_clause_mode(self, docx_path, output_dir, sections, clean_patterns, standard: str) -> list[BatchImportClause]:
         output_dir = Path(output_dir) / "clauses_docx"
         used_names: dict[str, int] = {}
         clauses: list[BatchImportClause] = []
@@ -251,7 +323,11 @@ class ChapterBatchService:
                 BatchImportClause(
                     sort_index=index,
                     term=section.clause_id,
-                    test_content=extract_clause_test_content(section.title) or "null",
+                    test_content=self._resolve_clause_test_content(
+                        term=section.clause_id,
+                        raw_title=section.title,
+                        standard=standard,
+                    ),
                     source_docx_path=str(output_path),
                 )
             )
@@ -284,7 +360,10 @@ class ChapterBatchService:
                 BatchImportClause(
                     sort_index=index,
                     term=major_version,
-                    test_content=major_version or standard or "null",
+                    test_content=self._resolve_section_test_content(
+                        term=major_version,
+                        standard=standard,
+                    ),
                     source_docx_path=str(output_path),
                 )
             )

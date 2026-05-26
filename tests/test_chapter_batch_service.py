@@ -377,7 +377,12 @@ class TestChapterBatchService:
         assert Path(clauses[0].source_docx_path).exists()
 
         sections = build_sections(fixture)
-        expected = [extract_clause_test_content(section.title) or "null" for section in sections]
+        expected = [
+            extract_clause_test_content(section.title)
+            or service._lookup_standard_chapter_title(docs[0].standard, section.clause_id)
+            or "null"
+            for section in sections
+        ]
         assert [clause.test_content for clause in clauses] == expected
 
     def test_split_document_section_mode_uses_major_version_rows(self, tmp_path):
@@ -386,7 +391,16 @@ class TestChapterBatchService:
         fixture = Path(__file__).parent / "fixtures" / "Test Plan for IEC 60335-2-24.doc.docx"
         docs = service.import_documents([str(fixture)], split_mode=SplitMode.SECTION.value)
 
+        monkeypatch = __import__("pytest").MonkeyPatch()
+        monkeypatch.setattr(
+            service,
+            "_lookup_standard_chapter_title",
+            lambda _standard, term: "Power input and current" if term == "10" else "",
+            raising=False,
+        )
+
         service.split_document(docs[0].id)
+        monkeypatch.undo()
 
         saved = repo.get_document(docs[0].id)
         clauses = repo.get_clauses(docs[0].id)
@@ -395,13 +409,38 @@ class TestChapterBatchService:
         assert saved.document_status == DocumentStatus.PENDING_CONFIRM.value
         assert "10" in terms
         assert all("." not in term for term in terms if term.isdigit())
-        assert all(clause.test_content == clause.term for clause in clauses)
+        clause_10 = next(clause for clause in clauses if clause.term == "10")
+        assert clause_10.test_content == "Power input and current"
 
-    def test_clause_mode_uses_null_when_display_content_is_empty(self, tmp_path, monkeypatch):
+    def test_clause_mode_uses_standard_mapping_when_display_content_is_empty(self, tmp_path, monkeypatch):
         service, repo = _new_service()
         service._output_root = tmp_path
         fixture = Path(__file__).parent / "fixtures" / "Test Plan for IEC 60335-2-24.doc.docx"
         docs = service.import_documents([str(fixture)], split_mode=SplitMode.CLAUSE.value)
+
+        monkeypatch.setattr(
+            "tuv_tools.core.chapter_batch.service.extract_clause_test_content",
+            lambda _raw: "",
+        )
+        monkeypatch.setattr(
+            service,
+            "_lookup_standard_chapter_title",
+            lambda _standard, term: "Power input and current" if term.startswith("10") else "",
+            raising=False,
+        )
+
+        service.split_document(docs[0].id)
+
+        clauses = repo.get_clauses(docs[0].id)
+        clause_10 = next(clause for clause in clauses if clause.term.startswith("10"))
+        assert clause_10.test_content == "Power input and current"
+
+    def test_clause_mode_uses_null_when_display_content_is_empty_and_no_standard_mapping(self, tmp_path, monkeypatch):
+        service, repo = _new_service()
+        service._output_root = tmp_path
+        fixture = Path(__file__).parent / "fixtures" / "Test Plan for IEC 60335-2-24.doc.docx"
+        docs = service.import_documents([str(fixture)], split_mode=SplitMode.CLAUSE.value)
+        repo.update_document(docs[0].id, standard="custom-standard")
 
         monkeypatch.setattr(
             "tuv_tools.core.chapter_batch.service.extract_clause_test_content",

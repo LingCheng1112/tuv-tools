@@ -1,0 +1,32 @@
+1-Scope
+2-Normative references
+3-Terms and definitions
+4-General requirement
+5-General conditions for the tests
+6-Classification
+7-Marking and instructions
+8-Protection against access to live parts
+9-Starting of motor-operated appliances
+10-Power input and current
+11-Heating
+12-Void\Charging of metal-ion batteries
+13-Leakage current and electric strength at operating temperature
+14-Transient overvoltages
+15-Moisture resistance
+16-Leakage current and electric strength
+17-Overload protection of transformers and associated circuits
+18-Endurance
+19-Abnormal operation
+20-Stability and mechanical hazards
+21-Mechanical strength
+22-Construction
+23-Internal wiring
+24-Components
+25-Supply connection and external flexible cords
+26-Terminals for external conductors
+27-Provision for earthing
+28-Screws and connections
+29-Clearances, creepage distances and solid insulation
+30-Resistance to heat and fire
+31-Resistance to rusting
+32-Radiation, toxicity and similar hazards
