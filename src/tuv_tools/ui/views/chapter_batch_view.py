@@ -1,11 +1,12 @@
-"""Chapter 批量导入工作台视图。"""
+"""Chapter 批量上传工作台视图。"""
 
 from __future__ import annotations
 
 from pathlib import Path
 import subprocess
 
-from PySide6.QtCore import QThread, Qt, Signal
+from PySide6.QtCore import QThread, Qt, Signal, QRectF
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -33,6 +34,8 @@ from tuv_tools.core.chapter.client import TuvClient
 from tuv_tools.core.chapter_batch.api import create_chapter_and_return_id, import_chapter_doc
 from tuv_tools.core.chapter_batch.executor import ChapterBatchExecutionController, ChapterBatchExecutor
 from tuv_tools.core.chapter_batch.models import (
+    BatchImportClause,
+    ChapterBatchProgressEvent,
     ClauseStatus,
     DocumentStatus,
     SplitMode,
@@ -41,16 +44,22 @@ from tuv_tools.core.chapter_batch.models import (
     is_document_running,
 )
 from tuv_tools.core.chapter_batch.repository import ChapterBatchRepository
-from tuv_tools.core.chapter_batch.service import ChapterBatchService
+from tuv_tools.core.chapter_batch.service import (
+    ChapterBatchService,
+    check_duplicate_candidates,
+    find_duplicate_candidate_row,
+)
+from tuv_tools.core.preparing import _win32com_client, prepare_single_doc
 from tuv_tools.ui.widgets import CHECKBOX_STYLE
 from tuv_tools.ui.widgets.chapter_batch_drawer import ChapterBatchDrawer
 
 
 class ChapterBatchExecutionWorker(QThread):
-    """后台执行批量创建和上传。"""
+    """后台执行文档级批量上传。"""
 
     finished_ok = Signal()
     failed = Signal(str)
+    progress_changed = Signal(object)
 
     def __init__(self, repo: ChapterBatchRepository, document_ids: list[int]):
         super().__init__()
@@ -75,6 +84,7 @@ class ChapterBatchExecutionWorker(QThread):
                 create_chapter=lambda chapter: create_chapter_and_return_id(client, chapter),
                 upload_chapter_doc=lambda chapter_id, path: import_chapter_doc(client, chapter_id, path),
                 controller=self._controller,
+                progress=self.progress_changed.emit,
             )
             executor.run_documents(self._document_ids)
             self.finished_ok.emit()
@@ -83,10 +93,11 @@ class ChapterBatchExecutionWorker(QThread):
 
 
 class ChapterClauseExecutionWorker(QThread):
-    """后台执行单文档内指定条款的创建和上传。"""
+    """后台执行单文档条款上传。"""
 
     finished_ok = Signal()
     failed = Signal(str)
+    progress_changed = Signal(object)
 
     def __init__(self, repo: ChapterBatchRepository, document_id: int, clause_ids: list[int]):
         super().__init__()
@@ -112,6 +123,7 @@ class ChapterClauseExecutionWorker(QThread):
                 create_chapter=lambda chapter: create_chapter_and_return_id(client, chapter),
                 upload_chapter_doc=lambda chapter_id, path: import_chapter_doc(client, chapter_id, path),
                 controller=self._controller,
+                progress=self.progress_changed.emit,
             )
             executor.run_clauses(self._document_id, self._clause_ids)
             self.finished_ok.emit()
@@ -119,8 +131,141 @@ class ChapterClauseExecutionWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class ChapterBatchProcessingWorker(QThread):
+    """后台执行预处理与拆分。"""
+
+    finished_ok = Signal()
+    failed = Signal(int, str)
+    progress_changed = Signal(object)
+
+    def __init__(self, repo: ChapterBatchRepository, document_ids: list[int], output_root: Path | None = None):
+        super().__init__()
+        self._repo = repo
+        self._document_ids = list(document_ids)
+        self._output_root = output_root
+
+    def run(self) -> None:
+        import pythoncom  # type: ignore[import-untyped]
+
+        pythoncom.CoInitialize()
+        app = None
+        try:
+            client = _win32com_client()
+            app = client.Dispatch("Word.Application")
+            app.Visible = False
+            app.ScreenUpdating = False
+            service = ChapterBatchService(self._repo, output_root=self._output_root)
+            total_docs = max(len(self._document_ids), 1)
+            for doc_index, document_id in enumerate(self._document_ids, start=1):
+                document = self._repo.get_document(document_id)
+                if document is None:
+                    continue
+                try:
+                    self._emit_processing_progress(
+                        document_id=document_id,
+                        total_docs=total_docs,
+                        doc_index=doc_index,
+                        phase="processing",
+                        percent=0,
+                        message="开始预处理",
+                    )
+                    doc = None
+                    try:
+                        normalized_path = str(Path(document.file_path).resolve())
+                        doc = app.Documents.Open(normalized_path)
+                        prepare_single_doc(doc, app)
+                    finally:
+                        if doc is not None:
+                            try:
+                                doc.Close()
+                            except Exception:
+                                pass
+                    self._emit_processing_progress(
+                        document_id=document_id,
+                        total_docs=total_docs,
+                        doc_index=doc_index,
+                        phase="processing",
+                        percent=50,
+                        message="预处理完成，开始拆分",
+                    )
+                    service.split_document(document_id)
+                    self._emit_processing_progress(
+                        document_id=document_id,
+                        total_docs=total_docs,
+                        doc_index=doc_index,
+                        phase="processing",
+                        percent=100,
+                        message="拆分完成",
+                    )
+                except Exception as exc:
+                    self._repo.update_document(
+                        document_id,
+                        document_status=DocumentStatus.FAILED.value,
+                        last_error=str(exc),
+                    )
+                    self.failed.emit(document_id, str(exc))
+            self.finished_ok.emit()
+        finally:
+            if app is not None:
+                try:
+                    app.Quit()
+                except Exception:
+                    pass
+            pythoncom.CoUninitialize()
+
+    def _emit_processing_progress(
+        self,
+        *,
+        document_id: int,
+        total_docs: int,
+        doc_index: int,
+        phase: str,
+        percent: int,
+        message: str,
+    ) -> None:
+        if total_docs <= 0:
+            total_docs = 1
+        completed_fraction = max(doc_index - 1, 0) / total_docs
+        current_fraction = (max(min(percent, 100), 0) / 100) / total_docs
+        overall_percent = int(round((completed_fraction + current_fraction) * 100))
+        self.progress_changed.emit(
+            ChapterBatchProgressEvent(
+                document_id=document_id,
+                phase=phase,
+                percent=overall_percent,
+                message=message,
+                current_index=doc_index,
+                total_count=total_docs,
+                action=phase,
+            )
+        )
+
+
+class _StatusProgressRing(QWidget):
+    """状态列使用的轻量环形进度。"""
+
+    def __init__(self, percent: int, parent=None):
+        super().__init__(parent)
+        self._percent = max(0, min(percent, 100))
+        self.setFixedSize(18, 18)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(2, 2, 14, 14)
+
+        track_pen = QPen(QColor("#4a4d50"), 2)
+        painter.setPen(track_pen)
+        painter.drawArc(rect, 0, 360 * 16)
+
+        progress_pen = QPen(QColor("#4a9eff"), 2)
+        painter.setPen(progress_pen)
+        span = int(-360 * 16 * (self._percent / 100))
+        painter.drawArc(rect, 90 * 16, span)
+
+
 class ChapterBatchView(QWidget):
-    """条款批量导入工作台的最小页面骨架。"""
+    """条款批量上传工作台。"""
 
     COL_CHECK = 0
     COL_FILE_NAME = 1
@@ -129,7 +274,8 @@ class ChapterBatchView(QWidget):
     COL_STATUS = 4
     COL_SUMMARY = 5
     COL_UPDATED_AT = 6
-    VIEW_ONLY_CLAUSE_ACTIONS = {"打开本地 docx", "打开后端 chapter 记录"}
+
+    VIEW_ONLY_CLAUSE_ACTIONS = {"打开本地 docx", "打开后端 chapter 记录", "查看错误信息"}
 
     def __init__(self, repo: ChapterBatchRepository | None = None):
         super().__init__()
@@ -137,16 +283,19 @@ class ChapterBatchView(QWidget):
         self._service = ChapterBatchService(self._repo)
         self._documents = []
         self._selected_document_ids: list[int] = []
+        self._progress_by_document_id: dict[int, ChapterBatchProgressEvent] = {}
+        self._processing_worker: ChapterBatchProcessingWorker | None = None
         self._execution_worker: ChapterBatchExecutionWorker | None = None
         self._clause_execution_worker: ChapterClauseExecutionWorker | None = None
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
         title_row = QHBoxLayout()
-        title = QLabel("条款批量导入")
-        title.setStyleSheet("font-size: 18px; font-weight: bold;")
-        title_row.addWidget(title)
+        self._title_label = QLabel("条款批量上传")
+        self._title_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+        title_row.addWidget(self._title_label)
         title_row.addStretch()
         layout.addLayout(title_row)
 
@@ -169,7 +318,6 @@ class ChapterBatchView(QWidget):
             [
                 "全部",
                 DocumentStatus.PENDING_CONFIRM.value,
-                DocumentStatus.PENDING_CREATE.value,
                 DocumentStatus.PENDING_UPLOAD.value,
                 DocumentStatus.PARTIAL.value,
                 DocumentStatus.FAILED.value,
@@ -177,7 +325,7 @@ class ChapterBatchView(QWidget):
             ]
         )
         self._mode_filter = QComboBox()
-        self._mode_filter.addItems(["全部", "章节", "条款"])
+        self._mode_filter.addItems(["全部", SplitMode.SECTION.value, SplitMode.CLAUSE.value])
         filters.addWidget(self._status_filter)
         filters.addWidget(self._mode_filter)
         filters.addStretch()
@@ -204,15 +352,15 @@ class ChapterBatchView(QWidget):
         bottom.addWidget(self._selected_label)
         bottom.addStretch()
 
-        self._bulk_confirm_btn = QPushButton("批量确认")
-        self._bulk_confirm_btn.setStyleSheet(self._action_btn_style("#6a6d72"))
-        self._bulk_confirm_btn.setEnabled(False)
-        bottom.addWidget(self._bulk_confirm_btn)
+        self._detail_btn = QPushButton("查看详情")
+        self._detail_btn.setStyleSheet(self._action_btn_style("#6a6d72"))
+        self._detail_btn.setEnabled(False)
+        bottom.addWidget(self._detail_btn)
 
-        self._start_btn = QPushButton("开始执行")
-        self._start_btn.setStyleSheet(self._action_btn_style("#4a9eff"))
-        self._start_btn.setEnabled(False)
-        bottom.addWidget(self._start_btn)
+        self._upload_btn = QPushButton("批量上传")
+        self._upload_btn.setStyleSheet(self._action_btn_style("#4a9eff"))
+        self._upload_btn.setEnabled(False)
+        bottom.addWidget(self._upload_btn)
 
         self._delete_btn = QPushButton("删除记录")
         self._delete_btn.setStyleSheet(self._action_btn_style("#d9534f"))
@@ -222,8 +370,8 @@ class ChapterBatchView(QWidget):
 
         self._import_file_btn.clicked.connect(self._import_files)
         self._import_dir_btn.clicked.connect(self._import_dir)
-        self._bulk_confirm_btn.clicked.connect(self._open_bulk_confirm)
-        self._start_btn.clicked.connect(self._start_selected_documents)
+        self._detail_btn.clicked.connect(self._open_bulk_confirm)
+        self._upload_btn.clicked.connect(self._upload_selected_documents)
         self._delete_btn.clicked.connect(self._delete_selected_documents)
 
         self._drawer = ChapterBatchDrawer(self)
@@ -245,7 +393,7 @@ class ChapterBatchView(QWidget):
         self._table.setColumnWidth(self.COL_CHECK, 36)
         self._table.setColumnWidth(self.COL_STANDARD, 120)
         self._table.setColumnWidth(self.COL_MODE, 90)
-        self._table.setColumnWidth(self.COL_STATUS, 110)
+        self._table.setColumnWidth(self.COL_STATUS, 170)
         self._table.setColumnWidth(self.COL_SUMMARY, 220)
         self._table.setColumnWidth(self.COL_UPDATED_AT, 145)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -330,6 +478,40 @@ class ChapterBatchView(QWidget):
             parts.append(f"错误：{document.last_error}")
         return "\n".join(parts)
 
+    @staticmethod
+    def _display_status_text(status: str) -> str:
+        if status in {DocumentStatus.PREPARING.value, DocumentStatus.SPLITTING.value}:
+            return "处理中"
+        return status or "-"
+
+    def _build_running_status_widget(self, document) -> QWidget:
+        progress_event = self._progress_by_document_id.get(document.id or -1)
+        container = QWidget(self._table)
+        tooltip = self._build_status_tooltip(document)
+        if progress_event is not None and progress_event.message:
+            tooltip = f"{tooltip}\n进度：{progress_event.percent}%\n{progress_event.message}"
+        container.setToolTip(tooltip)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(6, 2, 6, 2)
+        layout.setSpacing(6)
+
+        layout.addWidget(_StatusProgressRing(progress_event.percent if progress_event is not None else 0, container))
+
+        status_label = QLabel(self._display_status_text(document.document_status))
+        status_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        status_label.setStyleSheet("color: #dcdcdc; font-size: 13px;")
+        status_label.setMinimumWidth(52)
+        layout.addWidget(status_label)
+
+        if progress_event is not None:
+            percent_label = QLabel(f"{progress_event.percent}%")
+            percent_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            percent_label.setStyleSheet("color: #9fbce6; font-size: 12px;")
+            percent_label.setMinimumWidth(34)
+            layout.addWidget(percent_label)
+        layout.addStretch()
+        return container
+
     def _load_documents(self) -> None:
         selected = {document_id for document_id in self._selected_document_ids if document_id is not None}
         status = self._status_filter.currentText()
@@ -361,11 +543,17 @@ class ChapterBatchView(QWidget):
             standard = document.standard or "-"
             self._table.setItem(row, self.COL_STANDARD, self._make_item(standard, standard))
             self._table.setItem(row, self.COL_MODE, self._make_item(document.split_mode or "-"))
-            self._table.setItem(
-                row,
-                self.COL_STATUS,
-                self._make_item(document.document_status or "-", self._build_status_tooltip(document)),
-            )
+            if is_document_running(document.document_status):
+                self._table.setCellWidget(row, self.COL_STATUS, self._build_running_status_widget(document))
+            else:
+                self._table.setItem(
+                    row,
+                    self.COL_STATUS,
+                    self._make_item(
+                        self._display_status_text(document.document_status),
+                        self._build_status_tooltip(document),
+                    ),
+                )
             summary = self._build_summary_text(document)
             self._table.setItem(
                 row,
@@ -401,8 +589,8 @@ class ChapterBatchView(QWidget):
             and not is_document_running(document.document_status)
             for document in selected_documents
         )
-        self._bulk_confirm_btn.setEnabled(has_selection)
-        self._start_btn.setEnabled(
+        self._detail_btn.setEnabled(has_selection)
+        self._upload_btn.setEnabled(
             has_executable
             and self._execution_worker is None
             and self._clause_execution_worker is None
@@ -441,8 +629,22 @@ class ChapterBatchView(QWidget):
         split_mode = self._choose_import_mode()
         if split_mode is None:
             return
-        self._service.import_and_split_documents(paths, split_mode=split_mode)
+        documents = self._service.import_documents(paths, split_mode=split_mode)
         self._load_documents()
+        document_ids = [document.id for document in documents if document is not None and document.id is not None]
+        self._start_processing_documents(document_ids)
+
+    def _start_processing_documents(self, document_ids: list[int]) -> None:
+        if not document_ids:
+            return
+        if self._processing_worker is not None:
+            return
+        self._processing_worker = ChapterBatchProcessingWorker(self._repo, document_ids)
+        self._processing_worker.progress_changed.connect(self._on_progress_changed)
+        self._processing_worker.failed.connect(self._on_processing_failed)
+        self._processing_worker.finished_ok.connect(self._on_processing_finished)
+        self._processing_worker.finished.connect(self._clear_processing_worker)
+        self._processing_worker.start()
 
     def _on_table_double_clicked(self, row: int, _column: int) -> None:
         if row < 0 or row >= len(self._documents):
@@ -504,20 +706,13 @@ class ChapterBatchView(QWidget):
         open_action = menu.addAction("打开详情")
         open_action.triggered.connect(lambda: self._open_drawer_for_documents([document]))
         resplit_action = menu.addAction("重新拆分")
-        resplit_action.setEnabled(
-            document.document_status
-            not in {DocumentStatus.CREATING.value, DocumentStatus.UPLOADING.value, DocumentStatus.SPLITTING.value}
-        )
+        resplit_action.setEnabled(not is_document_running(document.document_status))
         resplit_action.triggered.connect(lambda: self._resplit_document(document.id))
-        cancel_action = menu.addAction("取消执行")
+        cancel_action = menu.addAction("取消上传")
         cancel_action.setEnabled(self._execution_worker is not None and document.is_queued)
         cancel_action.triggered.connect(self._cancel_execution)
         delete_action = menu.addAction("删除记录")
-        delete_action.setEnabled(
-            not document.is_queued
-            and document.document_status
-            not in {DocumentStatus.CREATING.value, DocumentStatus.UPLOADING.value, DocumentStatus.SPLITTING.value}
-        )
+        delete_action.setEnabled(not document.is_queued and not is_document_running(document.document_status))
         delete_action.triggered.connect(lambda: self._delete_documents([document.id]))
         menu.exec(self._table.viewport().mapToGlobal(pos))
 
@@ -542,16 +737,29 @@ class ChapterBatchView(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
         if self._save_documents([document_id]):
+            self._drawer.mark_saved(document_id)
             QMessageBox.information(self, "保存", "已保存当前文档。")
 
     def _on_upload_requested(self, document_id: int, clause_ids: list[int]) -> None:
-        ready_ids = self._save_documents([document_id])
-        if not ready_ids:
+        if self._drawer.is_dirty(document_id):
+            QMessageBox.warning(self, "提示", "请先保存修改后再上传")
             return
         if not clause_ids:
             QMessageBox.information(self, "上传", "请先勾选要上传的条款。")
             return
-        self._start_clause_upload(document_id, clause_ids)
+        if not self._resolve_upload_duplicates(document_id, clause_ids):
+            return
+        uploadable_clause_ids = [
+            clause.id
+            for clause in self._repo.get_clauses(document_id)
+            if clause.id in set(clause_ids) and clause.clause_status == ClauseStatus.PENDING_UPLOAD.value
+        ]
+        if not uploadable_clause_ids:
+            self._repo.reaggregate_document(document_id)
+            self._load_documents()
+            self._load_drawer_clauses(document_id)
+            return
+        self._start_clause_upload(document_id, uploadable_clause_ids)
 
     def _save_documents(self, document_ids: list[int]) -> list[int]:
         if not document_ids:
@@ -570,10 +778,9 @@ class ChapterBatchView(QWidget):
         if missing:
             QMessageBox.warning(self, "无法保存", "以下文档缺少必填字段：\n" + "\n".join(missing))
             return []
-        filtered_document_ids = list(document_updates)
-        if not self._resolve_duplicate_candidates(filtered_document_ids):
-            return []
         ready_ids = self._service.save_confirmed_documents(document_updates)
+        for document_id in ready_ids:
+            self._drawer.mark_saved(document_id)
         self._load_documents()
         return ready_ids
 
@@ -616,30 +823,110 @@ class ChapterBatchView(QWidget):
                 missing.append(f"{name}: 条款版本")
         return missing
 
-    def _resolve_duplicate_candidates(self, document_ids: list[int]) -> bool:
-        for document_id in document_ids:
-            duplicate_ids = self._service.mark_duplicate_candidates(
-                document_id,
-                self._existing_rows_for_duplicate_check(document_id),
+    def _resolve_upload_duplicates(self, document_id: int, clause_ids: list[int] | None = None) -> bool:
+        document = self._repo.get_document(document_id)
+        if document is None:
+            return False
+        wanted = None if clause_ids is None else {int(clause_id) for clause_id in clause_ids}
+        duplicate_rows_cache: dict[tuple[str, str], list[dict]] = {}
+        skip_remaining_duplicates = False
+        for clause in self._repo.get_clauses(document_id):
+            if wanted is not None and clause.id not in wanted:
+                continue
+            if clause.id is None:
+                continue
+            original_status = clause.clause_status
+            original_chapter_id = clause.chapter_id
+            original_user_decision = clause.user_decision
+            if clause.chapter_id is not None:
+                self._repo.update_clause(
+                    clause.id,
+                    duplicate_flag=False,
+                    duplicate_reason="",
+                    user_decision="",
+                )
+                continue
+            if skip_remaining_duplicates:
+                self._repo.update_clause(
+                    clause.id,
+                    clause_status=original_status,
+                    chapter_id=original_chapter_id,
+                    user_decision="skip_duplicate_all",
+                )
+                continue
+            cache_key = ((clause.term or "").strip(), (clause.test_content or "").strip())
+            existing_rows = duplicate_rows_cache.get(cache_key)
+            if existing_rows is None:
+                existing_rows = self._existing_rows_for_duplicate_check(document_id, clause)
+                duplicate_rows_cache[cache_key] = existing_rows
+
+            result = check_duplicate_candidates(
+                document.folder_id,
+                clause,
+                document.specific_product,
+                existing_rows,
             )
-            for clause_id in duplicate_ids:
-                clause = self._repo.get_clause(clause_id)
-                if clause is None:
-                    continue
-                decision = self._ask_duplicate_decision(clause)
-                if decision == "skip":
-                    self._repo.update_clause(
-                        clause_id,
-                        clause_status=ClauseStatus.SKIPPED.value,
-                        user_decision="skip_duplicate",
-                    )
-                elif decision == "create":
-                    self._repo.update_clause(clause_id, user_decision="create_duplicate")
-                else:
-                    return False
+            matched_row = find_duplicate_candidate_row(
+                document.folder_id,
+                clause,
+                document.specific_product,
+                existing_rows,
+            )
+            if matched_row is None:
+                updates = {"duplicate_flag": False, "duplicate_reason": "", "user_decision": ""}
+                self._repo.update_clause(clause.id, **updates)
+                continue
+
+            self._repo.update_clause(
+                clause.id,
+                duplicate_flag=result.is_duplicate,
+                duplicate_reason=result.reason,
+            )
+            decision = self._ask_duplicate_decision(document, clause, matched_row)
+            if decision == "overwrite":
+                self._repo.update_clause(
+                    clause.id,
+                    chapter_id=matched_row.get("id") or clause.chapter_id,
+                    clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                    user_decision="overwrite",
+                    duplicate_flag=True,
+                    duplicate_reason=result.reason,
+                )
+            elif decision == "skip":
+                self._repo.update_clause(
+                    clause.id,
+                    chapter_id=original_chapter_id,
+                    clause_status=original_status,
+                    user_decision="skip_duplicate",
+                    duplicate_flag=True,
+                    duplicate_reason=result.reason,
+                )
+            elif decision == "skip_all":
+                self._repo.update_clause(
+                    clause.id,
+                    chapter_id=original_chapter_id,
+                    clause_status=original_status,
+                    user_decision="skip_duplicate_all",
+                    duplicate_flag=True,
+                    duplicate_reason=result.reason,
+                )
+                skip_remaining_duplicates = True
+            else:
+                self._repo.update_clause(
+                    clause.id,
+                    chapter_id=original_chapter_id,
+                    clause_status=original_status,
+                    user_decision=original_user_decision,
+                )
+                return False
+        self._repo.reaggregate_document(document_id)
+        self._load_documents()
+        current = self._drawer.current_document()
+        if current is not None and current.id == document_id:
+            self._load_drawer_clauses(document_id)
         return True
 
-    def _existing_rows_for_duplicate_check(self, document_id: int) -> list[dict]:
+    def _existing_rows_for_duplicate_check(self, document_id: int, clause=None) -> list[dict]:
         document = self._repo.get_document(document_id)
         if document is None or document.folder_id is None:
             return []
@@ -650,51 +937,134 @@ class ChapterBatchView(QWidget):
             client = TuvClient(config.base_url, config.request_timeout)
             if not auto_login(client, config):
                 return []
-            page = get_chapters(client, page=0, size=500, folder_id=document.folder_id)
+            params = {
+                "folder_id": document.folder_id,
+                "size": 100,
+            }
+            if clause is not None:
+                params["term"] = clause.term
+                params["test_content"] = clause.test_content
+            specific_product = (document.specific_product or "").strip()
+            if specific_product:
+                params["specific_product"] = specific_product
+            rows: list[dict] = []
+            page_index = 0
+            page_size = int(params["size"])
+            while True:
+                page = get_chapters(client, page=page_index, **params)
+                rows.extend(
+                    {
+                        "id": chapter.id,
+                        "folder_id": chapter.folder_id,
+                        "term": chapter.term,
+                        "test_content": chapter.test_content,
+                        "specific_product": chapter.specific_product,
+                    }
+                    for chapter in page.content
+                )
+                if clause is None:
+                    break
+                if find_duplicate_candidate_row(
+                    document.folder_id,
+                    clause,
+                    document.specific_product,
+                    rows,
+                ) is not None:
+                    break
+                if page.total_elements <= 0:
+                    break
+                if not page.content:
+                    break
+                if (page_index + 1) * page_size >= page.total_elements:
+                    break
+                page_index += 1
         except Exception:
             return []
-        return [
-            {
-                "folder_id": chapter.folder_id,
-                "term": chapter.term,
-                "test_content": chapter.test_content,
-            }
-            for chapter in page.content
-        ]
+        return rows
 
-    def _ask_duplicate_decision(self, clause) -> str | None:
-        reply = QMessageBox.question(
-            self,
-            "疑似重复条款",
-            f"条款 {clause.term} 在同一归属文件夹下可能已存在。\n"
-            "选择“是”仍然创建，选择“否”跳过此条，选择“取消”停止保存。",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+    def _ask_duplicate_decision(self, document, clause, matched_row: dict) -> str | None:
+        specific_product = document.specific_product or "(空)"
+        message_box = QMessageBox(self)
+        message_box.setWindowTitle("检测到重复条款")
+        message_box.setIcon(QMessageBox.Icon.Warning)
+        message_box.setText(
+            (
+                f"条款号：{clause.term}\n"
+                f"测试内容：{clause.test_content}\n"
+                f"具体产品：{specific_product}\n"
+                f"归属文件夹：{document.folder_name or document.folder_id or '(空)'}\n\n"
+                "检测到已存在相同条款，请选择处理方式。"
+            )
         )
-        if reply == QMessageBox.StandardButton.Yes:
-            return "create"
-        if reply == QMessageBox.StandardButton.No:
+        overwrite_button = message_box.addButton("覆盖", QMessageBox.ButtonRole.AcceptRole)
+        skip_button = message_box.addButton("跳过当前条款", QMessageBox.ButtonRole.RejectRole)
+        skip_all_button = message_box.addButton("后续重复全部跳过", QMessageBox.ButtonRole.DestructiveRole)
+        message_box.exec()
+        clicked = message_box.clickedButton()
+        if clicked is overwrite_button:
+            return "overwrite"
+        if clicked is skip_button:
             return "skip"
+        if clicked is skip_all_button:
+            return "skip_all"
         return None
 
-    def _start_selected_documents(self) -> None:
-        document_ids = [
-            document.id
+    def _ask_reupload_overwrite(self, document, clause) -> bool:
+        message_box = QMessageBox(self)
+        message_box.setWindowTitle("确认覆盖上传")
+        message_box.setIcon(QMessageBox.Icon.Warning)
+        message_box.setText(
+            (
+                f"条款号：{clause.term}\n"
+                f"测试内容：{clause.test_content}\n"
+                f"归属文件夹：{document.folder_name or document.folder_id or '(空)'}\n\n"
+                "该条款已上传成功并记录了 chapter ID，重新上传将直接覆盖已有文档。是否继续？"
+            )
+        )
+        overwrite_button = message_box.addButton("覆盖", QMessageBox.ButtonRole.AcceptRole)
+        cancel_button = message_box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        message_box.exec()
+        return message_box.clickedButton() is overwrite_button
+
+    def _upload_selected_documents(self) -> None:
+        if self._execution_worker is not None or self._clause_execution_worker is not None:
+            return
+        selected_documents = [
+            document
             for document in self._selected_documents()
             if document.id is not None and is_document_executable(document.document_status)
         ]
-        self._start_documents(document_ids)
+        if not selected_documents:
+            return
+        current = self._drawer.current_document()
+        if current is not None and current.id in {document.id for document in selected_documents}:
+            if self._drawer.is_dirty(current.id):
+                QMessageBox.warning(self, "提示", "请先保存修改后再上传")
+                return
+        ready_document_ids: list[int] = []
+        for document in selected_documents:
+            if document.id is None:
+                continue
+            if not self._resolve_upload_duplicates(document.id):
+                return
+            clauses = self._repo.get_clauses(document.id)
+            if any(clause.clause_status == ClauseStatus.PENDING_UPLOAD.value for clause in clauses):
+                ready_document_ids.append(document.id)
+            else:
+                self._repo.reaggregate_document(document.id)
+        if not ready_document_ids:
+            self._load_documents()
+            return
+        self._start_documents(ready_document_ids)
 
     def _start_documents(self, document_ids: list[int]) -> None:
-        if (
-            not document_ids
-            or self._execution_worker is not None
-            or self._clause_execution_worker is not None
-        ):
+        if not document_ids or self._execution_worker is not None or self._clause_execution_worker is not None:
             return
         for order, document_id in enumerate(document_ids):
             self._repo.update_document(document_id, is_queued=1, queue_order=order)
         self._load_documents()
         self._execution_worker = ChapterBatchExecutionWorker(self._repo, document_ids)
+        self._execution_worker.progress_changed.connect(self._on_progress_changed)
         self._execution_worker.finished_ok.connect(self._on_execution_finished)
         self._execution_worker.failed.connect(self._on_execution_failed)
         self._execution_worker.finished.connect(self._clear_execution_worker)
@@ -717,6 +1087,7 @@ class ChapterBatchView(QWidget):
         self._repo.update_document(document_id, is_queued=1, queue_order=0)
         self._load_documents()
         self._clause_execution_worker = ChapterClauseExecutionWorker(self._repo, document_id, ordered_clause_ids)
+        self._clause_execution_worker.progress_changed.connect(self._on_progress_changed)
         self._clause_execution_worker.finished_ok.connect(self._on_execution_finished)
         self._clause_execution_worker.failed.connect(self._on_execution_failed)
         self._clause_execution_worker.finished.connect(self._clear_clause_execution_worker)
@@ -733,9 +1104,7 @@ class ChapterBatchView(QWidget):
         deletable_ids = [
             document.id
             for document in self._selected_documents()
-            if document.id is not None
-            and document.document_status
-            not in {DocumentStatus.CREATING.value, DocumentStatus.UPLOADING.value, DocumentStatus.SPLITTING.value}
+            if document.id is not None and not is_document_running(document.document_status)
         ]
         if not deletable_ids:
             return
@@ -784,11 +1153,44 @@ class ChapterBatchView(QWidget):
         self._load_documents()
 
     def _on_execution_finished(self) -> None:
+        current = self._drawer.current_document()
+        if current is not None and current.id is not None:
+            self._progress_by_document_id.pop(current.id, None)
         self._load_documents()
+        if current is not None and current.id is not None:
+            self._load_drawer_clauses(current.id)
 
     def _on_execution_failed(self, message: str) -> None:
         QMessageBox.warning(self, "执行失败", message)
         self._load_documents()
+
+    def _on_progress_changed(self, event: object) -> None:
+        if not isinstance(event, ChapterBatchProgressEvent):
+            return
+        self._progress_by_document_id[event.document_id] = event
+        self._load_documents()
+        current = self._drawer.current_document()
+        if current is not None and current.id == event.document_id:
+            self._drawer._summary.setText(
+                f"状态：{self._display_status_text(current.document_status)} | 进度：{event.percent}% | {event.message or '(处理中)'}"
+            )
+
+    def _on_processing_failed(self, document_id: int, message: str) -> None:
+        self._progress_by_document_id.pop(document_id, None)
+        self._load_documents()
+        current = self._drawer.current_document()
+        if current is not None and current.id == document_id:
+            self._load_drawer_clauses(document_id)
+        QMessageBox.warning(self, "预处理或拆分失败", message)
+
+    def _on_processing_finished(self) -> None:
+        if self._processing_worker is not None:
+            for document_id in self._processing_worker._document_ids:
+                self._progress_by_document_id.pop(document_id, None)
+        self._load_documents()
+
+    def _clear_processing_worker(self) -> None:
+        self._processing_worker = None
 
     def _clear_execution_worker(self) -> None:
         self._execution_worker = None
@@ -832,14 +1234,12 @@ class ChapterBatchView(QWidget):
     def _on_clause_action_requested(self, action_name: str, clause_id: int) -> None:
         if not self._can_apply_clause_action(action_name, clause_id):
             return
-        if action_name == "重试创建":
-            self._set_clause_status_for_retry(clause_id, ClauseStatus.CREATE_FAILED.value)
-        elif action_name == "重试上传":
+        if action_name == "重试上传":
             self._set_clause_status_for_retry(clause_id, ClauseStatus.UPLOAD_FAILED.value)
         elif action_name == "上传":
             self._upload_single_clause(clause_id)
-        elif action_name == "恢复跳过":
-            self._restore_clause(clause_id)
+        elif action_name == "重新上传":
+            self._reupload_single_clause(clause_id)
         elif action_name == "查看错误信息":
             self._show_clause_issue_detail(clause_id)
         elif action_name == "打开本地 docx":
@@ -861,6 +1261,8 @@ class ChapterBatchView(QWidget):
         document = self._repo.get_document(clause.document_id) if clause.document_id is not None else None
         if document is not None and is_document_running(document.document_status):
             return False
+        if action_name == "重新上传":
+            return clause.chapter_id is not None and clause.clause_status == ClauseStatus.UPLOAD_SUCCESS.value
         editable, _reason = get_clause_edit_state(
             clause_status=clause.clause_status,
             chapter_id=clause.chapter_id,
@@ -872,8 +1274,21 @@ class ChapterBatchView(QWidget):
         clause = self._repo.get_clause(clause_id)
         if clause is None or clause.document_id is None:
             return
-        ready_ids = self._save_documents([clause.document_id])
-        if clause.document_id not in ready_ids:
+        self._on_upload_requested(clause.document_id, [clause_id])
+
+    def _reupload_single_clause(self, clause_id: int) -> None:
+        clause = self._repo.get_clause(clause_id)
+        if clause is None or clause.document_id is None:
+            return
+        if clause.chapter_id is None:
+            return
+        document = self._repo.get_document(clause.document_id)
+        if document is None or is_document_running(document.document_status):
+            return
+        if self._drawer.is_dirty(clause.document_id):
+            QMessageBox.warning(self, "提示", "请先保存修改后再上传")
+            return
+        if not self._ask_reupload_overwrite(document, clause):
             return
         self._start_clause_upload(clause.document_id, [clause_id])
 
@@ -885,17 +1300,11 @@ class ChapterBatchView(QWidget):
             return
         self._repo.update_clause(
             clause_id,
-            clause_status=ClauseStatus.PENDING_UPLOAD.value if clause.chapter_id else ClauseStatus.PENDING_CREATE.value,
+            clause_status=ClauseStatus.PENDING_UPLOAD.value,
             create_error="",
             upload_error="",
             last_action="retry",
         )
-
-    def _skip_clause(self, clause_id: int) -> None:
-        clause = self._repo.get_clause(clause_id)
-        if clause is None or not self._can_mutate_clause(clause):
-            return
-        self._repo.update_clause(clause_id, clause_status=ClauseStatus.SKIPPED.value, user_decision="skip")
 
     def _restore_clause(self, clause_id: int) -> None:
         clause = self._repo.get_clause(clause_id)
@@ -903,7 +1312,7 @@ class ChapterBatchView(QWidget):
             return
         self._repo.update_clause(
             clause_id,
-            clause_status=ClauseStatus.PENDING_UPLOAD.value if clause.chapter_id else ClauseStatus.PENDING_CREATE.value,
+            clause_status=ClauseStatus.PENDING_UPLOAD.value,
             user_decision="",
         )
 

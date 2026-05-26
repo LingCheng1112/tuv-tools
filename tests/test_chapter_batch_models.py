@@ -20,6 +20,9 @@ from tuv_tools.core.chapter_batch.models import (
     is_document_running,
 )
 
+UPLOAD_IN_PROGRESS = "上传中"
+PREPARING = "预处理中"
+
 
 class TestSplitMode:
     def test_labels_are_business_friendly(self):
@@ -28,46 +31,50 @@ class TestSplitMode:
 
 
 class TestDocumentStatus:
-    def test_contains_workspace_states(self):
-        assert DocumentStatus.PENDING_CONFIRM.value == "待确认"
-        assert DocumentStatus.PENDING_CREATE.value == "待创建"
-        assert DocumentStatus.PARTIAL.value == "部分完成"
-        assert DocumentStatus.PENDING_UPLOAD.value == "待上传"
-        assert DocumentStatus.CREATING.value == "创建中"
-        assert DocumentStatus.UPLOADING.value == "上传中"
+    def test_exposes_exactly_upload_facing_document_states(self):
+        assert {status.value for status in DocumentStatus} == {
+            PREPARING,
+            DocumentStatus.SPLITTING.value,
+            DocumentStatus.PENDING_CONFIRM.value,
+            DocumentStatus.PENDING_UPLOAD.value,
+            UPLOAD_IN_PROGRESS,
+            DocumentStatus.COMPLETED.value,
+            DocumentStatus.PARTIAL.value,
+            DocumentStatus.FAILED.value,
+        }
 
-    def test_executable_states_match_agreed_policy(self):
-        assert is_document_executable(DocumentStatus.PENDING_CREATE.value) is True
+    def test_executable_states_allow_pending_confirm_upload(self):
+        assert is_document_executable(DocumentStatus.PENDING_CONFIRM.value) is True
         assert is_document_executable(DocumentStatus.PENDING_UPLOAD.value) is True
         assert is_document_executable(DocumentStatus.PARTIAL.value) is True
         assert is_document_executable(DocumentStatus.FAILED.value) is True
-        assert is_document_executable(DocumentStatus.PENDING_CONFIRM.value) is False
-        assert is_document_executable(DocumentStatus.CREATING.value) is False
         assert is_document_executable(DocumentStatus.UPLOADING.value) is False
         assert is_document_executable(DocumentStatus.COMPLETED.value) is False
-        assert is_document_executable(DocumentStatus.SKIPPED.value) is False
 
-    def test_running_document_statuses_are_detected(self):
+    def test_running_document_statuses_use_upload_as_only_explicit_execution_state(self):
+        assert is_document_running(PREPARING) is True
         assert is_document_running(DocumentStatus.SPLITTING.value) is True
-        assert is_document_running(DocumentStatus.CREATING.value) is True
         assert is_document_running(DocumentStatus.UPLOADING.value) is True
-        assert is_document_running(DocumentStatus.PENDING_CREATE.value) is False
+        assert is_document_running(DocumentStatus.PENDING_CONFIRM.value) is False
+        assert is_document_running(DocumentStatus.PENDING_UPLOAD.value) is False
         assert is_document_running(DocumentStatus.PARTIAL.value) is False
 
 
 class TestClauseStatus:
-    def test_contains_retryable_states(self):
-        assert ClauseStatus.CREATE_FAILED.value == "创建失败"
-        assert ClauseStatus.PENDING_UPLOAD.value == "待上传"
-        assert ClauseStatus.UPLOAD_FAILED.value == "上传失败"
-        assert ClauseStatus.SKIPPED.value == "用户跳过"
+    def test_exposes_exactly_four_stable_upload_facing_states(self):
+        assert {status.value for status in ClauseStatus} == {
+            ClauseStatus.PENDING_UPLOAD.value,
+            UPLOAD_IN_PROGRESS,
+            ClauseStatus.UPLOAD_SUCCESS.value,
+            ClauseStatus.UPLOAD_FAILED.value,
+        }
 
 
 class TestBatchImportDocument:
     def test_defaults_match_workspace_spec(self):
         doc = BatchImportDocument(file_path="C:/a.docx", file_name="a.docx")
 
-        assert doc.document_status == DocumentStatus.PENDING_SPLIT.value
+        assert doc.document_status == DocumentStatus.PREPARING.value
         assert doc.split_mode == SplitMode.CLAUSE.value
         assert doc.plan_sr == "1"
         assert doc.chapter_version == "1.0"
@@ -76,10 +83,10 @@ class TestBatchImportDocument:
 
 
 class TestBatchImportClause:
-    def test_defaults_match_workspace_spec(self):
+    def test_defaults_match_upload_workspace_spec(self):
         clause = BatchImportClause(term="10.1", source_docx_path="C:/10_1.docx")
 
-        assert clause.clause_status == ClauseStatus.PENDING_CREATE.value
+        assert clause.clause_status == ClauseStatus.PENDING_UPLOAD.value
         assert clause.term == "10.1"
         assert clause.source_docx_path == "C:/10_1.docx"
         assert clause.duplicate_flag is False
@@ -102,7 +109,7 @@ class TestBatchImportClause:
 
     def test_clause_without_chapter_id_is_editable(self):
         assert get_clause_edit_state(
-            clause_status=ClauseStatus.PENDING_CREATE.value,
+            clause_status=ClauseStatus.PENDING_UPLOAD.value,
             chapter_id=None,
             backend_chapter_status=None,
         ) == (True, "")

@@ -37,7 +37,7 @@ class Chapter:
     test_content: str = ""
     standard: str = ""
     standard_version: str = ""
-    version: int = 0
+    version: str | int = ""
     status: int = ChapterStatus.DRAFT
     product_type: str = ""
     plan_sr: str = ""
@@ -80,6 +80,25 @@ class Chapter:
         if self.folder_id is not None:
             d["folder"] = {"id": self.folder_id}
         return d
+
+    def to_create_api_dict(self) -> dict[str, Any]:
+        """转换为创建条款时使用的最小请求体。"""
+        data: dict[str, Any] = {
+            "term": self.term,
+            "testContent": self.test_content,
+            "productType": self.product_type,
+            "planSr": self.plan_sr,
+            "standard": self.standard,
+            "version": self.version,
+            "status": self.status,
+        }
+        if self.standard_version != "":
+            data["standardVersion"] = self.standard_version
+        if self.specific_product != "":
+            data["specificProduct"] = self.specific_product
+        if self.folder_id is not None:
+            data["folder"] = {"id": self.folder_id}
+        return data
 
     @classmethod
     def from_api_dict(cls, data: dict[str, Any]) -> Chapter:

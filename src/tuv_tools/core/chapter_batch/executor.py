@@ -1,4 +1,4 @@
-"""Chapter 批量导入工作台执行器基础原语。"""
+"""Chapter 批量上传执行器。"""
 
 from __future__ import annotations
 
@@ -7,12 +7,19 @@ from typing import Callable
 
 from tuv_tools.core.chapter.models import Chapter, ChapterStatus
 
-from .models import BatchImportClause, BatchImportDocument, ClauseStatus, DocumentStatus
+from .models import (
+    BatchImportClause,
+    BatchImportDocument,
+    ChapterBatchProgressEvent,
+    ClauseStatus,
+    DocumentStatus,
+)
 from .repository import ChapterBatchRepository
 
 
 CreateChapterCallable = Callable[[Chapter], int]
 UploadChapterDocCallable = Callable[[int, str], None]
+ProgressCallback = Callable[[ChapterBatchProgressEvent], None]
 
 
 @dataclass(slots=True)
@@ -63,7 +70,7 @@ def derive_document_status_after_cancel(
         return DocumentStatus.PENDING_UPLOAD.value
     if attempted_uploads_all_failed:
         return DocumentStatus.FAILED.value
-    return DocumentStatus.PENDING_CREATE.value
+    return DocumentStatus.PENDING_UPLOAD.value
 
 
 def apply_cancel_result(
@@ -90,7 +97,7 @@ def apply_cancel_result(
 
 
 class ChapterBatchExecutor:
-    """执行文档级串行、条款级继续的创建和上传流程。"""
+    """执行文档级串行、条款级续跑的上传流程。"""
 
     def __init__(
         self,
@@ -99,12 +106,40 @@ class ChapterBatchExecutor:
         create_chapter: CreateChapterCallable,
         upload_chapter_doc: UploadChapterDocCallable,
         controller: ChapterBatchExecutionController | None = None,
+        progress: ProgressCallback | None = None,
     ):
         self._repo = repo
         self._create_chapter = create_chapter
         self._upload_chapter_doc = upload_chapter_doc
         self._queue = ExecutionQueue()
         self._controller = controller
+        self._progress = progress
+
+    def _emit_progress(
+        self,
+        *,
+        document_id: int,
+        percent: int,
+        message: str,
+        current_index: int = 0,
+        total_count: int = 0,
+        current_clause_term: str = "",
+        action: str = "",
+    ) -> None:
+        if self._progress is None:
+            return
+        self._progress(
+            ChapterBatchProgressEvent(
+                document_id=document_id,
+                phase="uploading",
+                percent=max(0, min(percent, 100)),
+                message=message,
+                current_index=current_index,
+                total_count=total_count,
+                current_clause_term=current_clause_term,
+                action=action,
+            )
+        )
 
     def request_cancel(self) -> None:
         self._queue.request_cancel()
@@ -121,6 +156,7 @@ class ChapterBatchExecutor:
         while not self._cancel_requested():
             document_id = self._queue.next_document()
             if document_id is None:
+                self._clear_queued_flags()
                 return
             self._run_document(document_id)
         self._clear_queued_flags()
@@ -135,40 +171,9 @@ class ChapterBatchExecutor:
         clauses = [clause for clause in self._repo.get_clauses(document_id) if clause.id in clause_id_set]
         if not clauses:
             return
-
-        self._repo.update_document(
-            document_id,
-            document_status=DocumentStatus.CREATING.value,
-            is_queued=1,
-            last_error="",
-        )
-        for clause in clauses:
-            if self._cancel_requested():
-                self._apply_cancel(document_id)
-                return
-            self._prepare_clause_for_execution(clause)
-            clause = self._repo.get_clause(clause.id) if clause.id is not None else clause
-            if clause is None or clause.clause_status == ClauseStatus.SKIPPED.value:
-                continue
-            if clause.clause_status == ClauseStatus.PENDING_CREATE.value:
-                self._create_clause(document, clause)
-
-        self._repo.update_document(document_id, document_status=DocumentStatus.UPLOADING.value)
-        for clause in self._repo.get_clauses(document_id):
-            if clause.id not in clause_id_set:
-                continue
-            if self._cancel_requested():
-                self._apply_cancel(document_id)
-                return
-            if clause.clause_status == ClauseStatus.PENDING_UPLOAD.value and clause.chapter_id is not None:
-                self._upload_clause(clause)
-        self._repo.update_document(document_id, is_queued=0)
-        self._repo.reaggregate_document(document_id)
+        self._execute_document(document_id, clause_id_set=clause_id_set)
 
     def _run_document(self, document_id: int) -> None:
-        document = self._repo.get_document(document_id)
-        if document is None:
-            return
         clauses = self._repo.get_clauses(document_id)
         if not clauses:
             self._repo.update_document(
@@ -178,67 +183,158 @@ class ChapterBatchExecutor:
                 is_queued=0,
             )
             return
+        self._execute_document(document_id, clause_id_set=None)
+
+    def _execute_document(self, document_id: int, clause_id_set: set[int] | None) -> None:
+        document = self._repo.get_document(document_id)
+        if document is None:
+            return
 
         self._repo.update_document(
             document_id,
-            document_status=DocumentStatus.CREATING.value,
+            document_status=DocumentStatus.UPLOADING.value,
             is_queued=1,
             last_error="",
         )
-        for clause in clauses:
+
+        clauses = self._repo.get_clauses(document_id)
+        target_clauses = [
+            clause for clause in clauses if clause_id_set is None or clause.id in clause_id_set
+        ]
+        total_count = len(target_clauses)
+        self._emit_progress(
+            document_id=document_id,
+            percent=0,
+            message="准备上传",
+            current_index=0,
+            total_count=total_count,
+            action="prepare",
+        )
+        for index, original_clause in enumerate(target_clauses, start=1):
+            if clause_id_set is not None and original_clause.id not in clause_id_set:
+                continue
             if self._cancel_requested():
                 self._apply_cancel(document_id)
                 return
-            self._prepare_clause_for_execution(clause)
-            clause = self._repo.get_clause(clause.id) if clause.id is not None else clause
+
+            self._emit_progress(
+                document_id=document_id,
+                percent=self._progress_percent(index - 1, total_count, 0.0),
+                message=f"校验条款 {original_clause.term}",
+                current_index=index,
+                total_count=total_count,
+                current_clause_term=original_clause.term,
+                action="duplicate_check",
+            )
+            clause = self._prepare_clause_for_execution(original_clause)
             if clause is None:
                 continue
-            if clause.clause_status == ClauseStatus.PENDING_UPLOAD.value and clause.chapter_id:
+            if (
+                clause.clause_status == ClauseStatus.UPLOAD_SUCCESS.value
+                and clause.chapter_id is not None
+                and clause_id_set is not None
+            ):
+                completed = self._upload_clause(
+                    clause,
+                    document_id=document_id,
+                    clause_index=index,
+                    total_count=total_count,
+                    action_name="reupload",
+                )
+                if self._cancel_requested():
+                    self._apply_cancel(document_id)
+                    return
+                if not completed:
+                    continue
                 continue
-            if clause.clause_status != ClauseStatus.PENDING_CREATE.value:
+            if clause.clause_status == ClauseStatus.UPLOAD_SUCCESS.value:
                 continue
-            self._create_clause(document, clause)
+            if clause.clause_status != ClauseStatus.PENDING_UPLOAD.value:
+                continue
 
-        self._repo.update_document(document_id, document_status=DocumentStatus.UPLOADING.value)
-        for clause in self._repo.get_clauses(document_id):
+            if clause.chapter_id is None:
+                clause = self._create_clause(
+                    document,
+                    clause,
+                    document_id=document_id,
+                    clause_index=index,
+                    total_count=total_count,
+                )
+                if clause is None:
+                    continue
+                if self._cancel_requested():
+                    self._apply_cancel(document_id)
+                    return
+                if clause.clause_status != ClauseStatus.PENDING_UPLOAD.value or clause.chapter_id is None:
+                    continue
+
             if self._cancel_requested():
                 self._apply_cancel(document_id)
                 return
-            if clause.clause_status == ClauseStatus.SKIPPED.value:
-                continue
-            if clause.clause_status != ClauseStatus.PENDING_UPLOAD.value or clause.chapter_id is None:
-                continue
-            self._upload_clause(clause)
+
+            completed = self._upload_clause(
+                clause,
+                document_id=document_id,
+                clause_index=index,
+                total_count=total_count,
+                action_name="upload",
+            )
             if self._cancel_requested():
                 self._apply_cancel(document_id)
                 return
+            if not completed:
+                continue
+
         self._repo.update_document(document_id, is_queued=0)
         self._repo.reaggregate_document(document_id)
+        self._emit_progress(
+            document_id=document_id,
+            percent=100,
+            message="上传完成",
+            current_index=total_count,
+            total_count=total_count,
+            action="completed",
+        )
 
-    def _prepare_clause_for_execution(self, clause: BatchImportClause) -> None:
+    def _prepare_clause_for_execution(self, clause: BatchImportClause) -> BatchImportClause | None:
         if clause.id is None:
-            return
-        if clause.clause_status == ClauseStatus.SKIPPED.value:
-            return
-        if clause.clause_status in {
-            ClauseStatus.CREATE_FAILED.value,
-            ClauseStatus.UPLOAD_FAILED.value,
-        }:
+            return None
+        if clause.clause_status == ClauseStatus.UPLOADING.value:
             self._repo.update_clause(
                 clause.id,
-                clause_status=(
-                    ClauseStatus.PENDING_UPLOAD.value
-                    if clause.chapter_id
-                    else ClauseStatus.PENDING_CREATE.value
-                ),
+                clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                upload_error="",
+            )
+        elif clause.clause_status == ClauseStatus.UPLOAD_FAILED.value:
+            self._repo.update_clause(
+                clause.id,
+                clause_status=ClauseStatus.PENDING_UPLOAD.value,
                 create_error="",
                 upload_error="",
             )
+        return self._repo.get_clause(clause.id)
 
-    def _create_clause(self, document: BatchImportDocument, clause: BatchImportClause) -> None:
+    def _create_clause(
+        self,
+        document: BatchImportDocument,
+        clause: BatchImportClause,
+        *,
+        document_id: int,
+        clause_index: int,
+        total_count: int,
+    ) -> BatchImportClause | None:
         if clause.id is None:
-            return
+            return None
         try:
+            self._emit_progress(
+                document_id=document_id,
+                percent=self._progress_percent(clause_index - 1, total_count, 0.2),
+                message=f"创建条款 {clause.term}",
+                current_index=clause_index,
+                total_count=total_count,
+                current_clause_term=clause.term,
+                action="create",
+            )
             chapter = self._build_chapter(document, clause)
             chapter_id = self._create_chapter(chapter)
             self._repo.update_clause(
@@ -252,24 +348,63 @@ class ChapterBatchExecutor:
         except Exception as exc:
             self._repo.update_clause(
                 clause.id,
-                clause_status=ClauseStatus.CREATE_FAILED.value,
+                clause_status=ClauseStatus.UPLOAD_FAILED.value,
                 create_error=str(exc),
                 last_action="create_failed",
             )
+        return self._repo.get_clause(clause.id)
 
-    def _upload_clause(self, clause: BatchImportClause) -> None:
+    def _upload_clause(
+        self,
+        clause: BatchImportClause,
+        *,
+        document_id: int,
+        clause_index: int,
+        total_count: int,
+        action_name: str,
+    ) -> bool:
         if clause.id is None or clause.chapter_id is None:
-            return
+            return False
+        self._repo.update_clause(
+            clause.id,
+            clause_status=ClauseStatus.UPLOADING.value,
+            upload_error="",
+            last_action="uploading",
+        )
         try:
+            self._emit_progress(
+                document_id=document_id,
+                percent=self._progress_percent(clause_index - 1, total_count, 0.65),
+                message=f"{'重新上传' if action_name == 'reupload' else '上传'}条款 {clause.term}",
+                current_index=clause_index,
+                total_count=total_count,
+                current_clause_term=clause.term,
+                action=action_name,
+            )
             self._upload_chapter_doc(clause.chapter_id, clause.source_docx_path)
             if self._cancel_requested():
-                return
+                self._repo.update_clause(
+                    clause.id,
+                    clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                    last_action="upload_cancelled",
+                )
+                return False
             self._repo.update_clause(
                 clause.id,
                 clause_status=ClauseStatus.UPLOAD_SUCCESS.value,
                 upload_error="",
                 last_action="upload",
             )
+            self._emit_progress(
+                document_id=document_id,
+                percent=self._progress_percent(clause_index, total_count, 0.0),
+                message=f"条款 {clause.term} 已完成",
+                current_index=clause_index,
+                total_count=total_count,
+                current_clause_term=clause.term,
+                action="completed",
+            )
+            return True
         except Exception as exc:
             self._repo.update_clause(
                 clause.id,
@@ -277,6 +412,15 @@ class ChapterBatchExecutor:
                 upload_error=str(exc),
                 last_action="upload_failed",
             )
+            return False
+
+    @staticmethod
+    def _progress_percent(completed_count: int, total_count: int, step_ratio: float) -> int:
+        if total_count <= 0:
+            return 0
+        normalized_completed = max(completed_count, 0)
+        normalized_step = min(max(step_ratio, 0.0), 1.0)
+        return int(round(((normalized_completed + normalized_step) / total_count) * 100))
 
     def _build_chapter(self, document: BatchImportDocument, clause: BatchImportClause) -> Chapter:
         return Chapter(
@@ -284,7 +428,7 @@ class ChapterBatchExecutor:
             test_content=clause.test_content,
             standard=document.standard,
             standard_version=document.standard_version,
-            version=_safe_int(document.chapter_version, default=1),
+            version=(document.chapter_version or "").strip(),
             status=int(ChapterStatus.DRAFT),
             product_type=document.product_type,
             plan_sr=document.plan_sr,
@@ -297,14 +441,21 @@ class ChapterBatchExecutor:
         processed_statuses: list[str] = []
         remaining_statuses: list[str] = []
         for clause in clauses:
-            if clause.clause_status in {
-                ClauseStatus.PENDING_CREATE.value,
-                ClauseStatus.PENDING_UPLOAD.value,
-            }:
+            if clause.id is None:
+                continue
+            if clause.clause_status == ClauseStatus.UPLOADING.value:
+                self._repo.update_clause(
+                    clause.id,
+                    clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                    last_action="upload_cancelled",
+                )
+                remaining_statuses.append(ClauseStatus.PENDING_UPLOAD.value)
+                continue
+            if clause.clause_status == ClauseStatus.PENDING_UPLOAD.value:
                 remaining_statuses.append(clause.clause_status)
                 continue
-            if clause.clause_status != ClauseStatus.SKIPPED.value:
-                processed_statuses.append(clause.clause_status)
+            processed_statuses.append(clause.clause_status)
+
         self._repo.update_document(document_id, is_queued=0)
         result = apply_cancel_result(
             processed_statuses=processed_statuses,
@@ -318,12 +469,5 @@ class ChapterBatchExecutor:
 
     def _clear_queued_flags(self) -> None:
         for document in self._repo.list_documents():
-            if document.is_queued:
+            if document.id is not None and document.is_queued:
                 self._repo.update_document(document.id, is_queued=0)
-
-
-def _safe_int(value: str, default: int = 0) -> int:
-    try:
-        return int(float(value))
-    except (TypeError, ValueError):
-        return default

@@ -16,7 +16,6 @@ from tuv_tools.core.chapter_batch.models import (
     DocumentStatus,
 )
 
-
 def _new_repo():
     from tuv_tools.core.chapter_batch.repository import ChapterBatchRepository
 
@@ -70,7 +69,7 @@ class TestChapterBatchRepository:
             BatchImportDocument(
                 file_path="C:/docs/a.docx",
                 file_name="a.docx",
-                document_status=DocumentStatus.PENDING_CREATE.value,
+                document_status=DocumentStatus.PENDING_UPLOAD.value,
             )
         )
         repo.replace_clauses(
@@ -121,6 +120,82 @@ class TestChapterBatchRepository:
 
         assert doc is not None
         assert doc.document_status == DocumentStatus.PENDING_UPLOAD.value
+
+    def test_reaggregate_document_to_pending_upload_when_all_clauses_are_pending_upload(self):
+        repo = _new_repo()
+        doc_id = repo.create_document(
+            BatchImportDocument(
+                file_path="C:/docs/b2.docx",
+                file_name="b2.docx",
+                document_status=DocumentStatus.UPLOADING.value,
+            )
+        )
+        repo.replace_clauses(
+            doc_id,
+            [
+                BatchImportClause(
+                    sort_index=0,
+                    term="8.1",
+                    clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                    source_docx_path="C:/out/8_1.docx",
+                ),
+                BatchImportClause(
+                    sort_index=1,
+                    term="8.2",
+                    clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                    source_docx_path="C:/out/8_2.docx",
+                ),
+            ],
+        )
+
+        repo.reaggregate_document(doc_id)
+        doc = repo.get_document(doc_id)
+
+        assert doc is not None
+        assert doc.document_status == DocumentStatus.PENDING_UPLOAD.value
+        assert doc.total_clause_count == 2
+        assert doc.success_clause_count == 0
+        assert doc.failed_clause_count == 0
+        assert doc.skipped_clause_count == 0
+
+    def test_repository_normalizes_legacy_statuses_on_read(self):
+        repo = _new_repo()
+        doc_id = repo.create_document(
+            BatchImportDocument(
+                file_path="C:/docs/legacy.docx",
+                file_name="legacy.docx",
+                document_status=DocumentStatus.PENDING_UPLOAD.value,
+            )
+        )
+
+        repo.update_document(doc_id, document_status="待创建")
+        repo.replace_clauses(
+            doc_id,
+            [
+                BatchImportClause(
+                    sort_index=0,
+                    term="9.1",
+                    clause_status="用户跳过",
+                    source_docx_path="C:/out/9_1.docx",
+                ),
+                BatchImportClause(
+                    sort_index=1,
+                    term="9.2",
+                    clause_status="创建失败",
+                    source_docx_path="C:/out/9_2.docx",
+                ),
+            ],
+        )
+
+        doc = repo.get_document(doc_id)
+        clauses = repo.get_clauses(doc_id)
+
+        assert doc is not None
+        assert doc.document_status == DocumentStatus.PENDING_UPLOAD.value
+        assert [clause.clause_status for clause in clauses] == [
+            ClauseStatus.PENDING_UPLOAD.value,
+            ClauseStatus.UPLOAD_FAILED.value,
+        ]
 
     def test_clear_clauses_removes_previous_results(self):
         repo = _new_repo()
@@ -201,7 +276,7 @@ class TestChapterBatchRepository:
                 BatchImportClause(
                     sort_index=2,
                     term="10.3",
-                    clause_status=ClauseStatus.SKIPPED.value,
+                    clause_status=ClauseStatus.PENDING_UPLOAD.value,
                     source_docx_path="C:/out/10_3.docx",
                 ),
             ],
@@ -215,4 +290,4 @@ class TestChapterBatchRepository:
         assert doc.total_clause_count == 3
         assert doc.success_clause_count == 1
         assert doc.failed_clause_count == 1
-        assert doc.skipped_clause_count == 1
+        assert doc.skipped_clause_count == 0

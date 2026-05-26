@@ -16,6 +16,7 @@ from tuv_tools.core.chapter.client import TuvClient
 from tuv_tools.core.chapter.models import Chapter
 from tuv_tools.core.chapter_batch.api import (
     create_chapter_and_return_id,
+    find_created_draft_chapter_id,
     import_chapter_doc,
     query_draft_chapters,
 )
@@ -85,11 +86,67 @@ class TestCreateChapterAndReturnId:
 
         assert chapter_id == 789
 
-    def test_missing_id_does_not_post_twice(self):
+    def test_missing_id_falls_back_to_query_once(self):
         client = _mock_client()
         client.post.return_value.content = b"{}"
         client.post.return_value.json.return_value = {}
         client.post.return_value.status_code = 201
+        client.get.return_value.json.return_value = {
+            "content": [
+                {
+                    "id": 321,
+                    "term": "10.3",
+                    "testContent": "Leakage",
+                    "status": 0,
+                    "productType": "家电",
+                    "planSr": "1",
+                    "standard": "IEC 60335",
+                    "standardVersion": "2020",
+                    "specificProduct": "Model A",
+                    "version": "1.0",
+                    "folder": {"id": 7},
+                }
+            ],
+            "totalElements": 1,
+        }
+
+        chapter = Chapter(
+            term="10.3",
+            test_content="Leakage",
+            product_type="家电",
+            plan_sr="1",
+            standard="IEC 60335",
+            standard_version="2020",
+            specific_product="Model A",
+            version="1.0",
+            folder_id=7,
+        )
+
+        chapter_id = create_chapter_and_return_id(client, chapter)
+
+        assert chapter_id == 321
+        client.post.assert_called_once()
+        client.get.assert_called_once()
+        body = client.post.call_args[1]["json"]
+        assert body == {
+            "term": "10.3",
+            "testContent": "Leakage",
+            "productType": "家电",
+            "planSr": "1",
+            "standard": "IEC 60335",
+            "version": "1.0",
+            "status": 0,
+            "standardVersion": "2020",
+            "specificProduct": "Model A",
+            "folder": {"id": 7},
+        }
+
+    def test_missing_id_raises_when_query_finds_nothing(self):
+        client = _mock_client()
+        client.post.return_value.content = b"{}"
+        client.post.return_value.json.return_value = {}
+        client.post.return_value.status_code = 201
+        client.get.return_value.json.return_value = {"content": [], "totalElements": 0}
 
         try:
             create_chapter_and_return_id(client, Chapter(term="10.3"))
@@ -99,6 +156,102 @@ class TestCreateChapterAndReturnId:
             raise AssertionError("missing id should raise")
 
         client.post.assert_called_once()
+        client.get.assert_called_once()
+
+
+class TestFindCreatedDraftChapterId:
+    def test_matches_latest_exact_draft_row(self):
+        client = _mock_client()
+        client.get.return_value.json.return_value = {
+            "content": [
+                {
+                    "id": 101,
+                    "term": "10.1",
+                    "testContent": "Heating",
+                    "status": 0,
+                    "productType": "家电",
+                    "planSr": "1",
+                    "standard": "IEC 60335",
+                    "standardVersion": "2020",
+                    "specificProduct": "",
+                    "version": "1.0",
+                    "folder": {"id": 5},
+                },
+                {
+                    "id": 102,
+                    "term": "10.1",
+                    "testContent": "Heating",
+                    "status": 0,
+                    "productType": "家电",
+                    "planSr": "1",
+                    "standard": "IEC 60335",
+                    "standardVersion": "2020",
+                    "specificProduct": "",
+                    "version": "1.0",
+                    "folder": {"id": 5},
+                },
+            ],
+            "totalElements": 2,
+        }
+
+        chapter_id = find_created_draft_chapter_id(
+            client,
+            Chapter(
+                term="10.1",
+                test_content="Heating",
+                product_type="家电",
+                plan_sr="1",
+                standard="IEC 60335",
+                standard_version="2020",
+                specific_product="",
+                version="1.0",
+                folder_id=5,
+            ),
+        )
+
+        assert chapter_id == 102
+
+    def test_matches_when_plan_sr_string_and_decimal_format_differ(self):
+        client = _mock_client()
+        client.get.return_value.json.return_value = {
+            "content": [
+                {
+                    "id": 165,
+                    "term": "7.14",
+                    "testContent": "RUBBING TEST FOR RATING LABEL",
+                    "status": 0,
+                    "productType": "家电",
+                    "planSr": "1.0",
+                    "standard": "60335-2-9",
+                    "standardVersion": "",
+                    "specificProduct": "",
+                    "version": "1.0",
+                    "folder": {"id": 1059},
+                }
+            ],
+            "totalElements": 1,
+        }
+
+        chapter_id = find_created_draft_chapter_id(
+            client,
+            Chapter(
+                term="7.14",
+                test_content="RUBBING TEST FOR RATING LABEL",
+                product_type="家电",
+                plan_sr="1",
+                standard="60335-2-9",
+                standard_version="",
+                specific_product="",
+                version="1.0",
+                folder_id=1059,
+            ),
+        )
+
+        assert chapter_id == 165
+        params = client.get.call_args[1]["params"]
+        assert params["term"] == "7.14"
+        assert params["testContent"] == "RUBBING TEST FOR RATING LABEL"
+        assert params["version"] == "1.0"
 
 
 class TestUpdateChapter:

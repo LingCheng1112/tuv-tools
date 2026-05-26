@@ -1,4 +1,4 @@
-"""Chapter 批量导入条款明细表。"""
+"""Chapter 批量上传条款明细表。"""
 
 from __future__ import annotations
 
@@ -7,21 +7,47 @@ from PySide6.QtGui import QMouseEvent, QPainter
 from PySide6.QtWidgets import (
     QCheckBox,
     QHeaderView,
+    QHBoxLayout,
     QMenu,
+    QSizePolicy,
     QStyle,
     QStyleOptionButton,
     QTableWidget,
     QTableWidgetItem,
+    QWidget,
 )
 
 from tuv_tools.core.chapter_batch.models import ClauseStatus
+
+
+CHAPTER_BATCH_CHECKBOX_STYLE = """
+    QCheckBox {
+        spacing: 0px;
+        margin: 0px;
+        padding: 0px;
+    }
+    QCheckBox::indicator {
+        width: 14px;
+        height: 14px;
+        border: 1px solid #7a818a;
+        border-radius: 3px;
+        background-color: #23262a;
+    }
+    QCheckBox::indicator:checked {
+        background-color: #6f7782;
+        border-color: #8d96a1;
+    }
+    QCheckBox::indicator:hover {
+        border-color: #a2acb7;
+    }
+"""
 
 
 VIEW_ONLY_ACTIONS = {"打开本地 docx", "打开后端 chapter 记录"}
 
 
 class ChapterBatchClauseTable(QTableWidget):
-    """展示某个文档下的条款明细。"""
+    """展示单个文档下的条款明细。"""
 
     COL_CHECK = 0
     COL_TERM = 1
@@ -75,7 +101,7 @@ class ChapterBatchClauseTable(QTableWidget):
             """
         )
         header = self.horizontalHeader()
-        self.setColumnWidth(self.COL_CHECK, 36)
+        self.setColumnWidth(self.COL_CHECK, 44)
         header.setSectionResizeMode(self.COL_CHECK, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(self.COL_TERM, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_CONTENT, QHeaderView.ResizeMode.Stretch)
@@ -90,10 +116,10 @@ class ChapterBatchClauseTable(QTableWidget):
             clause_id = clause.get("id")
 
             checkbox = QCheckBox()
-            checkbox.setStyleSheet("margin-left: 8px;")
+            checkbox.setStyleSheet(CHAPTER_BATCH_CHECKBOX_STYLE)
             checkbox.setChecked(bool(clause.get("checked", True)))
             checkbox.toggled.connect(self._sync_header_state)
-            self.setCellWidget(row, self.COL_CHECK, checkbox)
+            self.setCellWidget(row, self.COL_CHECK, self._wrap_checkbox(checkbox))
 
             term_item = QTableWidgetItem(clause.get("term", ""))
             term_item.setData(Qt.ItemDataRole.UserRole, clause_id)
@@ -142,7 +168,7 @@ class ChapterBatchClauseTable(QTableWidget):
     def checked_clause_ids(self) -> list[int]:
         clause_ids: list[int] = []
         for row in range(self.rowCount()):
-            checkbox = self.cellWidget(row, self.COL_CHECK)
+            checkbox = self._row_checkbox(row)
             term_item = self.item(row, self.COL_TERM)
             if not isinstance(checkbox, QCheckBox) or not checkbox.isChecked() or term_item is None:
                 continue
@@ -153,7 +179,7 @@ class ChapterBatchClauseTable(QTableWidget):
 
     def set_all_checked(self, checked: bool) -> None:
         for row in range(self.rowCount()):
-            checkbox = self.cellWidget(row, self.COL_CHECK)
+            checkbox = self._row_checkbox(row)
             if not isinstance(checkbox, QCheckBox):
                 continue
             checkbox.blockSignals(True)
@@ -164,7 +190,7 @@ class ChapterBatchClauseTable(QTableWidget):
     def set_checked_clause_ids(self, clause_ids: list[int]) -> None:
         wanted = {int(clause_id) for clause_id in clause_ids}
         for row in range(self.rowCount()):
-            checkbox = self.cellWidget(row, self.COL_CHECK)
+            checkbox = self._row_checkbox(row)
             term_item = self.item(row, self.COL_TERM)
             if not isinstance(checkbox, QCheckBox) or term_item is None:
                 continue
@@ -175,19 +201,16 @@ class ChapterBatchClauseTable(QTableWidget):
         self._sync_header_state()
 
     def available_actions_for_status(self, status: str, editable: bool = True) -> list[str]:
-        if status == ClauseStatus.CREATE_FAILED.value:
-            actions = ["重试创建", "上传", "打开本地 docx"]
-        elif status == ClauseStatus.UPLOAD_FAILED.value:
-            actions = ["重试上传", "上传", "打开本地 docx", "打开后端 chapter 记录"]
-        elif status == ClauseStatus.SKIPPED.value:
-            actions = ["恢复跳过", "打开本地 docx"]
+        if status == ClauseStatus.UPLOAD_FAILED.value:
+            actions = ["重试上传", "上传", "打开本地 docx", "打开后端 chapter 记录", "查看错误信息"]
         elif status == ClauseStatus.PENDING_UPLOAD.value:
-            actions = ["重试上传", "上传", "打开本地 docx", "打开后端 chapter 记录"]
-        elif status == ClauseStatus.PENDING_CREATE.value:
-            actions = ["上传", "打开本地 docx"]
+            actions = ["上传", "打开本地 docx", "打开后端 chapter 记录"]
+        elif status == ClauseStatus.UPLOAD_SUCCESS.value:
+            actions = ["重新上传", "打开本地 docx", "打开后端 chapter 记录"]
+        elif status == ClauseStatus.UPLOADING.value:
+            actions = ["打开本地 docx", "打开后端 chapter 记录"]
         else:
             actions = ["打开本地 docx"]
-        actions.append("查看错误信息")
         if editable:
             return actions
         return [action for action in actions if action in VIEW_ONLY_ACTIONS or action == "查看错误信息"]
@@ -196,6 +219,24 @@ class ChapterBatchClauseTable(QTableWidget):
         total = self.rowCount()
         checked = len(self.checked_clause_ids())
         self._header.set_checked(total > 0 and checked == total)
+
+    @staticmethod
+    def _wrap_checkbox(checkbox: QCheckBox) -> QWidget:
+        container = QWidget()
+        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addStretch()
+        layout.addWidget(checkbox)
+        layout.addStretch()
+        return container
+
+    def _row_checkbox(self, row: int) -> QCheckBox | None:
+        container = self.cellWidget(row, self.COL_CHECK)
+        if container is None:
+            return None
+        return container.findChild(QCheckBox)
 
     def _show_context_menu(self, pos) -> None:
         row = self.rowAt(pos.y())
@@ -252,7 +293,24 @@ class _ClauseCheckHeader(QHeaderView):
         )
         option.state = QStyle.StateFlag.State_Enabled
         option.state |= QStyle.StateFlag.State_On if self._checked else QStyle.StateFlag.State_Off
+        option.palette = self.palette()
+        option.palette.setColor(option.palette.ColorRole.Button, Qt.GlobalColor.transparent)
+        option.palette.setColor(option.palette.ColorRole.Base, Qt.GlobalColor.transparent)
+        option.palette.setColor(option.palette.ColorRole.Window, Qt.GlobalColor.transparent)
         self.style().drawControl(QStyle.ControlElement.CE_CheckBox, option, painter, self)
+        border_color = "#8d96a1" if self._checked else "#7a818a"
+        fill_color = "#6f7782" if self._checked else "#23262a"
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setPen(border_color)
+        painter.setBrush(fill_color)
+        painter.drawRoundedRect(option.rect.adjusted(0, 0, -1, -1), 3, 3)
+        if self._checked:
+            inner = option.rect.adjusted(3, 3, -3, -3)
+            painter.setPen("#ffffff")
+            painter.drawLine(inner.left(), inner.center().y(), inner.center().x() - 1, inner.bottom())
+            painter.drawLine(inner.center().x() - 1, inner.bottom(), inner.right(), inner.top() + 1)
+        painter.restore()
 
     def set_checked(self, checked: bool) -> None:
         self._checked = checked

@@ -25,6 +25,34 @@ class TestChapterSerialization:
         d = ch.to_api_dict()
         assert "folder" not in d
 
+    def test_to_create_api_dict_uses_minimal_payload(self):
+        ch = Chapter(
+            term="10.2",
+            test_content="温度测试",
+            standard="IEC 60335",
+            standard_version="2020",
+            version="1.0",
+            product_type="家电",
+            specific_product="Model A",
+            folder_id=5,
+            plan_sr="1.0",
+        )
+
+        d = ch.to_create_api_dict()
+
+        assert d == {
+            "term": "10.2",
+            "testContent": "温度测试",
+            "standard": "IEC 60335",
+            "standardVersion": "2020",
+            "version": "1.0",
+            "status": 0,
+            "productType": "家电",
+            "specificProduct": "Model A",
+            "planSr": "1.0",
+            "folder": {"id": 5},
+        }
+
     def test_from_api_dict_full(self):
         data = {
             "id": 1, "term": "10.2", "testContent": "温度测试",

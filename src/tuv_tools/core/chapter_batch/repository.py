@@ -14,9 +14,47 @@ from .models import (
     DocumentStatus,
 )
 
+_LEGACY_DOCUMENT_STATUS_MAP = {
+    "\u5f85\u62c6\u5206": DocumentStatus.PREPARING.value,
+    "\u5f85\u521b\u5efa": DocumentStatus.PENDING_UPLOAD.value,
+    "\u521b\u5efa\u4e2d": DocumentStatus.UPLOADING.value,
+    "\u5df2\u8df3\u8fc7": DocumentStatus.PENDING_UPLOAD.value,
+}
+
+_LEGACY_CLAUSE_STATUS_MAP = {
+    "\u5f85\u521b\u5efa": ClauseStatus.PENDING_UPLOAD.value,
+    "\u521b\u5efa\u5931\u8d25": ClauseStatus.UPLOAD_FAILED.value,
+    "\u7528\u6237\u8df3\u8fc7": ClauseStatus.PENDING_UPLOAD.value,
+    "\u91cd\u590d\u8df3\u8fc7": ClauseStatus.PENDING_UPLOAD.value,
+}
+
 
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _normalize_document_status(status: str | None) -> str | None:
+    if status is None:
+        return None
+    return _LEGACY_DOCUMENT_STATUS_MAP.get(status, status)
+
+
+def _normalize_clause_status(status: str | None) -> str | None:
+    if status is None:
+        return None
+    return _LEGACY_CLAUSE_STATUS_MAP.get(status, status)
+
+
+def _normalize_document_row(data: dict[str, Any]) -> dict[str, Any]:
+    data["document_status"] = _normalize_document_status(data.get("document_status"))
+    data["is_queued"] = bool(data.get("is_queued", 0))
+    return data
+
+
+def _normalize_clause_row(data: dict[str, Any]) -> dict[str, Any]:
+    data["clause_status"] = _normalize_clause_status(data.get("clause_status"))
+    data["duplicate_flag"] = bool(data.get("duplicate_flag", 0))
+    return data
 
 
 class ChapterBatchRepository:
@@ -46,7 +84,7 @@ class ChapterBatchRepository:
                 document.file_path,
                 document.file_name,
                 document.file_fingerprint,
-                document.document_status,
+                _normalize_document_status(document.document_status),
                 document.split_mode,
                 document.standard,
                 document.folder_id,
@@ -77,8 +115,7 @@ class ChapterBatchRepository:
         ).fetchone()
         if row is None:
             return None
-        data = dict(row)
-        data["is_queued"] = bool(data.get("is_queued", 0))
+        data = _normalize_document_row(dict(row))
         allowed = {item.name for item in fields(BatchImportDocument)}
         return BatchImportDocument(**{key: data.get(key) for key in allowed})
 
@@ -107,14 +144,17 @@ class ChapterBatchRepository:
         allowed = {item.name for item in fields(BatchImportDocument)}
         results: list[BatchImportDocument] = []
         for row in rows:
-            data = dict(row)
-            data["is_queued"] = bool(data.get("is_queued", 0))
+            data = _normalize_document_row(dict(row))
             results.append(BatchImportDocument(**{key: data.get(key) for key in allowed}))
         return results
 
     def update_document(self, document_id: int, **fields_to_update: Any) -> None:
         if not fields_to_update:
             return
+        if "document_status" in fields_to_update:
+            fields_to_update["document_status"] = _normalize_document_status(
+                fields_to_update["document_status"]
+            )
         fields_to_update["updated_at"] = _now()
         columns = ", ".join(f"{key} = ?" for key in fields_to_update)
         values = list(fields_to_update.values()) + [document_id]
@@ -145,7 +185,7 @@ class ChapterBatchRepository:
                     clause.sort_index,
                     clause.term,
                     clause.test_content,
-                    clause.clause_status,
+                    _normalize_clause_status(clause.clause_status),
                     clause.chapter_id,
                     clause.backend_chapter_status,
                     clause.source_docx_path,
@@ -173,8 +213,7 @@ class ChapterBatchRepository:
         allowed = {item.name for item in fields(BatchImportClause)}
         clauses: list[BatchImportClause] = []
         for row in rows:
-            data = dict(row)
-            data["duplicate_flag"] = bool(data.get("duplicate_flag", 0))
+            data = _normalize_clause_row(dict(row))
             clauses.append(BatchImportClause(**{key: data.get(key) for key in allowed}))
         return clauses
 
@@ -185,14 +224,17 @@ class ChapterBatchRepository:
         ).fetchone()
         if row is None:
             return None
-        data = dict(row)
-        data["duplicate_flag"] = bool(data.get("duplicate_flag", 0))
+        data = _normalize_clause_row(dict(row))
         allowed = {item.name for item in fields(BatchImportClause)}
         return BatchImportClause(**{key: data.get(key) for key in allowed})
 
     def update_clause(self, clause_id: int, **fields_to_update: Any) -> None:
         if not fields_to_update:
             return
+        if "clause_status" in fields_to_update:
+            fields_to_update["clause_status"] = _normalize_clause_status(
+                fields_to_update["clause_status"]
+            )
         fields_to_update["updated_at"] = _now()
         columns = ", ".join(f"{key} = ?" for key in fields_to_update)
         values = list(fields_to_update.values()) + [clause_id]
@@ -215,28 +257,32 @@ class ChapterBatchRepository:
         clauses = self.get_clauses(document_id)
         current = self.get_document(document_id)
         success = sum(c.clause_status == ClauseStatus.UPLOAD_SUCCESS.value for c in clauses)
-        failed = sum(
-            c.clause_status in {ClauseStatus.CREATE_FAILED.value, ClauseStatus.UPLOAD_FAILED.value}
+        failed = sum(c.clause_status == ClauseStatus.UPLOAD_FAILED.value for c in clauses)
+        skipped = sum(
+            bool(c.duplicate_flag) and (c.user_decision or "").strip().startswith("skip")
             for c in clauses
         )
-        skipped = sum(c.clause_status == ClauseStatus.SKIPPED.value for c in clauses)
 
-        if not clauses and current is not None and current.document_status == DocumentStatus.PENDING_CREATE.value:
-            status = DocumentStatus.PENDING_CREATE.value
+        if not clauses:
+            status = (
+                current.document_status
+                if current is not None
+                else DocumentStatus.PENDING_CONFIRM.value
+            )
         elif clauses and all(c.clause_status == ClauseStatus.UPLOAD_SUCCESS.value for c in clauses):
             status = DocumentStatus.COMPLETED.value
         elif success > 0:
             status = DocumentStatus.PARTIAL.value
         elif any(c.clause_status == ClauseStatus.PENDING_UPLOAD.value for c in clauses):
             status = DocumentStatus.PENDING_UPLOAD.value
-        elif any(c.clause_status == ClauseStatus.PENDING_CREATE.value for c in clauses):
-            status = DocumentStatus.PENDING_CREATE.value
+        elif any(c.clause_status == ClauseStatus.UPLOADING.value for c in clauses):
+            status = DocumentStatus.UPLOADING.value
         elif failed > 0:
             status = DocumentStatus.FAILED.value
         else:
             status = DocumentStatus.PENDING_CONFIRM.value
         if forced_status is not None:
-            status = forced_status
+            status = _normalize_document_status(forced_status)
 
         self.update_document(
             document_id,

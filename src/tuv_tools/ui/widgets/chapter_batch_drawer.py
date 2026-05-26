@@ -1,4 +1,4 @@
-"""Chapter 批量导入工作台右侧抽屉。"""
+"""Chapter 批量上传工作台右侧抽屉。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from .chapter_batch_document_form import ChapterBatchDocumentForm
 
 
 class ChapterBatchDrawer(QWidget):
-    """最小右侧抽屉壳体，仅编辑单个文档。"""
+    """单文档核对与上传抽屉。"""
 
     MIN_WIDTH = 560
     PREFERRED_WIDTH = 640
@@ -34,6 +34,8 @@ class ChapterBatchDrawer(QWidget):
         super().__init__(parent)
         self._document_field_cache: dict[int, dict] = {}
         self._clause_field_cache: dict[int, dict[int, dict]] = {}
+        self._saved_document_field_cache: dict[int, dict] = {}
+        self._saved_clause_field_cache: dict[int, dict[int, dict]] = {}
         self._document: BatchImportDocument | None = None
         self._active_document_id: int | None = None
         self._drawer_width = self.PREFERRED_WIDTH
@@ -133,7 +135,7 @@ class ChapterBatchDrawer(QWidget):
     def set_documents(self, documents: list[BatchImportDocument]) -> None:
         if self._active_document_id is not None:
             self._cache_current_document_fields()
-        self._cache_current_clause_fields()
+            self._cache_current_clause_fields()
         self._document = documents[0] if documents else None
         if self._document is None:
             self._active_document_id = None
@@ -151,18 +153,24 @@ class ChapterBatchDrawer(QWidget):
         self._summary.setText(
             f"状态：{document.document_status} | 模式：{document.split_mode} | 标准：{document.standard or '(空)'}"
         )
-        self._document_form.load_document(self._document_field_cache.get(document.id or -1, {
-            "standard": document.standard,
-            "folder_id": document.folder_id,
-            "folder_name": document.folder_name,
-            "product_type": document.product_type,
-            "plan_sr": document.plan_sr,
-            "standard_version": document.standard_version,
-            "chapter_version": document.chapter_version,
-            "specific_product": document.specific_product,
-        }))
+        fields = self._document_field_cache.get(
+            document.id or -1,
+            {
+                "standard": document.standard,
+                "folder_id": document.folder_id,
+                "folder_name": document.folder_name,
+                "product_type": document.product_type,
+                "plan_sr": document.plan_sr,
+                "standard_version": document.standard_version,
+                "chapter_version": document.chapter_version,
+                "specific_product": document.specific_product,
+            },
+        )
+        self._document_form.load_document(fields)
         self._clause_table.load_clauses([])
         self._active_document_id = document.id
+        if document.id is not None:
+            self._saved_document_field_cache.setdefault(document.id, dict(fields))
 
     def current_document(self) -> BatchImportDocument | None:
         return self._document
@@ -173,6 +181,7 @@ class ChapterBatchDrawer(QWidget):
             QMessageBox.information(self, "保存", "请先选择一个文档。")
             return
         self._cache_current_clause_fields()
+        self._cache_current_document_fields()
         if document.id is not None:
             self.save_requested.emit(document.id)
 
@@ -204,6 +213,28 @@ class ChapterBatchDrawer(QWidget):
             result[document.id] = self._document_field_cache.get(document.id, self._document_form.to_document_fields())
         return result
 
+    def mark_saved(self, document_id: int) -> None:
+        self._cache_current_document_fields()
+        self._cache_current_clause_fields()
+        if document_id in self._document_field_cache:
+            self._saved_document_field_cache[document_id] = dict(self._document_field_cache[document_id])
+        if document_id in self._clause_field_cache:
+            self._saved_clause_field_cache[document_id] = {
+                clause_id: dict(fields) for clause_id, fields in self._clause_field_cache[document_id].items()
+            }
+
+    def is_dirty(self, document_id: int) -> bool:
+        if self._active_document_id == document_id:
+            self._cache_current_document_fields()
+            self._cache_current_clause_fields()
+        current_doc = self._document_field_cache.get(document_id, {})
+        saved_doc = self._saved_document_field_cache.get(document_id, {})
+        if current_doc != saved_doc:
+            return True
+        current_clauses = self._clause_field_cache.get(document_id, {})
+        saved_clauses = self._saved_clause_field_cache.get(document_id, {})
+        return current_clauses != saved_clauses
+
     def _cache_current_document_fields(self) -> None:
         if self._active_document_id is None:
             return
@@ -211,6 +242,13 @@ class ChapterBatchDrawer(QWidget):
 
     def set_clauses(self, clauses: list[dict]) -> None:
         self._clause_table.load_clauses(clauses)
+        if self._active_document_id is not None:
+            current = self._clause_table.to_clause_updates()
+            self._clause_field_cache[self._active_document_id] = current
+            self._saved_clause_field_cache.setdefault(
+                self._active_document_id,
+                {clause_id: dict(fields) for clause_id, fields in current.items()},
+            )
 
     def set_edit_locked(self, locked: bool) -> None:
         self._save_btn.setEnabled(not locked)
@@ -230,8 +268,10 @@ class ChapterBatchDrawer(QWidget):
     def clear_clause_cache(self, document_id: int | None = None) -> None:
         if document_id is None:
             self._clause_field_cache.clear()
+            self._saved_clause_field_cache.clear()
             return
         self._clause_field_cache.pop(document_id, None)
+        self._saved_clause_field_cache.pop(document_id, None)
 
     def retain_clause_cache(self, document_id: int, clause_ids: set[int]) -> None:
         cached = self._clause_field_cache.get(document_id)
@@ -240,8 +280,13 @@ class ChapterBatchDrawer(QWidget):
         retained = {clause_id: fields for clause_id, fields in cached.items() if clause_id in clause_ids}
         if retained:
             self._clause_field_cache[document_id] = retained
+            saved = self._saved_clause_field_cache.get(document_id, {})
+            self._saved_clause_field_cache[document_id] = {
+                clause_id: fields for clause_id, fields in saved.items() if clause_id in clause_ids
+            }
             return
         self._clause_field_cache.pop(document_id, None)
+        self._saved_clause_field_cache.pop(document_id, None)
 
     def _cache_current_clause_fields(self) -> None:
         if self._active_document_id is None:

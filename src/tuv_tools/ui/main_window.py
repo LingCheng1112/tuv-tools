@@ -9,21 +9,21 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QPushButton,
-    QStackedWidget,
     QStyle,
     QStyledItemDelegate,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from .views.splitter_view import SplitterView
-from .views.chapter_view import ChapterView
 from .views.chapter_batch_view import ChapterBatchView
+from .views.chapter_view import ChapterView
 from .views.settings_dialog import SettingsDialog
+from .views.splitter_view import SplitterView
 
 
 class NoFocusDelegate(QStyledItemDelegate):
-    """去除列表项选中时的焦点矩形框"""
+    """去除列表项选中时的焦点矩形框。"""
 
     def paint(self, painter, option, index):
         option.state &= ~QStyle.StateFlag.State_HasFocus
@@ -31,7 +31,7 @@ class NoFocusDelegate(QStyledItemDelegate):
 
 
 class MainWindow(QMainWindow):
-    """应用主窗口"""
+    """应用主窗口。"""
 
     def __init__(self):
         super().__init__()
@@ -45,7 +45,6 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # 侧边栏容器
         nav_container = QWidget()
         nav_container.setFixedWidth(180)
         nav_layout = QVBoxLayout(nav_container)
@@ -54,7 +53,8 @@ class MainWindow(QMainWindow):
 
         self._nav = QListWidget()
         self._nav.setItemDelegate(NoFocusDelegate(self._nav))
-        self._nav.setStyleSheet("""
+        self._nav.setStyleSheet(
+            """
             QListWidget {
                 background-color: #2b2d30;
                 color: #dcdcdc;
@@ -74,14 +74,15 @@ class MainWindow(QMainWindow):
             QListWidget::item:hover:!selected {
                 background-color: #333537;
             }
-        """)
+            """
+        )
         nav_layout.addWidget(self._nav)
 
-        # 设置按钮（固定在底部）
-        self._settings_btn = QPushButton("⚙ 设置")
+        self._settings_btn = QPushButton("⚿ 设置")
         self._settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._settings_btn.clicked.connect(self._open_settings)
-        self._settings_btn.setStyleSheet("""
+        self._settings_btn.setStyleSheet(
+            """
             QPushButton {
                 background-color: #2b2d30;
                 color: #dcdcdc;
@@ -94,7 +95,8 @@ class MainWindow(QMainWindow):
             QPushButton:hover {
                 background-color: #333537;
             }
-        """)
+            """
+        )
         nav_layout.addWidget(self._settings_btn)
 
         layout.addWidget(nav_container)
@@ -107,10 +109,10 @@ class MainWindow(QMainWindow):
         self._nav.setCurrentRow(0)
 
     def _register_views(self):
-        """注册所有功能视图（新增功能在此添加）"""
+        """注册所有功能视图。"""
         self._add_view("文档拆分", SplitterView())
         self._add_view("条款管理", ChapterView())
-        self._add_view("条款批量导入", ChapterBatchView())
+        self._add_view("条款批量上传", ChapterBatchView())
 
     def _add_view(self, label: str, widget: QWidget):
         item = QListWidgetItem(label)

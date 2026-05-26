@@ -1,4 +1,4 @@
-"""Chapter 批量导入工作台本地业务服务。"""
+"""Chapter 批量上传工作台本地业务服务。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,13 @@ from tuv_tools.core.splitter.parsing import build_sections
 from tuv_tools.core.splitter.ui_helpers import extract_clause_test_content
 from tuv_tools.core.splitter.utils import safe_name
 
-from .models import BatchImportClause, BatchImportDocument, DocumentStatus, SplitMode, is_document_running
+from .models import (
+    BatchImportClause,
+    BatchImportDocument,
+    DocumentStatus,
+    SplitMode,
+    is_document_running,
+)
 from .repository import ChapterBatchRepository
 
 CHAPTER_ROOT_FOLDER_ID = 2
@@ -28,24 +34,54 @@ class DuplicateCheckResult:
     reason: str = ""
 
 
-def check_duplicate_candidates(
+def _same_specific_product(left: str | None, right: str | None) -> bool:
+    """按业务约定比较 specific_product，空值只与空值相等。"""
+    left_value = (left or "").strip()
+    right_value = (right or "").strip()
+    if not left_value and not right_value:
+        return True
+    if not left_value or not right_value:
+        return False
+    return left_value == right_value
+
+
+def find_duplicate_candidate_row(
     folder_id: int | None,
     clause: BatchImportClause,
+    specific_product: str,
     existing_rows: list[dict],
-) -> DuplicateCheckResult:
-    """按同目录下 term + testContent 判断疑似重复。"""
+) -> dict | None:
+    """返回命中的重复后端条款行。"""
     if folder_id is None:
-        return DuplicateCheckResult(False, "")
+        return None
     for row in existing_rows:
         if row.get("folder_id") != folder_id:
             continue
-        if row.get("term") == clause.term and row.get("test_content") == clause.test_content:
-            return DuplicateCheckResult(True, "同一归属文件夹下 term + testContent 相同")
+        if row.get("term") != clause.term:
+            continue
+        if row.get("test_content") != clause.test_content:
+            continue
+        if not _same_specific_product(row.get("specific_product"), specific_product):
+            continue
+        return row
+    return None
+
+
+def check_duplicate_candidates(
+    folder_id: int | None,
+    clause: BatchImportClause,
+    specific_product: str,
+    existing_rows: list[dict],
+) -> DuplicateCheckResult:
+    """按同目录下 folder + term + testContent + specific_product 判重。"""
+    row = find_duplicate_candidate_row(folder_id, clause, specific_product, existing_rows)
+    if row is not None:
+        return DuplicateCheckResult(True, "同一归属文件夹下 term + testContent + specificProduct 相同")
     return DuplicateCheckResult(False, "")
 
 
 class ChapterBatchService:
-    """封装文档导入、默认值生成、重新拆分重置等本地业务。"""
+    """封装导入、拆分、判重、保存确认等本地业务。"""
 
     def __init__(self, repo: ChapterBatchRepository, output_root: Path | None = None):
         self._repo = repo
@@ -64,7 +100,7 @@ class ChapterBatchService:
                 file_path=file_path,
                 file_name=file_name,
                 file_fingerprint=fingerprint,
-                document_status=DocumentStatus.PENDING_SPLIT.value,
+                document_status=DocumentStatus.PREPARING.value,
                 split_mode=split_mode,
                 standard=standard,
                 plan_sr="1",
@@ -221,7 +257,14 @@ class ChapterBatchService:
             )
         return clauses
 
-    def _export_section_mode(self, docx_path, output_dir, sections, clean_patterns, standard: str) -> list[BatchImportClause]:
+    def _export_section_mode(
+        self,
+        docx_path,
+        output_dir,
+        sections,
+        clean_patterns,
+        standard: str,
+    ) -> list[BatchImportClause]:
         output_dir = Path(output_dir) / "versions_docx"
         grouped: dict[str, list] = {}
         for section in sections:
@@ -248,7 +291,7 @@ class ChapterBatchService:
         return clauses
 
     def mark_duplicate_candidates(self, document_id: int, existing_rows: list[dict]) -> list[int]:
-        """标记同目录下 term + testContent 疑似重复的条款。"""
+        """标记同目录下疑似重复的条款。"""
         document = self._repo.get_document(document_id)
         if document is None:
             return []
@@ -256,7 +299,12 @@ class ChapterBatchService:
         for clause in self._repo.get_clauses(document_id):
             if clause.id is None:
                 continue
-            result = check_duplicate_candidates(document.folder_id, clause, existing_rows)
+            result = check_duplicate_candidates(
+                document.folder_id,
+                clause,
+                document.specific_product,
+                existing_rows,
+            )
             self._repo.update_clause(
                 clause.id,
                 duplicate_flag=result.is_duplicate,
@@ -299,7 +347,7 @@ class ChapterBatchService:
                 "standard_version": fields.get("standard_version", ""),
                 "chapter_version": fields.get("chapter_version", ""),
                 "specific_product": fields.get("specific_product", ""),
-                "document_status": DocumentStatus.PENDING_CREATE.value,
+                "document_status": DocumentStatus.PENDING_UPLOAD.value,
             }
             self._repo.update_document(document_id, **payload)
             self._repo.reaggregate_document(document_id)

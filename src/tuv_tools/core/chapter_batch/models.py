@@ -18,28 +18,37 @@ class SplitMode(StrEnum):
 class DocumentStatus(StrEnum):
     """工作台文档级状态。"""
 
-    PENDING_SPLIT = "待拆分"
+    PREPARING = "预处理中"
     SPLITTING = "拆分中"
     PENDING_CONFIRM = "待确认"
-    PENDING_CREATE = "待创建"
-    CREATING = "创建中"
     PENDING_UPLOAD = "待上传"
     UPLOADING = "上传中"
     COMPLETED = "已完成"
     PARTIAL = "部分完成"
-    SKIPPED = "已跳过"
     FAILED = "失败"
 
 
 class ClauseStatus(StrEnum):
     """工作台条款级状态。"""
 
-    PENDING_CREATE = "待创建"
-    CREATE_FAILED = "创建失败"
     PENDING_UPLOAD = "待上传"
+    UPLOADING = "上传中"
     UPLOAD_SUCCESS = "上传成功"
     UPLOAD_FAILED = "上传失败"
-    SKIPPED = "用户跳过"
+
+
+@dataclass(frozen=True, slots=True)
+class ChapterBatchProgressEvent:
+    """工作台运行时进度事件，仅用于 UI 内存态展示。"""
+
+    document_id: int
+    phase: str
+    percent: int
+    message: str = ""
+    current_index: int = 0
+    total_count: int = 0
+    current_clause_term: str = ""
+    action: str = ""
 
 
 KNOWN_CLAUSE_STATUSES = {status.value for status in ClauseStatus}
@@ -50,15 +59,15 @@ BACKEND_STATUS_UNKNOWN_REASON = "后端状态未知，禁止编辑"
 BACKEND_NOT_DRAFT_REASON = "后端非草稿，禁止编辑"
 
 EXECUTABLE_DOCUMENT_STATUSES = {
-    DocumentStatus.PENDING_CREATE.value,
+    DocumentStatus.PENDING_CONFIRM.value,
     DocumentStatus.PENDING_UPLOAD.value,
     DocumentStatus.PARTIAL.value,
     DocumentStatus.FAILED.value,
 }
 
 RUNNING_DOCUMENT_STATUSES = {
+    DocumentStatus.PREPARING.value,
     DocumentStatus.SPLITTING.value,
-    DocumentStatus.CREATING.value,
     DocumentStatus.UPLOADING.value,
 }
 
@@ -101,7 +110,7 @@ class BatchImportDocument:
     file_path: str = ""
     file_name: str = ""
     file_fingerprint: str = ""
-    document_status: str = DocumentStatus.PENDING_SPLIT.value
+    document_status: str = DocumentStatus.PREPARING.value
     split_mode: str = SplitMode.CLAUSE.value
     standard: str = ""
     folder_id: int | None = None
@@ -131,7 +140,7 @@ class BatchImportClause:
     sort_index: int = 0
     term: str = ""
     test_content: str = ""
-    clause_status: str = ClauseStatus.PENDING_CREATE.value
+    clause_status: str = ClauseStatus.PENDING_UPLOAD.value
     chapter_id: int | None = None
     backend_chapter_status: int | None = None
     source_docx_path: str = ""

@@ -43,7 +43,7 @@ class TestChapterBatchService:
         saved = repo.get_document(docs[0].id)
         assert saved is not None
         assert saved.standard == "60335-2-9"
-        assert saved.document_status == DocumentStatus.PENDING_SPLIT.value
+        assert saved.document_status == DocumentStatus.PREPARING.value
         assert saved.split_mode == SplitMode.CLAUSE.value
 
     def test_import_documents_allows_missing_standard(self):
@@ -194,24 +194,70 @@ class TestChapterBatchService:
         assert doc.split_mode == SplitMode.CLAUSE.value
         assert len(clauses) == 1
 
-    def test_duplicate_check_uses_folder_term_and_test_content(self):
+    def test_duplicate_check_uses_folder_term_test_content_and_specific_product(self):
         from tuv_tools.core.chapter_batch.service import check_duplicate_candidates
 
         current = BatchImportClause(term="10.1", test_content="Heating")
-        existing = [{"term": "10.1", "test_content": "Heating", "folder_id": 7}]
+        existing = [
+            {
+                "term": "10.1",
+                "test_content": "Heating",
+                "folder_id": 7,
+                "specific_product": "Model A",
+            }
+        ]
 
-        result = check_duplicate_candidates(folder_id=7, clause=current, existing_rows=existing)
+        result = check_duplicate_candidates(
+            folder_id=7,
+            clause=current,
+            specific_product="Model A",
+            existing_rows=existing,
+        )
 
         assert result.is_duplicate is True
-        assert "term + testContent" in result.reason
+        assert "specificProduct" in result.reason
+
+    def test_duplicate_check_treats_blank_and_non_blank_specific_product_as_non_duplicate(self):
+        from tuv_tools.core.chapter_batch.service import check_duplicate_candidates
+
+        current = BatchImportClause(term="10.1", test_content="Heating")
+        existing = [
+            {
+                "term": "10.1",
+                "test_content": "Heating",
+                "folder_id": 7,
+                "specific_product": "Model A",
+            }
+        ]
+
+        result = check_duplicate_candidates(
+            folder_id=7,
+            clause=current,
+            specific_product="",
+            existing_rows=existing,
+        )
+
+        assert result.is_duplicate is False
 
     def test_duplicate_check_ignores_other_folder(self):
         from tuv_tools.core.chapter_batch.service import check_duplicate_candidates
 
         current = BatchImportClause(term="10.1", test_content="Heating")
-        existing = [{"term": "10.1", "test_content": "Heating", "folder_id": 9}]
+        existing = [
+            {
+                "term": "10.1",
+                "test_content": "Heating",
+                "folder_id": 9,
+                "specific_product": "Model A",
+            }
+        ]
 
-        result = check_duplicate_candidates(folder_id=7, clause=current, existing_rows=existing)
+        result = check_duplicate_candidates(
+            folder_id=7,
+            clause=current,
+            specific_product="Model A",
+            existing_rows=existing,
+        )
 
         assert result.is_duplicate is False
 
@@ -222,24 +268,39 @@ class TestChapterBatchService:
                 file_path="C:/docs/a.docx",
                 file_name="a.docx",
                 folder_id=7,
+                specific_product="Model A",
             )
         )
         repo.replace_clauses(
             doc_id,
-            [BatchImportClause(sort_index=0, term="10.1", test_content="Heating", source_docx_path="C:/out/10_1.docx")],
+            [
+                BatchImportClause(
+                    sort_index=0,
+                    term="10.1",
+                    test_content="Heating",
+                    source_docx_path="C:/out/10_1.docx",
+                )
+            ],
         )
 
         duplicates = service.mark_duplicate_candidates(
             doc_id,
-            [{"folder_id": 7, "term": "10.1", "test_content": "Heating"}],
+            [
+                {
+                    "folder_id": 7,
+                    "term": "10.1",
+                    "test_content": "Heating",
+                    "specific_product": "Model A",
+                }
+            ],
         )
 
         clause = repo.get_clauses(doc_id)[0]
         assert duplicates == [clause.id]
         assert clause.duplicate_flag is True
-        assert "term + testContent" in clause.duplicate_reason
+        assert "specificProduct" in clause.duplicate_reason
 
-    def test_save_confirmed_documents_sets_pending_create(self):
+    def test_save_confirmed_documents_sets_pending_upload(self):
         service, repo = _new_service()
         doc_id = repo.create_document(
             BatchImportDocument(
@@ -265,7 +326,7 @@ class TestChapterBatchService:
         saved = repo.get_document(doc_id)
         assert ready == [doc_id]
         assert saved is not None
-        assert saved.document_status == DocumentStatus.PENDING_CREATE.value
+        assert saved.document_status == DocumentStatus.PENDING_UPLOAD.value
         assert saved.standard == "60335-2-9"
 
     def test_save_confirmed_documents_skips_running_document(self):
