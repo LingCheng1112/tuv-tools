@@ -59,7 +59,7 @@ class TestChapterBatchService:
         assert saved.standard == ""
         assert saved.split_mode == SplitMode.SECTION.value
 
-    def test_import_documents_auto_fills_folder_and_product_type_from_tree(self):
+    def test_complete_folder_context_fills_folder_and_product_type_from_tree(self):
         service, repo = _new_service()
 
         class Node:
@@ -78,15 +78,17 @@ class TestChapterBatchService:
             [r"C:\docs\IEC60335-2-9 fryer.docx"],
             split_mode=SplitMode.CLAUSE.value,
         )
+        service.complete_folder_context(docs[0].id)
 
         saved = repo.get_document(docs[0].id)
         assert saved is not None
         assert saved.standard == "60335-2-9"
+        assert saved.document_status == DocumentStatus.PREPARING.value
         assert saved.folder_id == 11
         assert saved.folder_name == "60335-2-9"
         assert saved.product_type == "家电"
 
-    def test_import_documents_product_type_uses_root_child_ancestor(self):
+    def test_complete_folder_context_product_type_uses_root_child_ancestor(self):
         service, repo = _new_service()
 
         class Node:
@@ -106,6 +108,7 @@ class TestChapterBatchService:
             [r"C:\docs\IEC60335-2-9 fryer.docx"],
             split_mode=SplitMode.CLAUSE.value,
         )
+        service.complete_folder_context(docs[0].id)
 
         saved = repo.get_document(docs[0].id)
         assert saved is not None
@@ -113,7 +116,7 @@ class TestChapterBatchService:
         assert saved.folder_name == "60335-2-9"
         assert saved.product_type == "家电"
 
-    def test_import_documents_keeps_folder_empty_when_tree_has_no_match(self):
+    def test_import_documents_keeps_folder_empty_before_background_context_completion(self):
         service, repo = _new_service()
         service._load_full_folder_tree = lambda: []
 
@@ -125,6 +128,22 @@ class TestChapterBatchService:
         saved = repo.get_document(docs[0].id)
         assert saved is not None
         assert saved.standard == "60335-2-9"
+        assert saved.folder_id is None
+        assert saved.folder_name == ""
+        assert saved.product_type == ""
+
+    def test_complete_folder_context_keeps_folder_empty_when_tree_has_no_match(self):
+        service, repo = _new_service()
+        service._load_full_folder_tree = lambda: []
+
+        docs = service.import_documents(
+            [r"C:\docs\IEC60335-2-9 fryer.docx"],
+            split_mode=SplitMode.CLAUSE.value,
+        )
+        service.complete_folder_context(docs[0].id)
+
+        saved = repo.get_document(docs[0].id)
+        assert saved is not None
         assert saved.folder_id is None
         assert saved.folder_name == ""
         assert saved.product_type == ""
@@ -370,7 +389,7 @@ class TestChapterBatchService:
         saved = repo.get_document(docs[0].id)
         clauses = repo.get_clauses(docs[0].id)
         assert saved is not None
-        assert saved.document_status == DocumentStatus.PENDING_CONFIRM.value
+        assert saved.document_status == DocumentStatus.PENDING_UPLOAD.value
         assert saved.total_clause_count == len(clauses)
         assert len(clauses) > 0
         assert clauses[0].term
@@ -406,7 +425,7 @@ class TestChapterBatchService:
         clauses = repo.get_clauses(docs[0].id)
         terms = [clause.term for clause in clauses]
         assert saved is not None
-        assert saved.document_status == DocumentStatus.PENDING_CONFIRM.value
+        assert saved.document_status == DocumentStatus.PENDING_UPLOAD.value
         assert "10" in terms
         assert all("." not in term for term in terms if term.isdigit())
         clause_10 = next(clause for clause in clauses if clause.term == "10")

@@ -253,15 +253,23 @@ class ChapterBatchRepository:
         )
         self._conn.commit()
 
+    def clear_queued_flags(self) -> None:
+        self._conn.execute(
+            """
+            UPDATE batch_import_documents
+            SET is_queued = 0, updated_at = ?
+            WHERE is_queued != 0
+            """,
+            (_now(),),
+        )
+        self._conn.commit()
+
     def reaggregate_document(self, document_id: int, *, forced_status: str | None = None) -> None:
         clauses = self.get_clauses(document_id)
         current = self.get_document(document_id)
         success = sum(c.clause_status == ClauseStatus.UPLOAD_SUCCESS.value for c in clauses)
         failed = sum(c.clause_status == ClauseStatus.UPLOAD_FAILED.value for c in clauses)
-        skipped = sum(
-            bool(c.duplicate_flag) and (c.user_decision or "").strip().startswith("skip")
-            for c in clauses
-        )
+        skipped = 0
 
         if not clauses:
             status = (

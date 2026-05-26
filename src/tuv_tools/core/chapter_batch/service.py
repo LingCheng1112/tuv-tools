@@ -157,7 +157,6 @@ class ChapterBatchService:
                 plan_sr="1",
                 chapter_version="1.0",
             )
-            self._apply_default_folder_context(document)
             document.id = self._repo.create_document(document)
             saved = self._repo.get_document(document.id)
             if saved is not None:
@@ -202,6 +201,24 @@ class ChapterBatchService:
         result = (target.id, target.folder_name, product_type)
         self._folder_context_cache[standard] = result
         return result
+
+    def complete_folder_context(self, document_id: int) -> None:
+        document = self._repo.get_document(document_id)
+        if document is None:
+            return
+        standard = (document.standard or "").strip()
+        if not standard:
+            return
+        context = self._resolve_folder_context_for_standard(standard)
+        if context is None:
+            return
+        folder_id, folder_name, product_type = context
+        self._repo.update_document(
+            document_id,
+            folder_id=folder_id,
+            folder_name=folder_name,
+            product_type=product_type or document.product_type or "家电",
+        )
 
     def _load_full_folder_tree(self) -> list:
         try:
@@ -300,7 +317,7 @@ class ChapterBatchService:
         self._repo.replace_clauses(document_id, clauses)
         self._repo.update_document(
             document_id,
-            document_status=DocumentStatus.PENDING_CONFIRM.value,
+            document_status=DocumentStatus.PENDING_UPLOAD.value,
             total_clause_count=len(clauses),
             success_clause_count=0,
             failed_clause_count=0,

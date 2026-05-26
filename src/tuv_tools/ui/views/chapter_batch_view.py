@@ -167,6 +167,15 @@ class ChapterBatchProcessingWorker(QThread):
                         doc_index=doc_index,
                         phase="processing",
                         percent=0,
+                        message="补全目录参数",
+                    )
+                    service.complete_folder_context(document_id)
+                    self._emit_processing_progress(
+                        document_id=document_id,
+                        total_docs=total_docs,
+                        doc_index=doc_index,
+                        phase="processing",
+                        percent=15,
                         message="开始预处理",
                     )
                     doc = None
@@ -185,7 +194,7 @@ class ChapterBatchProcessingWorker(QThread):
                         total_docs=total_docs,
                         doc_index=doc_index,
                         phase="processing",
-                        percent=50,
+                        percent=55,
                         message="预处理完成，开始拆分",
                     )
                     service.split_document(document_id)

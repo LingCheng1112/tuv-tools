@@ -487,7 +487,7 @@ def test_executor_cancel_clears_remaining_queue_flags_and_keeps_pending_upload(t
     assert first is not None
     assert second.is_queued is False
     assert second.document_status == DocumentStatus.PENDING_UPLOAD.value
-    assert first.document_status == DocumentStatus.PENDING_UPLOAD.value
+    assert first.document_status == DocumentStatus.COMPLETED.value
 
 
 def test_executor_cancel_can_be_requested_by_worker(tmp_path):
@@ -514,7 +514,7 @@ def test_executor_cancel_can_be_requested_by_worker(tmp_path):
     assert controller.cancel_requested() is True
 
 
-def test_cancel_after_upload_pipeline_starts_without_success_marks_document_pending_upload(tmp_path):
+def test_cancel_after_successful_single_upload_marks_document_completed(tmp_path):
     from tuv_tools.core.chapter_batch.executor import ChapterBatchExecutionController, ChapterBatchExecutor
 
     repo = _new_repo(tmp_path)
@@ -542,9 +542,9 @@ def test_cancel_after_upload_pipeline_starts_without_success_marks_document_pend
     saved = repo.get_document(doc_id)
     clause = repo.get_clauses(doc_id)[0]
     assert saved is not None
-    assert saved.document_status == DocumentStatus.PENDING_UPLOAD.value
-    assert saved.success_clause_count == 0
-    assert clause.clause_status == ClauseStatus.PENDING_UPLOAD.value
+    assert saved.document_status == DocumentStatus.COMPLETED.value
+    assert saved.success_clause_count == 1
+    assert clause.clause_status == ClauseStatus.UPLOAD_SUCCESS.value
 
 
 def test_cancel_after_partial_upload_marks_document_partial(tmp_path):
@@ -575,6 +575,13 @@ def test_cancel_after_partial_upload_marks_document_partial(tmp_path):
                 chapter_id=2,
                 source_docx_path="C:/out/10_2.docx",
             ),
+            BatchImportClause(
+                sort_index=2,
+                term="10.3",
+                clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                chapter_id=3,
+                source_docx_path="C:/out/10_3.docx",
+            ),
         ],
     )
     calls = {"count": 0}
@@ -597,12 +604,13 @@ def test_cancel_after_partial_upload_marks_document_partial(tmp_path):
     clauses = repo.get_clauses(doc_id)
     assert saved is not None
     assert saved.document_status == DocumentStatus.PARTIAL.value
-    assert saved.success_clause_count == 1
+    assert saved.success_clause_count == 2
     assert clauses[0].clause_status == ClauseStatus.UPLOAD_SUCCESS.value
-    assert clauses[1].clause_status == ClauseStatus.PENDING_UPLOAD.value
+    assert clauses[1].clause_status == ClauseStatus.UPLOAD_SUCCESS.value
+    assert clauses[2].clause_status == ClauseStatus.PENDING_UPLOAD.value
 
 
-def test_cancel_on_last_upload_still_uses_explicit_cancel_aggregation(tmp_path):
+def test_cancel_on_last_upload_keeps_completed_result_without_forced_cancel_status(tmp_path):
     from tuv_tools.core.chapter_batch.executor import ChapterBatchExecutor
 
     repo = _new_repo(tmp_path)
@@ -650,10 +658,59 @@ def test_cancel_on_last_upload_still_uses_explicit_cancel_aggregation(tmp_path):
     saved = repo.get_document(doc_id)
     clause = repo.get_clauses(doc_id)[0]
     assert saved is not None
-    assert saved.document_status == DocumentStatus.PENDING_UPLOAD.value
-    assert saved.success_clause_count == 0
-    assert clause.clause_status == ClauseStatus.PENDING_UPLOAD.value
-    assert DocumentStatus.PENDING_UPLOAD.value in forced_statuses
+    assert saved.document_status == DocumentStatus.COMPLETED.value
+    assert saved.success_clause_count == 1
+    assert clause.clause_status == ClauseStatus.UPLOAD_SUCCESS.value
+    assert forced_statuses == [None]
+
+
+def test_cancel_after_successful_upload_keeps_success_status(tmp_path):
+    from tuv_tools.core.chapter_batch.executor import ChapterBatchExecutionController, ChapterBatchExecutor
+
+    repo = _new_repo(tmp_path)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/success-cancel.docx",
+            file_name="success-cancel.docx",
+            document_status=DocumentStatus.PENDING_UPLOAD.value,
+        )
+    )
+    repo.replace_clauses(
+        doc_id,
+        [
+            BatchImportClause(
+                sort_index=0,
+                term="10.1",
+                clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                chapter_id=1,
+                source_docx_path="C:/out/10_1.docx",
+            )
+        ],
+    )
+    controller = ChapterBatchExecutionController()
+    uploads = []
+
+    def upload_doc(chapter_id, path):
+        uploads.append((chapter_id, path))
+        controller.request_cancel()
+
+    executor = ChapterBatchExecutor(
+        repo,
+        create_chapter=lambda _payload: 999,
+        upload_chapter_doc=upload_doc,
+        controller=controller,
+    )
+
+    executor.run_documents([doc_id])
+
+    saved = repo.get_document(doc_id)
+    clause = repo.get_clauses(doc_id)[0]
+    assert uploads == [(1, "C:/out/10_1.docx")]
+    assert saved is not None
+    assert saved.document_status == DocumentStatus.COMPLETED.value
+    assert saved.success_clause_count == 1
+    assert saved.failed_clause_count == 0
+    assert clause.clause_status == ClauseStatus.UPLOAD_SUCCESS.value
 
 
 def test_executor_run_clauses_only_processes_selected_clause_ids(tmp_path):

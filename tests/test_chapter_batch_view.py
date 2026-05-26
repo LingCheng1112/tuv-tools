@@ -157,6 +157,40 @@ def test_import_selected_paths_creates_records_before_background_processing(qapp
     assert started == [[repo.list_documents()[0].id]]
 
 
+def test_import_selected_paths_loads_rows_before_starting_processing(qapp, monkeypatch):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus, SplitMode
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    started = []
+
+    monkeypatch.setattr(view, "_choose_import_mode", lambda: SplitMode.CLAUSE.value)
+
+    def fake_import_documents(paths, split_mode):
+        doc_id = repo.create_document(
+            BatchImportDocument(
+                file_path=paths[0],
+                file_name="visible-first.docx",
+                document_status=DocumentStatus.PREPARING.value,
+                split_mode=split_mode,
+            )
+        )
+        return [repo.get_document(doc_id)]
+
+    monkeypatch.setattr(view._service, "import_documents", fake_import_documents)
+
+    def fake_start_processing(document_ids):
+        assert view._table.rowCount() == 1
+        started.append(document_ids)
+
+    monkeypatch.setattr(view, "_start_processing_documents", fake_start_processing)
+
+    view._import_selected_paths(["C:/docs/visible-first.docx"])
+
+    assert started == [[repo.list_documents()[0].id]]
+
+
 def test_checkboxes_update_selected_document_ids_in_list_order(qapp):
     from PySide6.QtWidgets import QCheckBox
     from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus

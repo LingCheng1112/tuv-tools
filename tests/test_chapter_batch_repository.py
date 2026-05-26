@@ -158,6 +158,46 @@ class TestChapterBatchRepository:
         assert doc.failed_clause_count == 0
         assert doc.skipped_clause_count == 0
 
+    def test_reaggregate_document_ignores_skip_like_decisions(self):
+        repo = _new_repo()
+        doc_id = repo.create_document(
+            BatchImportDocument(
+                file_path="C:/docs/skip.docx",
+                file_name="skip.docx",
+                document_status=DocumentStatus.UPLOADING.value,
+            )
+        )
+        repo.replace_clauses(
+            doc_id,
+            [
+                BatchImportClause(
+                    sort_index=0,
+                    term="8.1",
+                    clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                    duplicate_flag=True,
+                    user_decision="skip_duplicate",
+                    source_docx_path="C:/out/8_1.docx",
+                ),
+                BatchImportClause(
+                    sort_index=1,
+                    term="8.2",
+                    clause_status=ClauseStatus.UPLOAD_FAILED.value,
+                    duplicate_flag=True,
+                    user_decision="skip_duplicate_all",
+                    source_docx_path="C:/out/8_2.docx",
+                ),
+            ],
+        )
+
+        repo.reaggregate_document(doc_id)
+        doc = repo.get_document(doc_id)
+
+        assert doc is not None
+        assert doc.document_status == DocumentStatus.PENDING_UPLOAD.value
+        assert doc.success_clause_count == 0
+        assert doc.failed_clause_count == 1
+        assert doc.skipped_clause_count == 0
+
     def test_repository_normalizes_legacy_statuses_on_read(self):
         repo = _new_repo()
         doc_id = repo.create_document(
@@ -291,3 +331,39 @@ class TestChapterBatchRepository:
         assert doc.success_clause_count == 1
         assert doc.failed_clause_count == 1
         assert doc.skipped_clause_count == 0
+
+    def test_clear_queued_flags_resets_all_queued_documents(self):
+        repo = _new_repo()
+        first_id = repo.create_document(
+            BatchImportDocument(
+                file_path="C:/docs/queued-a.docx",
+                file_name="queued-a.docx",
+                is_queued=True,
+            )
+        )
+        second_id = repo.create_document(
+            BatchImportDocument(
+                file_path="C:/docs/queued-b.docx",
+                file_name="queued-b.docx",
+                is_queued=True,
+            )
+        )
+        third_id = repo.create_document(
+            BatchImportDocument(
+                file_path="C:/docs/not-queued.docx",
+                file_name="not-queued.docx",
+                is_queued=False,
+            )
+        )
+
+        repo.clear_queued_flags()
+
+        first = repo.get_document(first_id)
+        second = repo.get_document(second_id)
+        third = repo.get_document(third_id)
+        assert first is not None
+        assert second is not None
+        assert third is not None
+        assert first.is_queued is False
+        assert second.is_queued is False
+        assert third.is_queued is False

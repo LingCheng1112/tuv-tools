@@ -242,8 +242,9 @@ class ChapterBatchExecutor:
                     action_name="reupload",
                 )
                 if self._cancel_requested():
-                    self._apply_cancel(document_id)
-                    return
+                    if index < total_count:
+                        self._apply_cancel(document_id)
+                        return
                 if not completed:
                     continue
                 continue
@@ -280,8 +281,9 @@ class ChapterBatchExecutor:
                 action_name="upload",
             )
             if self._cancel_requested():
-                self._apply_cancel(document_id)
-                return
+                if index < total_count:
+                    self._apply_cancel(document_id)
+                    return
             if not completed:
                 continue
 
@@ -382,19 +384,14 @@ class ChapterBatchExecutor:
                 action=action_name,
             )
             self._upload_chapter_doc(clause.chapter_id, clause.source_docx_path)
-            if self._cancel_requested():
-                self._repo.update_clause(
-                    clause.id,
-                    clause_status=ClauseStatus.PENDING_UPLOAD.value,
-                    last_action="upload_cancelled",
-                )
-                return False
             self._repo.update_clause(
                 clause.id,
                 clause_status=ClauseStatus.UPLOAD_SUCCESS.value,
                 upload_error="",
                 last_action="upload",
             )
+            if self._cancel_requested():
+                return True
             self._emit_progress(
                 document_id=document_id,
                 percent=self._progress_percent(clause_index, total_count, 0.0),
@@ -468,6 +465,4 @@ class ChapterBatchExecutor:
         self._clear_queued_flags()
 
     def _clear_queued_flags(self) -> None:
-        for document in self._repo.list_documents():
-            if document.id is not None and document.is_queued:
-                self._repo.update_document(document.id, is_queued=0)
+        self._repo.clear_queued_flags()
