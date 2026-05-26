@@ -92,6 +92,7 @@ def _clean_paragraph_inline(paragraph: ET.Element, patterns: CleanPatterns) -> N
     ranges = _paragraph_removal_ranges(paragraph_visible, patterns)
     if not ranges:
         return
+    _trim_ranges_from_paragraph_text(paragraph, ranges)
 
     for child, span_start, span_end in spans:
         if span_start == span_end:
@@ -190,9 +191,17 @@ def _table_border_copy(table: ET.Element, border_name: str) -> ET.Element | None
 
 
 def _apply_border_to_row(row: ET.Element, border_name: str, border_template: ET.Element | None) -> None:
+    _apply_border_to_cells(row.findall("./w:tc", NS), border_name, border_template)
+
+
+def _apply_border_to_cells(
+    cells: list[ET.Element],
+    border_name: str,
+    border_template: ET.Element | None,
+) -> None:
     if border_template is None:
         return
-    for cell in row.findall("./w:tc", NS):
+    for cell in cells:
         tc_borders = _ensure_tc_borders(cell)
         existing = tc_borders.find(f"w:{border_name}", NS)
         if existing is not None:
@@ -269,8 +278,11 @@ def _preserve_outer_borders_after_cleanup(source_table: ET.Element, cleaned_tabl
     _apply_border_to_row(cleaned_rows[0], "top", top_border)
     _apply_border_to_row(cleaned_rows[-1], "bottom", bottom_border)
     for row in cleaned_rows:
-        _apply_border_to_row(row, "left", left_border)
-        _apply_border_to_row(row, "right", right_border)
+        cells = row.findall("./w:tc", NS)
+        if not cells:
+            continue
+        _apply_border_to_cells([cells[0]], "left", left_border)
+        _apply_border_to_cells([cells[-1]], "right", right_border)
 
 
 def _metadata_fragment_ranges(text: str) -> list[tuple[int, int]]:
@@ -302,6 +314,42 @@ def _remove_ranges_from_text(text: str, ranges: list[tuple[int, int]]) -> str:
     if cursor < len(text):
         parts.append(text[cursor:])
     return "".join(parts)
+
+
+def _trim_ranges_from_paragraph_text(paragraph: ET.Element, ranges: list[tuple[int, int]]) -> None:
+    if not ranges:
+        return
+    cursor = 0
+    for parent in paragraph.iter():
+        for child in list(parent):
+            if child.tag == W + "tab" or child.tag == W + "br":
+                node_start = cursor
+                node_end = cursor + 1
+                if any(range_start <= node_start and node_end <= range_end for range_start, range_end in ranges):
+                    parent.remove(child)
+                cursor = node_end
+                continue
+            if child.tag != W + "t":
+                continue
+            text = child.text or ""
+            if not text:
+                continue
+            node_start = cursor
+            node_end = cursor + len(text)
+            parts: list[str] = []
+            local_cursor = node_start
+            for range_start, range_end in ranges:
+                overlap_start = max(node_start, range_start)
+                overlap_end = min(node_end, range_end)
+                if overlap_start >= overlap_end:
+                    continue
+                if local_cursor < overlap_start:
+                    parts.append(text[local_cursor - node_start:overlap_start - node_start])
+                local_cursor = overlap_end
+            if local_cursor < node_end:
+                parts.append(text[local_cursor - node_start:node_end - node_start])
+            child.text = "".join(parts)
+            cursor = node_end
 
 
 def _has_inline_metadata_with_content(text: str) -> bool:

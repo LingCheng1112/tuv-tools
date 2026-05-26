@@ -430,6 +430,44 @@ class TestCloneParagraph:
         assert len(t_nodes) == 1
 
 
+class TestCleanParagraphInline:
+    @pytest.fixture
+    def patterns(self):
+        return [re.compile(r"Test date\s*:[^\n]*", re.IGNORECASE)]
+
+    def test_trims_inline_metadata_prefix_inside_single_run(self, patterns):
+        paragraph = ET.fromstring(
+            '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:r><w:t>Equipment : sample ID: tests specified in Cl. 11 but overturned position</w:t></w:r>"
+            "</w:p>"
+        )
+
+        _clean_paragraph_inline(paragraph, patterns)
+
+        rendered = paragraph_text(paragraph)
+        assert "Equipment" not in rendered
+        assert "sample ID" not in rendered
+        assert "tests specified in Cl. 11" in rendered
+
+    def test_trims_inline_metadata_prefix_with_tab_inside_single_run(self, patterns):
+        paragraph = ET.fromstring(
+            '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:r>"
+            "<w:t>Equipment :</w:t>"
+            "<w:tab/>"
+            "<w:t>sample ID: tests specified in Cl. 11 but overturned position</w:t>"
+            "</w:r>"
+            "</w:p>"
+        )
+
+        _clean_paragraph_inline(paragraph, patterns)
+
+        rendered = paragraph_text(paragraph)
+        assert "Equipment" not in rendered
+        assert "sample ID" not in rendered
+        assert "tests specified in Cl. 11" in rendered
+
+
 class TestCloneTableWithRows:
     def test_adds_bottom_border_to_truncated_last_row(self):
         xml = (
@@ -678,6 +716,44 @@ class TestPreserveOuterBordersAfterCleanup:
         assert bottom is not None
         assert bottom.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}sz") == "6"
 
+    def test_applies_left_and_right_only_to_outer_cells(self):
+        xml = (
+            '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:tr>"
+            "<w:tc><w:tcPr><w:tcBorders><w:left w:val=\"single\" w:sz=\"12\" /></w:tcBorders></w:tcPr><w:p><w:r><w:t>a</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>b</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:tcPr><w:tcBorders><w:right w:val=\"single\" w:sz=\"12\" /></w:tcBorders></w:tcPr><w:p><w:r><w:t>c</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>d</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>e</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>f</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "</w:tbl>"
+        )
+        source = ET.fromstring(xml)
+        cleaned = ET.fromstring(
+            '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>a</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>b</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>c</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "</w:tbl>"
+        )
+
+        _preserve_outer_borders_after_cleanup(source, cleaned)
+
+        cells = cleaned.findall("./w:tr/w:tc", NS)
+        first_borders = cells[0].find("./w:tcPr/w:tcBorders", NS)
+        middle_borders = cells[1].find("./w:tcPr/w:tcBorders", NS)
+        last_borders = cells[2].find("./w:tcPr/w:tcBorders", NS)
+
+        assert first_borders.find("w:left", NS) is not None
+        assert middle_borders.find("w:left", NS) is None
+        assert middle_borders.find("w:right", NS) is None
+        assert last_borders.find("w:right", NS) is not None
+
 
 # ═══════════════════════════════════════════════════
 # exporting 测试
@@ -739,6 +815,50 @@ class TestBuildDocumentXml:
 
 
 class TestBuildDocumentBlocks:
+    def test_does_not_insert_blank_paragraph_between_paragraphs_in_same_section(self):
+        section = Section(
+            clause_id="10.1",
+            major_version="10",
+            source_file="test.docx",
+            title="10.1 Title",
+            paragraphs=["First paragraph", "Second paragraph"],
+        )
+
+        blocks = _build_document_blocks([section], [], filter_revision_history=False)
+
+        assert len(blocks) == 2
+        assert paragraph_text(blocks[0]) == "First paragraph"
+        assert paragraph_text(blocks[1]) == "Second paragraph"
+
+    def test_does_not_insert_blank_paragraph_before_table_in_same_section(self):
+        section = Section(
+            clause_id="10.1",
+            major_version="10",
+            source_file="test.docx",
+            title="10.1 Title",
+            paragraphs=["Leading paragraph"],
+        )
+        section.table_slices.append(
+            TableSlice(
+                table_block_index=1,
+                table_index=1,
+                row_start=0,
+                row_end=1,
+                title="table",
+                rows=[["Cell"]],
+                xml=(
+                    '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                    "<w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr>"
+                    "</w:tbl>"
+                ),
+            )
+        )
+
+        blocks = _build_document_blocks([section], [], filter_revision_history=False)
+
+        assert len(blocks) == 2
+        assert blocks[1].tag.endswith("tbl")
+
     def test_skips_revision_history_paragraph_and_table(self):
         section = Section(
             clause_id="Annex_A",
@@ -777,6 +897,115 @@ class TestBuildDocumentBlocks:
 
         assert blocks == []
 
+    def test_revision_history_title_only_removes_immediately_following_revision_table(self):
+        section = Section(
+            clause_id="Annex_A",
+            major_version="Annex",
+            source_file="test.docx",
+            title="Annex A",
+            paragraphs=["History of Revision :", "Normal annex paragraph"],
+        )
+        section.table_slices.append(
+            TableSlice(
+                table_block_index=1,
+                table_index=1,
+                row_start=0,
+                row_end=2,
+                title="normal",
+                rows=[
+                    ["Date", "Briefing note", "Value"],
+                    ["2020-01-01", "Keep", "1"],
+                ],
+                xml=(
+                    '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                    "<w:tr>"
+                    "<w:tc><w:p><w:r><w:t>Date</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>Briefing note</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>Value</w:t></w:r></w:p></w:tc>"
+                    "</w:tr>"
+                    "<w:tr>"
+                    "<w:tc><w:p><w:r><w:t>2020-01-01</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>Keep</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>1</w:t></w:r></w:p></w:tc>"
+                    "</w:tr>"
+                    "</w:tbl>"
+                ),
+            )
+        )
+
+        blocks = _build_document_blocks([section], [], filter_revision_history=True)
+
+        rendered = [ET.tostring(block, encoding="unicode") for block in blocks]
+        assert any("Normal annex paragraph" in block for block in rendered)
+        assert any("Briefing note" in block for block in rendered)
+
+    def test_revision_history_title_keeps_normal_table_before_later_revision_table(self):
+        section = Section(
+            clause_id="Annex_T",
+            major_version="Annex",
+            source_file="test.docx",
+            title="Annex T",
+            paragraphs=["History of Revision :", "Normal annex paragraph"],
+        )
+        section.table_slices.append(
+            TableSlice(
+                table_block_index=1,
+                table_index=1,
+                row_start=0,
+                row_end=2,
+                title="normal",
+                rows=[
+                    ["Sample name", "Result"],
+                    ["A", "Pass"],
+                ],
+                xml=(
+                    '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                    "<w:tr>"
+                    "<w:tc><w:p><w:r><w:t>Sample name</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>Result</w:t></w:r></w:p></w:tc>"
+                    "</w:tr>"
+                    "<w:tr>"
+                    "<w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>Pass</w:t></w:r></w:p></w:tc>"
+                    "</w:tr>"
+                    "</w:tbl>"
+                ),
+            )
+        )
+        section.table_slices.append(
+            TableSlice(
+                table_block_index=2,
+                table_index=2,
+                row_start=0,
+                row_end=2,
+                title="revision",
+                rows=[
+                    ["Date", "Brief", "Reviewed by"],
+                    ["2020-01-01", "Publish", "Alice"],
+                ],
+                xml=(
+                    '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                    "<w:tr>"
+                    "<w:tc><w:p><w:r><w:t>Date</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>Brief</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>Reviewed by</w:t></w:r></w:p></w:tc>"
+                    "</w:tr>"
+                    "<w:tr>"
+                    "<w:tc><w:p><w:r><w:t>2020-01-01</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>Publish</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>Alice</w:t></w:r></w:p></w:tc>"
+                    "</w:tr>"
+                    "</w:tbl>"
+                ),
+            )
+        )
+
+        blocks = _build_document_blocks([section], [], filter_revision_history=True)
+
+        rendered = [ET.tostring(block, encoding="unicode") for block in blocks]
+        assert any("Sample name" in block for block in rendered)
+        assert not any("Reviewed by" in block for block in rendered)
+
     def test_keeps_normal_annex_content(self):
         section = Section(
             clause_id="Annex_T",
@@ -789,6 +1018,46 @@ class TestBuildDocumentBlocks:
         blocks = _build_document_blocks([section], [], filter_revision_history=True)
 
         assert len(blocks) == 1
+
+    def test_keeps_date_briefing_table_without_revision_history_title(self):
+        section = Section(
+            clause_id="Annex_T",
+            major_version="Annex",
+            source_file="test.docx",
+            title="Annex T",
+        )
+        section.table_slices.append(
+            TableSlice(
+                table_block_index=1,
+                table_index=1,
+                row_start=0,
+                row_end=2,
+                title="normal",
+                rows=[
+                    ["Date", "Briefing note", "Value"],
+                    ["2020-01-01", "Keep", "1"],
+                ],
+                xml=(
+                    '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                    "<w:tr>"
+                    "<w:tc><w:p><w:r><w:t>Date</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>Briefing note</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>Value</w:t></w:r></w:p></w:tc>"
+                    "</w:tr>"
+                    "<w:tr>"
+                    "<w:tc><w:p><w:r><w:t>2020-01-01</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>Keep</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>1</w:t></w:r></w:p></w:tc>"
+                    "</w:tr>"
+                    "</w:tbl>"
+                ),
+            )
+        )
+
+        blocks = _build_document_blocks([section], [], filter_revision_history=True)
+
+        assert len(blocks) == 1
+        assert "Briefing note" in ET.tostring(blocks[0], encoding="unicode")
 
 
 class TestCollapseSectionsForVersion:

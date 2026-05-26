@@ -67,7 +67,7 @@ def _is_revision_history_table(table_slice: TableSlice) -> bool:
         return False
     first_row = clean_text(" | ".join(value for value in table_slice.rows[0] if clean_text(value)))
     lowered = first_row.lower()
-    return "date" in lowered and "brief" in lowered
+    return "date" in lowered and "brief" in lowered and "briefing" not in lowered
 
 
 def _build_document_blocks(
@@ -77,31 +77,35 @@ def _build_document_blocks(
     filter_revision_history: bool = False,
 ) -> list[ET.Element]:
     blocks: list[ET.Element] = []
-    first_block = True
 
     for section in sections:
+        section_blocks: list[ET.Element] = []
+        awaiting_revision_history_table = False
+
         for para_idx, paragraph in enumerate(section.paragraphs):
             if not clean_text(paragraph):
                 continue
             if filter_revision_history and _is_revision_history_paragraph(paragraph):
+                awaiting_revision_history_table = True
                 continue
-            if not first_block:
-                blocks.append(clone_paragraph(""))
             if para_idx < len(section.paragraph_elements):
-                blocks.append(copy.deepcopy(section.paragraph_elements[para_idx]))
+                section_blocks.append(copy.deepcopy(section.paragraph_elements[para_idx]))
             else:
-                blocks.append(clone_paragraph(paragraph))
-            first_block = False
+                section_blocks.append(clone_paragraph(paragraph))
         for table_slice in section.table_slices:
-            if filter_revision_history and _is_revision_history_table(table_slice):
-                continue
             filtered_table = clean_table_xml(table_slice.xml, inline_clean_patterns)
             if filtered_table is None:
                 continue
-            if not first_block:
-                blocks.append(clone_paragraph(""))
-            blocks.append(filtered_table)
-            first_block = False
+            if filter_revision_history and awaiting_revision_history_table:
+                if _is_revision_history_table(table_slice):
+                    awaiting_revision_history_table = False
+                    continue
+            section_blocks.append(filtered_table)
+        if not section_blocks:
+            continue
+        if blocks:
+            blocks.append(clone_paragraph(""))
+        blocks.extend(section_blocks)
     return blocks
 
 
