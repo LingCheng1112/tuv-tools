@@ -529,8 +529,6 @@ def build_sections(
         is_ignored = _should_ignore_table(block)
 
         for clause, table_slice in table_sections:
-            if is_ignored and "." not in clause.clause_id:
-                continue
             current = Section(
                 clause_id=clause.clause_id,
                 major_version=clause.major_version,

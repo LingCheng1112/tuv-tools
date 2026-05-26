@@ -387,6 +387,23 @@ class TestBuildSections:
 # ═══════════════════════════════════════════════════
 
 
+    def test_preparing_table_document_keeps_clause_11(self):
+        sample = Path(r"D:\Data\-2-32\QMF-OR-31010 _60335-2-32.doc.docx")
+        if not sample.exists():
+            pytest.skip("sample document not available")
+
+        sections = build_sections(sample)
+        clause_ids = {section.clause_id for section in sections}
+        section_11 = next((item for item in sections if item.clause_id == "11"), None)
+
+        assert "11" in clause_ids
+        assert "2" not in clause_ids
+        assert "3" not in clause_ids
+        assert "4" not in clause_ids
+        assert section_11 is not None
+        assert "Heating" in section_11.title
+
+
 class TestShouldDropTextByRules:
     @pytest.fixture
     def patterns(self):
