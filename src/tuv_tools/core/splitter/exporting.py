@@ -23,6 +23,7 @@ from .models import (
 )
 from .utils import CleanPatterns, clean_text, extract_standard_number, safe_name, slugify
 
+_REVISION_HISTORY_PARA_RE = re.compile(r"^History\s+of\s+Revision\s*:?\s*$", re.IGNORECASE)
 
 def _emit_progress(
     progress: CoreProgressCallback | None,
@@ -57,23 +58,68 @@ def _merge_table_slices_xml(table_slices: list[TableSlice]) -> str:
     return ET.tostring(merged_table, encoding="unicode")
 
 
-def _build_document_xml(sections: list[Section], inline_clean_patterns: CleanPatterns) -> bytes:
+def _is_revision_history_paragraph(paragraph: str) -> bool:
+    return bool(_REVISION_HISTORY_PARA_RE.fullmatch(clean_text(paragraph)))
+
+
+def _is_revision_history_table(table_slice: TableSlice) -> bool:
+    if not table_slice.rows:
+        return False
+    first_row = clean_text(" | ".join(value for value in table_slice.rows[0] if clean_text(value)))
+    lowered = first_row.lower()
+    return "date" in lowered and "brief" in lowered
+
+
+def _build_document_blocks(
+    sections: list[Section],
+    inline_clean_patterns: CleanPatterns,
+    *,
+    filter_revision_history: bool = False,
+) -> list[ET.Element]:
+    blocks: list[ET.Element] = []
+    first_block = True
+
+    for section in sections:
+        for para_idx, paragraph in enumerate(section.paragraphs):
+            if not clean_text(paragraph):
+                continue
+            if filter_revision_history and _is_revision_history_paragraph(paragraph):
+                continue
+            if not first_block:
+                blocks.append(clone_paragraph(""))
+            if para_idx < len(section.paragraph_elements):
+                blocks.append(copy.deepcopy(section.paragraph_elements[para_idx]))
+            else:
+                blocks.append(clone_paragraph(paragraph))
+            first_block = False
+        for table_slice in section.table_slices:
+            if filter_revision_history and _is_revision_history_table(table_slice):
+                continue
+            filtered_table = clean_table_xml(table_slice.xml, inline_clean_patterns)
+            if filtered_table is None:
+                continue
+            if not first_block:
+                blocks.append(clone_paragraph(""))
+            blocks.append(filtered_table)
+            first_block = False
+    return blocks
+
+
+def _build_document_xml(
+    sections: list[Section],
+    inline_clean_patterns: CleanPatterns,
+    *,
+    filter_revision_history: bool = False,
+) -> bytes:
     document = ET.Element(W + "document", {"xmlns:w": NS["w"]})
     body = ET.SubElement(document, W + "body")
 
-    for index, section in enumerate(sections):
-        for para_idx, paragraph in enumerate(section.paragraphs):
-            if clean_text(paragraph):
-                if para_idx < len(section.paragraph_elements):
-                    body.append(copy.deepcopy(section.paragraph_elements[para_idx]))
-                else:
-                    body.append(clone_paragraph(paragraph))
-        for table_slice in section.table_slices:
-            filtered_table = clean_table_xml(table_slice.xml, inline_clean_patterns)
-            if filtered_table is not None:
-                body.append(filtered_table)
-        if index < len(sections) - 1:
-            body.append(clone_paragraph(""))
+    for block in _build_document_blocks(
+        sections,
+        inline_clean_patterns,
+        filter_revision_history=filter_revision_history,
+    ):
+        body.append(block)
 
     sect_pr = ET.SubElement(body, W + "sectPr")
     ET.SubElement(sect_pr, W + "pgSz", {W + "w": "11906", W + "h": "16838"})
@@ -162,7 +208,11 @@ def _write_docx_from_template(
     if collapse_shared_tables:
         sections = _collapse_sections_for_version(sections)
     _check_cancel(should_cancel)
-    document_xml = _build_document_xml(sections, inline_clean_patterns)
+    document_xml = _build_document_xml(
+        sections,
+        inline_clean_patterns,
+        filter_revision_history=collapse_shared_tables,
+    )
     with zipfile.ZipFile(template_docx, "r") as src, \
          zipfile.ZipFile(output_docx, "w", zipfile.ZIP_DEFLATED) as dst:
         for item in src.infolist():

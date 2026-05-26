@@ -28,6 +28,7 @@ from tuv_tools.core.splitter.cleaning import (
     _clean_paragraph_inline,
     _paragraph_removal_ranges,
     _should_drop_text_by_rules,
+    _preserve_outer_borders_after_cleanup,
     clean_table_xml,
     clone_paragraph,
 )
@@ -44,6 +45,7 @@ from tuv_tools.core.splitter.utils import (
     slugify,
 )
 from tuv_tools.core.splitter.exporting import (
+    _build_document_blocks,
     _build_document_xml,
     _collapse_sections_for_version,
     _merge_table_slices_xml,
@@ -92,6 +94,9 @@ class TestGetMajorVersion:
 
     def test_annex(self):
         assert get_major_version("Annex_A") == "Annex"
+
+    def test_annex_table_also_collapses_to_annex(self):
+        assert get_major_version("Annex_A_TABLE") == "Annex"
 
 
 class TestNormalizeClauseLeadingText:
@@ -565,6 +570,114 @@ class TestCleanTableXml:
         assert "21.2" not in rendered
         assert "Power cord" in rendered
 
+    def test_removes_combined_equipment_and_sample_id_metadata(self, patterns):
+        xml = (
+            '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>☐ 19.112 Abnormal operation</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>Equipment : sample ID:</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>tests specified in Cl. 11 but overturned position</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "</w:tbl>"
+        )
+
+        result = clean_table_xml(xml, patterns)
+
+        assert result is not None
+        rendered = ET.tostring(result, encoding="unicode")
+        assert "Equipment : sample ID:" not in rendered
+        assert "19.112 Abnormal operation" in rendered
+        assert "overturned position" in rendered
+
+
+class TestPreserveOuterBordersAfterCleanup:
+    def test_restores_top_border_when_first_remaining_row_lost_original_top_row(self):
+        xml = (
+            '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:tr>"
+            "<w:tc><w:tcPr><w:tcBorders>"
+            '<w:top w:val="single" w:sz="12" w:space="0" w:color="auto" />'
+            '<w:left w:val="single" w:sz="12" w:space="0" w:color="auto" />'
+            '<w:right w:val="single" w:sz="12" w:space="0" w:color="auto" />'
+            "</w:tcBorders></w:tcPr><w:p><w:r><w:t>Title</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:tcPr><w:tcBorders>"
+            '<w:top w:val="single" w:sz="4" w:space="0" w:color="auto" />'
+            "</w:tcBorders></w:tcPr><w:p><w:r><w:t>Test date :</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>Body row</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "</w:tbl>"
+        )
+        source = ET.fromstring(xml)
+        cleaned = ET.fromstring(
+            '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>Title</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>Body row</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "</w:tbl>"
+        )
+
+        _preserve_outer_borders_after_cleanup(source, cleaned)
+
+        first_cell = cleaned.find("./w:tr/w:tc", NS)
+        top = first_cell.find("./w:tcPr/w:tcBorders/w:top", NS)
+        left = first_cell.find("./w:tcPr/w:tcBorders/w:left", NS)
+        right = first_cell.find("./w:tcPr/w:tcBorders/w:right", NS)
+
+        assert top is not None
+        assert top.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}sz") == "12"
+        assert left is not None
+        assert right is not None
+
+    def test_restores_bottom_border_on_last_remaining_row(self):
+        xml = (
+            '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:tr>"
+            "<w:tc><w:tcPr><w:tcBorders>"
+            '<w:top w:val="single" w:sz="12" w:space="0" w:color="auto" />'
+            "</w:tcBorders></w:tcPr><w:p><w:r><w:t>Title</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>Body row</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:tcPr><w:tcBorders>"
+            '<w:bottom w:val="single" w:sz="6" w:space="0" w:color="auto" />'
+            "</w:tcBorders></w:tcPr><w:p><w:r><w:t>Removed footer row</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "</w:tbl>"
+        )
+        source = ET.fromstring(xml)
+        cleaned = ET.fromstring(
+            '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>Title</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>Body row</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "</w:tbl>"
+        )
+
+        _preserve_outer_borders_after_cleanup(source, cleaned)
+
+        rows = cleaned.findall("./w:tr", NS)
+        last_cell = rows[-1].find("./w:tc", NS)
+        bottom = last_cell.find("./w:tcPr/w:tcBorders/w:bottom", NS)
+
+        assert bottom is not None
+        assert bottom.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}sz") == "6"
+
 
 # ═══════════════════════════════════════════════════
 # exporting 测试
@@ -623,6 +736,59 @@ class TestBuildDocumentXml:
         xml = _build_document_xml([section], empty_patterns)
         assert b"xml version" in xml
         assert b"10.2 Test item" in xml or b"Test content" in xml
+
+
+class TestBuildDocumentBlocks:
+    def test_skips_revision_history_paragraph_and_table(self):
+        section = Section(
+            clause_id="Annex_A",
+            major_version="Annex",
+            source_file="test.docx",
+            title="Annex A",
+            paragraphs=["History of Revision :"],
+        )
+        section.table_slices.append(
+            TableSlice(
+                table_block_index=1,
+                table_index=1,
+                row_start=0,
+                row_end=2,
+                title="revision",
+                rows=[
+                    ["Date", "Brief", "Reviewed by"],
+                    ["2020-01-01", "Publish", "Alice"],
+                ],
+                xml=(
+                    '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                    "<w:tr>"
+                    "<w:tc><w:p><w:r><w:t>Date</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>Brief</w:t></w:r></w:p></w:tc>"
+                    "</w:tr>"
+                    "<w:tr>"
+                    "<w:tc><w:p><w:r><w:t>2020-01-01</w:t></w:r></w:p></w:tc>"
+                    "<w:tc><w:p><w:r><w:t>Publish</w:t></w:r></w:p></w:tc>"
+                    "</w:tr>"
+                    "</w:tbl>"
+                ),
+            )
+        )
+
+        blocks = _build_document_blocks([section], [], filter_revision_history=True)
+
+        assert blocks == []
+
+    def test_keeps_normal_annex_content(self):
+        section = Section(
+            clause_id="Annex_T",
+            major_version="Annex",
+            source_file="test.docx",
+            title="Annex T",
+            paragraphs=["Normal annex content"],
+        )
+
+        blocks = _build_document_blocks([section], [], filter_revision_history=True)
+
+        assert len(blocks) == 1
 
 
 class TestCollapseSectionsForVersion:

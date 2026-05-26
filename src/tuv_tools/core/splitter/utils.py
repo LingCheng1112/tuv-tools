@@ -34,8 +34,6 @@ def has_title_text(text: str) -> bool:
 def get_major_version(clause_id: str) -> str:
     """从条款 ID 提取主版本号"""
     if clause_id.startswith("Annex_"):
-        if "_TABLE" in clause_id:
-            return "Annex_TABLE"
         return "Annex"
     return clause_id.split(".", 1)[0]
 
