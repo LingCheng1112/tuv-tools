@@ -127,12 +127,26 @@ def clause_title_font_consistent(cell: ET.Element, clause_id: str) -> bool:
         else:
             m_idx += 1
             c_idx += 1
-    # 条款号结束后，跳过空白和标签，检查第一个标签是否为 [/B]
+    # 条款号结束后，允许连续的 [/B][B] 边界，只要首个实质字符仍处于 Bold 即视为一致
     while m_idx < len(marked):
-        if marked[m_idx:m_idx+4] == "[/B]":
-            return False  # Bold 在条款号后立即结束 → 不一致
         if marked[m_idx:m_idx+3] == "[B]":
             m_idx += 3
+            continue
+        if marked[m_idx:m_idx+4] == "[/B]":
+            probe = m_idx + 4
+            while probe < len(marked):
+                if marked[probe:probe+3] == "[B]":
+                    m_idx = probe + 3
+                    break
+                if marked[probe:probe+4] == "[/B]":
+                    probe += 4
+                    continue
+                if marked[probe] in " \t":
+                    probe += 1
+                    continue
+                return False
+            else:
+                return True
             continue
         if marked[m_idx] in " \t":
             m_idx += 1

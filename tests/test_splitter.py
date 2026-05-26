@@ -2,11 +2,12 @@
 
 import re
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import pytest
 
 from tuv_tools.core.splitter import build_sections, export_docx_outputs
-from tuv_tools.core.splitter.constants import ANNEX_HEAD_RE, CLAUSE_HEAD_RE, IGNORED_TABLE_PATTERNS
+from tuv_tools.core.splitter.constants import ANNEX_HEAD_RE, CLAUSE_HEAD_RE, IGNORED_TABLE_PATTERNS, NS
 from tuv_tools.core.splitter.models import (
     Block,
     ClauseMatch,
@@ -32,6 +33,7 @@ from tuv_tools.core.splitter.cleaning import (
 )
 from tuv_tools.core.splitter.utils import (
     cell_text,
+    clause_title_font_consistent,
     clean_text,
     extract_standard_number,
     get_major_version,
@@ -48,6 +50,7 @@ from tuv_tools.core.splitter.exporting import (
 )
 from tuv_tools.core.splitter.ui_helpers import (
     STATUS_LABELS,
+    extract_clause_test_content,
     is_importable_docx,
     is_selectable_document_status,
     resolve_output_root,
@@ -141,6 +144,33 @@ class TestSlugify:
         assert len(long_slug) <= 80
 
 
+class TestClauseTitleFontConsistent:
+    def test_allows_consecutive_bold_runs_after_clause_id(self):
+        xml = (
+            '<w:tc xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:p>"
+            "<w:r><w:rPr><w:b/></w:rPr><w:t>19.11</w:t></w:r>"
+            "<w:r><w:rPr><w:b/></w:rPr><w:t>2 </w:t></w:r>"
+            "<w:r><w:rPr><w:b/></w:rPr><w:t>Abnormal operation</w:t></w:r>"
+            "</w:p>"
+            "</w:tc>"
+        )
+        cell = ET.fromstring(xml)
+        assert clause_title_font_consistent(cell, "19.112") is True
+
+    def test_rejects_normal_text_after_bold_clause_id(self):
+        xml = (
+            '<w:tc xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:p>"
+            "<w:r><w:rPr><w:b/></w:rPr><w:t>10.2</w:t></w:r>"
+            "<w:r><w:t> Measured value</w:t></w:r>"
+            "</w:p>"
+            "</w:tc>"
+        )
+        cell = ET.fromstring(xml)
+        assert clause_title_font_consistent(cell, "10.2") is False
+
+
 # ═══════════════════════════════════════════════════
 # parsing 测试
 # ═══════════════════════════════════════════════════
@@ -212,6 +242,18 @@ class TestDetectClauseInCells:
 
     def test_no_match(self):
         results = detect_clause_in_cells(["No clause here", "Still no clause"])
+        assert results == []
+
+    def test_measurement_row_is_not_detected_as_clause(self):
+        results = detect_clause_in_cells(["Test voltage(V)", "260.3", "Current(A)", "12.04", "Power input(W)", "3130.3"])
+        assert results == []
+
+    def test_numbered_data_row_is_not_detected_as_clause(self):
+        results = detect_clause_in_cells(["1", "Power cord", "46.6", "25.4", "50"])
+        assert results == []
+
+    def test_result_row_is_not_detected_as_clause(self):
+        results = detect_clause_in_cells(["L/N and plastic panel", "0.003", "0.35(peak)"])
         assert results == []
 
 
@@ -300,6 +342,40 @@ class TestBuildSections:
         with pytest.raises(SplitCancelled):
             build_sections(FIXTURE, should_cancel=should_cancel)
 
+    def test_data_heavy_table_document_does_not_create_measurement_fake_sections(self):
+        sample = Path(r"D:\Data\1类机械式油汀-机械式-60335-2-30.docx")
+        if not sample.exists():
+            pytest.skip("sample document not available")
+
+        sections = build_sections(sample)
+        clause_ids = {section.clause_id for section in sections}
+
+        assert "10.1" in clause_ids
+        assert "10.2" in clause_ids
+        assert "13.2" in clause_ids
+        assert "13.3" in clause_ids
+        assert "16.2" in clause_ids
+        assert "16.3" in clause_ids
+
+        assert "260.3&12.04&3130.3" not in clause_ids
+        assert "46.6&25.4" not in clause_ids
+        assert "0.003&0.35" not in clause_ids
+        assert "0.003&0.25" not in clause_ids
+        assert "3.89&1.2" not in clause_ids
+        assert "0.279&7.3" not in clause_ids
+
+    def test_data_heavy_table_document_keeps_19112_test_content(self):
+        sample = next(Path(r"D:\Data").glob("*60335-2-30.docx"), None)
+        if sample is None:
+            pytest.skip("sample document not available")
+
+        sections = build_sections(sample)
+        section = next((item for item in sections if item.clause_id == "19.112"), None)
+
+        assert section is not None
+        assert "Abnormal operation" in section.title
+        assert extract_clause_test_content(section.title).startswith("Abnormal operation")
+
 
 # ═══════════════════════════════════════════════════
 # cleaning 测试
@@ -349,6 +425,54 @@ class TestCloneParagraph:
         assert len(t_nodes) == 1
 
 
+class TestCloneTableWithRows:
+    def test_adds_bottom_border_to_truncated_last_row(self):
+        xml = (
+            '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:tr>"
+            "<w:tc><w:tcPr><w:tcBorders><w:top w:val=\"single\" w:sz=\"12\" /></w:tcBorders></w:tcPr><w:p><w:r><w:t>head</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>middle</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:tcPr><w:tcBorders><w:bottom w:val=\"single\" w:sz=\"12\" /></w:tcBorders></w:tcPr><w:p><w:r><w:t>end</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "</w:tbl>"
+        )
+        table = ET.fromstring(xml)
+
+        cloned = _clone_table_with_rows(table, 0, 2)
+        last_cell = cloned.findall("./w:tr", NS)[-1].find("./w:tc", NS)
+        bottom = last_cell.find("./w:tcPr/w:tcBorders/w:bottom", NS)
+
+        assert bottom is not None
+        assert bottom.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}sz") == "12"
+
+    def test_adds_top_border_to_mid_table_first_row(self):
+        xml = (
+            '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:tr>"
+            "<w:tc><w:tcPr><w:tcBorders><w:top w:val=\"single\" w:sz=\"12\" /></w:tcBorders></w:tcPr><w:p><w:r><w:t>head</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>middle</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:tcPr><w:tcBorders><w:bottom w:val=\"single\" w:sz=\"12\" /></w:tcBorders></w:tcPr><w:p><w:r><w:t>end</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "</w:tbl>"
+        )
+        table = ET.fromstring(xml)
+
+        cloned = _clone_table_with_rows(table, 1, 3)
+        first_cell = cloned.findall("./w:tr", NS)[0].find("./w:tc", NS)
+        top = first_cell.find("./w:tcPr/w:tcBorders/w:top", NS)
+
+        assert top is not None
+        assert top.get("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}sz") == "12"
+
+
 class TestCleanTableXml:
     @pytest.fixture
     def patterns(self):
@@ -381,6 +505,65 @@ class TestCleanTableXml:
         assert result is not None
         rows = result.findall(".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tr")
         assert len(rows) == 1
+
+    def test_removes_nested_metadata_table_but_keeps_title_and_content(self, patterns):
+        xml = (
+            '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:tr>"
+            "<w:tc>"
+            "<w:p><w:r><w:t>19.101 Abnormal operation</w:t></w:r></w:p>"
+            "<w:tbl>"
+            "<w:tr><w:tc><w:p><w:r><w:t>Test date</w:t></w:r></w:p></w:tc></w:tr>"
+            "<w:tr><w:tc><w:p><w:r><w:t>2025.10.30</w:t></w:r></w:p></w:tc></w:tr>"
+            "<w:tr><w:tc><w:p><w:r><w:t>Ambient</w:t></w:r></w:p></w:tc></w:tr>"
+            "<w:tr><w:tc><w:p><w:r><w:t>22.6℃,55.0%</w:t></w:r></w:p></w:tc></w:tr>"
+            "<w:tr><w:tc><w:p><w:r><w:t>Equipment No.</w:t></w:r></w:p></w:tc></w:tr>"
+            "<w:tr><w:tc><w:p><w:r><w:t>G1809691,9020774</w:t></w:r></w:p></w:tc></w:tr>"
+            "<w:tr><w:tc><w:p><w:r><w:t>Sample No.</w:t></w:r></w:p></w:tc></w:tr>"
+            "<w:tr><w:tc><w:p><w:r><w:t>A004122687-001</w:t></w:r></w:p></w:tc></w:tr>"
+            "</w:tbl>"
+            "<w:p><w:r><w:t>Heaters operated at 1.24Pn</w:t></w:r></w:p>"
+            "</w:tc>"
+            "</w:tr>"
+            "</w:tbl>"
+        )
+
+        result = clean_table_xml(xml, patterns)
+
+        assert result is not None
+        rendered = ET.tostring(result, encoding="unicode")
+        assert "19.101 Abnormal operation" in rendered
+        assert "Heaters operated at 1.24Pn" in rendered
+        assert "Test date" not in rendered
+        assert "2025.10.30" not in rendered
+        assert "Equipment No." not in rendered
+        assert "A004122687-001" not in rendered
+
+    def test_removes_ambient_metadata_row_with_values(self, patterns):
+        xml = (
+            '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>15</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>Ambient</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>21.2</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>---</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>--</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>16</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>Power cord</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>46.6</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "</w:tbl>"
+        )
+
+        result = clean_table_xml(xml, patterns)
+
+        assert result is not None
+        rendered = ET.tostring(result, encoding="unicode")
+        assert "Ambient" not in rendered
+        assert "21.2" not in rendered
+        assert "Power cord" in rendered
 
 
 # ═══════════════════════════════════════════════════

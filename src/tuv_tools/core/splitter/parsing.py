@@ -183,6 +183,18 @@ def _try_detect_across_cells(first: str, second: str) -> ClauseMatch | None:
     return None
 
 
+def _collect_compound_clause_from_single_cell(cells: list[str]) -> ClauseMatch | None:
+    """仅当同一个单元格内出现多个条款号时，识别为复合条款。"""
+    for cell in cells:
+        normalized = clean_text(cell)
+        if not normalized:
+            continue
+        nums = _clause_numbers_in_text(normalized)
+        if len(nums) > 1:
+            return _build_clause_match("&".join(nums), normalized)
+    return None
+
+
 def detect_clause_in_cells(cells: list[str],
                             cell_elements: list[ET.Element] | None = None) -> list[ClauseMatch]:
     """从表格行的单元格列表中检测条款号。返回所有检测到的条款（支持同单元格多条款）"""
@@ -193,15 +205,8 @@ def detect_clause_in_cells(cells: list[str],
         return []
 
     matches: list[ClauseMatch] = []
-    # 收集所有单元格中按 ☐ 分段检测到的条款号
-    all_nums: list[str] = []
-    for c in cells:
-        all_nums.extend(_clause_numbers_in_text(clean_text(c)))
-
-    if len(all_nums) > 1:
-        # 同单元格多条款 → 合并为复合条款号如 "21.101&21.102"
-        compound_id = "&".join(all_nums)
-        matches.append(_build_clause_match(compound_id, first))
+    if compound_match := _collect_compound_clause_from_single_cell(cells):
+        matches.append(compound_match)
         if matches and cell_elements:
             matches = [_check_font_consistency(m, cell_elements, cells) for m in matches]
         return matches
@@ -213,9 +218,13 @@ def detect_clause_in_cells(cells: list[str],
     elif m := _try_detect_in_segments(first):
         match = m
     else:
-        second = next((clean_text(v) for v in cells[1:] if clean_text(v)), "")
+        non_empty_cells = [clean_text(v) for v in cells if clean_text(v)]
+        second = next((value for value in non_empty_cells[1:] if value), "")
         if m := _try_detect_across_cells(first, second):
-            match = m
+            if "." not in m.clause_id and len(non_empty_cells) > 2:
+                match = None
+            else:
+                match = m
         else:
             cm = CLAUSE_HEAD_RE.match(normalize_clause_leading_text(first))
             if cm and "." in cm.group("compound"):
@@ -315,12 +324,58 @@ def _should_ignore_table(block: Block) -> bool:
     return any(pattern.search(preview) for pattern in IGNORED_TABLE_PATTERNS)
 
 
+def _find_outer_row_border(rows: list[ET.Element], row_index: int, border_name: str) -> ET.Element | None:
+    if row_index < 0 or row_index >= len(rows):
+        return None
+    for cell in rows[row_index].findall("./w:tc", NS):
+        tc_pr = cell.find("./w:tcPr", NS)
+        if tc_pr is None:
+            continue
+        tc_borders = tc_pr.find("w:tcBorders", NS)
+        if tc_borders is None:
+            continue
+        border = tc_borders.find(f"w:{border_name}", NS)
+        if border is not None:
+            return copy.deepcopy(border)
+    return None
+
+
+def _ensure_tc_borders(cell: ET.Element) -> ET.Element:
+    tc_pr = cell.find("./w:tcPr", NS)
+    if tc_pr is None:
+        tc_pr = ET.Element(W + "tcPr")
+        cell.insert(0, tc_pr)
+    tc_borders = tc_pr.find("w:tcBorders", NS)
+    if tc_borders is None:
+        tc_borders = ET.SubElement(tc_pr, W + "tcBorders")
+    return tc_borders
+
+
+def _apply_row_border(row: ET.Element, border_name: str, border_template: ET.Element | None) -> None:
+    if border_template is None:
+        return
+    for cell in row.findall("./w:tc", NS):
+        tc_borders = _ensure_tc_borders(cell)
+        existing = tc_borders.find(f"w:{border_name}", NS)
+        if existing is not None:
+            tc_borders.remove(existing)
+        tc_borders.append(copy.deepcopy(border_template))
+
+
 def _clone_table_with_rows(table_element: ET.Element, row_start: int, row_end: int) -> ET.Element:
+    source_rows = table_element.findall("./w:tr", NS)
+    top_border = _find_outer_row_border(source_rows, 0, "top")
+    bottom_border = _find_outer_row_border(source_rows, len(source_rows) - 1, "bottom")
     table_copy = copy.deepcopy(table_element)
     rows = table_copy.findall("./w:tr", NS)
     for idx, row in enumerate(rows):
         if idx < row_start or idx >= row_end:
             table_copy.remove(row)
+    sliced_rows = table_copy.findall("./w:tr", NS)
+    if sliced_rows and row_start > 0:
+        _apply_row_border(sliced_rows[0], "top", top_border)
+    if sliced_rows and row_end < len(source_rows):
+        _apply_row_border(sliced_rows[-1], "bottom", bottom_border)
     return table_copy
 
 
