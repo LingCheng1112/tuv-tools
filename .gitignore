@@ -37,3 +37,4 @@ rsa_private.key
 AGENTS.md
 CLAUDE.md
 /docs
+/.tuv-tools
