@@ -24,7 +24,7 @@ class ChapterLoginDialog(QDialog):
 
     def __init__(self, parent=None, settings: AppSettings | None = None):
         super().__init__(parent)
-        self.setWindowTitle("连接后端")
+        self.setWindowTitle("登录")
         self.setMinimumWidth(420)
         self._settings = settings or AppSettings()
         self._build_ui()
