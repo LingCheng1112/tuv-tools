@@ -232,6 +232,17 @@ class TestDatabaseManager:
         doc = db.get_document(doc_id)
         assert doc["standard_number"] == "60335-1"
 
+    def test_update_document_standard_number(self):
+        db, _ = self._new_db()
+        file_path = str(Path(tempfile.mkdtemp()) / "unknown.docx")
+        doc_id = db.add_document(file_path)
+
+        db.update_document_standard_number(doc_id, "60335-2-35")
+
+        doc = db.get_document(doc_id)
+        assert doc is not None
+        assert doc["standard_number"] == "60335-2-35"
+
     def test_batch_import_schema_created_with_required_indexes(self):
         db, _ = self._new_db()
 

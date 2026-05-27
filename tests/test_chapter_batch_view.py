@@ -228,6 +228,41 @@ def test_import_selected_paths_loads_rows_before_starting_processing(qapp, monke
     assert started == [[repo.list_documents()[0].id]]
 
 
+def test_import_selected_paths_prompts_for_missing_standard_before_processing(qapp, monkeypatch):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus, SplitMode
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
+    monkeypatch.setattr(view, "_choose_import_mode", lambda: SplitMode.CLAUSE.value)
+    monkeypatch.setattr(
+        "PySide6.QtWidgets.QInputDialog.getText",
+        lambda *args, **kwargs: ("60335-2-35", True),
+    )
+
+    def fake_import_documents(paths, split_mode):
+        doc_id = repo.create_document(
+            BatchImportDocument(
+                file_path=paths[0],
+                file_name="unknown.docx",
+                document_status=DocumentStatus.PREPARING.value,
+                split_mode=split_mode,
+                standard="",
+            )
+        )
+        return [repo.get_document(doc_id)]
+
+    started = []
+    monkeypatch.setattr(view._service, "import_documents", fake_import_documents)
+    monkeypatch.setattr(view, "_start_processing_documents", lambda document_ids: started.append(document_ids))
+
+    view._import_selected_paths(["C:/docs/unknown.docx"])
+
+    saved = repo.list_documents()[0]
+    assert saved.standard == "60335-2-35"
+    assert started == [[saved.id]]
+
+
 def test_checkboxes_update_selected_document_ids_in_list_order(qapp):
     from PySide6.QtWidgets import QCheckBox
     from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
@@ -1187,6 +1222,47 @@ def test_stable_status_row_uses_plain_status_item(qapp):
 
     assert view._table.cellWidget(0, view.COL_STATUS) is None
     assert view._table.item(0, view.COL_STATUS) is not None
+
+
+def test_running_status_row_uses_centered_status_text_without_percent_label(qapp):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLabel
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, ChapterBatchProgressEvent, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/preparing.docx",
+            file_name="preparing.docx",
+            document_status=DocumentStatus.PREPARING.value,
+        )
+    )
+    view._progress_by_document_id[doc_id] = ChapterBatchProgressEvent(
+        document_id=doc_id,
+        phase="processing",
+        percent=42,
+        message="processing",
+    )
+
+    view._load_documents()
+
+    widget = view._table.cellWidget(0, view.COL_STATUS)
+    assert widget is not None
+    labels = [label for label in widget.findChildren(QLabel) if label.text()]
+    assert any(label.text() == view._display_status_text(DocumentStatus.PREPARING.value) for label in labels)
+    assert all("%" not in label.text() for label in labels)
+    assert any(label.alignment() & Qt.AlignmentFlag.AlignHCenter for label in labels)
+
+
+def test_build_summary_text_omits_skipped_count(qapp):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    document = BatchImportDocument(success_clause_count=2, failed_clause_count=1, skipped_clause_count=3)
+
+    assert ChapterBatchView._build_summary_text(document) == "成功 2 / 失败 1"
 
 
 def test_delete_documents_uses_service_cleanup_instead_of_repo_direct_delete(qapp, monkeypatch):

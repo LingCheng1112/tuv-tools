@@ -36,6 +36,7 @@ class DocumentTable(QTableWidget):
     show_error_requested = Signal(int)  # 请求查看失败原因 (doc_id)
     open_output_requested = Signal(int)  # 请求打开输出目录 (doc_id)
     double_clicked = Signal(int)  # 双击行 (doc_id)
+    standard_number_edited = Signal(int, str)  # 标准号编辑完成 (doc_id, standard_number)
     selection_empty = Signal()  # 列表为空时发出
 
     COL_CHECK = 0
@@ -71,6 +72,7 @@ class DocumentTable(QTableWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
         self.cellDoubleClicked.connect(self._on_double_click)
+        self.itemChanged.connect(self._on_item_changed)
         self._base_style = """
             QTableWidget {
                 background-color: #2b2d30;
@@ -104,22 +106,26 @@ class DocumentTable(QTableWidget):
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
         self._drag_files: list[str] = []
+        self._suppress_item_changed = False
 
     # ---- 数据加载 ----
 
     def load_documents(self, docs: list[dict]) -> None:
         """加载文档列表数据"""
+        self._suppress_item_changed = True
         self._data = docs
         self._checked.clear()
         self.setRowCount(len(docs))
         for row, doc in enumerate(docs):
             self._build_row(row, doc)
+        self._suppress_item_changed = False
         self.checked_changed.emit()
 
     @staticmethod
     def _make_item(text: str, tooltip: str = "") -> QTableWidgetItem:
         item = QTableWidgetItem(text)
         item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         if tooltip:
             item.setToolTip(tooltip)
         return item
@@ -143,7 +149,9 @@ class DocumentTable(QTableWidget):
 
         # 标准号
         std_num = doc.get("standard_number") or "-"
-        self.setItem(row, self.COL_STANDARD, self._make_item(std_num, std_num))
+        standard_item = self._make_item(std_num, "" if std_num == "-" else std_num)
+        standard_item.setFlags(standard_item.flags() | Qt.ItemFlag.ItemIsEditable)
+        self.setItem(row, self.COL_STANDARD, standard_item)
 
         # 状态
         status = doc.get("status", "pending")
@@ -162,7 +170,36 @@ class DocumentTable(QTableWidget):
 
     def _on_double_click(self, row: int, col: int) -> None:
         if 0 <= row < len(self._data):
+            if col == self.COL_STANDARD:
+                item = self.item(row, col)
+                if item is not None:
+                    self.editItem(item)
+                return
             self.double_clicked.emit(self._data[row]["id"])
+
+    def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._suppress_item_changed or item.column() != self.COL_STANDARD:
+            return
+        row = item.row()
+        if row < 0 or row >= len(self._data):
+            return
+
+        normalized = item.text().strip()
+        if normalized == "-":
+            normalized = ""
+
+        doc = self._data[row]
+        doc["standard_number"] = normalized or None
+
+        display = normalized or "-"
+        tooltip = normalized
+        if item.text() != display or item.toolTip() != tooltip:
+            self._suppress_item_changed = True
+            item.setText(display)
+            item.setToolTip(tooltip)
+            self._suppress_item_changed = False
+
+        self.standard_number_edited.emit(doc["id"], normalized)
 
     def _on_toggle(self, doc_id: int, checked: bool) -> None:
         if checked:

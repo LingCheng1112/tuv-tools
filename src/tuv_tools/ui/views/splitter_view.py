@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -84,7 +85,7 @@ class SplitWorker(QThread):
                 sections = build_sections(docx_path, progress=on_core_progress, should_cancel=should_cancel)
                 if sections:
                     output_path = resolve_output_root(docx_path, self._output_root, output_subdir)
-                    base_name = get_output_base_dir_name(docx_path)
+                    base_name = get_output_base_dir_name(docx_path, output_subdir or None)
                     staging_root = output_path / f"{base_name}.partial-{doc_id}"
                     export_docx_outputs(
                         docx_path,
@@ -94,6 +95,7 @@ class SplitWorker(QThread):
                         progress=on_core_progress,
                         should_cancel=should_cancel,
                         staging_root=staging_root,
+                        base_dir_name=output_subdir or None,
                     )
                 self.doc_done.emit(doc_id, "completed", len(sections))
             except SplitCancelled:
@@ -175,6 +177,7 @@ class SplitterView(QWidget):
         self._table.skip_preparing_split_requested.connect(self._skip_preparing_and_split)
         self._table.show_error_requested.connect(self._show_document_error)
         self._table.open_output_requested.connect(self._open_output_dir)
+        self._table.standard_number_edited.connect(self._save_document_standard)
         self._table.double_clicked.connect(self._show_clause_panel)
         self._table.selection_empty.connect(self._on_empty)
         layout.addWidget(self._table, stretch=1)
@@ -288,6 +291,7 @@ class SplitterView(QWidget):
                 after = len(db.get_documents())
                 if after > before:
                     added += 1
+                    self._ensure_document_standard_number(doc_id)
                     db.update_document_status(doc_id, "preparing")
                     new_items.append((doc_id, fp))
                     self._preparing_pending_ids.add(doc_id)
@@ -311,6 +315,30 @@ class SplitterView(QWidget):
             self._preparing_worker.doc_prepared.connect(self._on_doc_prepared)
             self._preparing_worker.doc_error.connect(self._on_prepare_error)
             self._preparing_worker.start()
+
+    def _ensure_document_standard_number(self, doc_id: int) -> bool:
+        doc = self._db.get_document(doc_id)
+        if not doc:
+            return False
+        current = (doc.get("standard_number") or "").strip()
+        if current:
+            return True
+        value, accepted = QInputDialog.getText(
+            self,
+            "补录标准号",
+            f"文档 {doc.get('file_name', doc_id)} 未识别到标准号，请输入标准号：",
+            text="",
+        )
+        if not accepted:
+            return False
+        normalized = value.strip()
+        if not normalized:
+            return False
+        self._db.update_document_standard_number(doc_id, normalized)
+        return True
+
+    def _save_document_standard(self, doc_id: int, standard_number: str) -> None:
+        self._db.update_document_standard_number(doc_id, standard_number)
 
     def _load_documents(self) -> None:
         docs = self._db.get_documents()
@@ -442,6 +470,12 @@ class SplitterView(QWidget):
             Toast(self, "没有可拆分的文档")
             return
 
+        if not self._ensure_document_standard_number(doc_id):
+            return
+        doc = self._db.get_document(doc_id)
+        if not doc:
+            return
+
         patterns = self._settings.load_inline_clean_patterns()
         output_root = self._db.get_config("splitter.output_path", "")
 
@@ -461,7 +495,11 @@ class SplitterView(QWidget):
         self._split_cancelled = False
         self._split_total = 1
 
-        self._worker = SplitWorker([(doc_id, doc["file_path"], "")], output_root, patterns)
+        self._worker = SplitWorker(
+            [(doc_id, doc["file_path"], (doc.get("standard_number") or "").strip())],
+            output_root,
+            patterns,
+        )
         self._worker.doc_started.connect(self._on_doc_started)
         self._worker.progress_detail.connect(self._on_progress_detail)
         self._worker.doc_done.connect(self._on_doc_done)
@@ -484,7 +522,17 @@ class SplitterView(QWidget):
         for doc_id in checked_ids:
             doc = db.get_document(doc_id)
             if doc and os.path.exists(doc["file_path"]):
-                items.append((doc_id, doc["file_path"], ""))
+                if not self._ensure_document_standard_number(doc_id):
+                    continue
+                refreshed = db.get_document(doc_id)
+                if refreshed:
+                    items.append(
+                        (
+                            doc_id,
+                            refreshed["file_path"],
+                            (refreshed.get("standard_number") or "").strip(),
+                        )
+                    )
 
         if not items:
             Toast(self, "没有可拆分的文档")

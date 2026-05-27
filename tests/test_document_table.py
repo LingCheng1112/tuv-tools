@@ -62,6 +62,37 @@ class FakeDropEvent:
 
 
 class TestDocumentTable:
+    def test_double_click_standard_column_starts_inline_edit(self, qapp, tmp_path, monkeypatch):
+        path = tmp_path / "sample.docx"
+        path.write_text("x", encoding="utf-8")
+
+        table = DocumentTable()
+        table.load_documents([_doc(1, path, "pending")])
+        edited = []
+        monkeypatch.setattr(table, "editItem", lambda item: edited.append((item.row(), item.column(), item.text())))
+
+        table._on_double_click(0, table.COL_STANDARD)
+
+        assert edited == [(0, table.COL_STANDARD, "-")]
+
+    def test_edit_standard_item_emits_standard_number_edited(self, qapp, tmp_path):
+        path = tmp_path / "sample.docx"
+        path.write_text("x", encoding="utf-8")
+
+        table = DocumentTable()
+        table.load_documents([_doc(1, path, "pending")])
+        emitted = []
+        table.standard_number_edited.connect(lambda doc_id, value: emitted.append((doc_id, value)))
+
+        item = table.item(0, table.COL_STANDARD)
+        assert item is not None
+
+        item.setText("60335-2-30")
+
+        assert emitted == [(1, "60335-2-30")]
+        assert table._data[0]["standard_number"] == "60335-2-30"
+        assert item.toolTip() == "60335-2-30"
+
     def test_set_all_checked_skips_preparing_and_processing(self, qapp, tmp_path):
         files = []
         for name in ("pending.docx", "preparing.docx", "processing.docx", "completed.docx"):

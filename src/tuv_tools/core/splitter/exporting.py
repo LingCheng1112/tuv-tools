@@ -227,13 +227,13 @@ def _write_docx_from_template(
                 dst.writestr(item, src.read(item.filename))
 
 
-def get_output_base_dir_name(docx_path: Path) -> str:
-    standard_number = extract_standard_number(docx_path.stem)
-    return safe_name(standard_number or docx_path.stem)
+def get_output_base_dir_name(docx_path: Path, standard_number: str | None = None) -> str:
+    resolved_standard = (standard_number or "").strip() or extract_standard_number(docx_path.stem)
+    return safe_name(resolved_standard or docx_path.stem)
 
 
-def _get_output_base_dir_name(docx_path: Path) -> str:
-    return get_output_base_dir_name(docx_path)
+def _get_output_base_dir_name(docx_path: Path, standard_number: str | None = None) -> str:
+    return get_output_base_dir_name(docx_path, standard_number)
 
 
 def _promote_staging_directory(staging_dir: Path, final_dir: Path) -> None:
@@ -362,9 +362,10 @@ def export_docx_outputs(
     progress: CoreProgressCallback | None = None,
     should_cancel: CancelCallback | None = None,
     staging_root: Path | None = None,
+    base_dir_name: str | None = None,
 ) -> None:
     """导出拆分结果：按条款生成独立 DOCX + 按主版本合并生成 DOCX"""
-    final_base_dir = output_root / _get_output_base_dir_name(docx_path)
+    final_base_dir = output_root / _get_output_base_dir_name(docx_path, base_dir_name)
     base_dir = staging_root if staging_root is not None else final_base_dir
 
     if staging_root is not None:

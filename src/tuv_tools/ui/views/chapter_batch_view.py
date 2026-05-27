@@ -268,6 +268,23 @@ class _StatusProgressRing(QWidget):
         painter.drawArc(rect, 90 * 16, span)
 
 
+class _RunningStatusWidget(QWidget):
+    """单元格内状态视图：左侧环形进度，文字保持居中显示。"""
+
+    def __init__(self, status_text: str, percent: int, parent=None):
+        super().__init__(parent)
+        self._ring = _StatusProgressRing(percent, self)
+        self._label = QLabel(status_text, self)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._label.setStyleSheet("color: #dcdcdc; font-size: 13px;")
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        ring_size = self._ring.sizeHint()
+        self._ring.move(8, max((self.height() - ring_size.height()) // 2, 0))
+        self._label.setGeometry(0, 0, self.width(), self.height())
+
+
 class ChapterBatchView(QWidget):
     """条款批量上传工作台。"""
 
@@ -1451,6 +1468,65 @@ class ChapterBatchView(QWidget):
         if not lines:
             lines.append("当前条款没有可查看的错误或重复信息。")
         QMessageBox.information(self, "条款详情", "\n".join(lines))
+
+    @staticmethod
+    def _build_summary_text(document) -> str:
+        return f"成功 {document.success_clause_count} / 失败 {document.failed_clause_count}"
+
+    def _build_running_status_widget(self, document) -> QWidget:
+        progress_event = self._progress_by_document_id.get(document.id or -1)
+        container = QWidget(self._table)
+        tooltip = self._build_status_tooltip(document)
+        if progress_event is not None and progress_event.message:
+            tooltip = f"{tooltip}\n进度：{progress_event.percent}%\n{progress_event.message}"
+        container.setToolTip(tooltip)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(
+            _RunningStatusWidget(
+                self._display_status_text(document.document_status),
+                progress_event.percent if progress_event is not None else 0,
+                container,
+            )
+        )
+        return container
+
+    def _ensure_documents_have_standard(self, document_ids: list[int]) -> list[int]:
+        ready_ids: list[int] = []
+        for document_id in document_ids:
+            document = self._repo.get_document(document_id)
+            if document is None:
+                continue
+            if (document.standard or "").strip():
+                ready_ids.append(document_id)
+                continue
+            value, accepted = QInputDialog.getText(
+                self,
+                "补录标准号",
+                f"文档 {document.file_name or document_id} 未识别到标准号，请输入标准号：",
+                text="",
+            )
+            if not accepted:
+                ready_ids.append(document_id)
+                continue
+            normalized = value.strip()
+            if not normalized:
+                ready_ids.append(document_id)
+                continue
+            self._repo.update_document(document_id, standard=normalized)
+            ready_ids.append(document_id)
+        return ready_ids
+
+    def _import_selected_paths(self, paths: list[str]) -> None:
+        split_mode = self._choose_import_mode()
+        if split_mode is None:
+            return
+        documents = self._service.import_documents(paths, split_mode=split_mode)
+        document_ids = [document.id for document in documents if document is not None and document.id is not None]
+        document_ids = self._ensure_documents_have_standard(document_ids)
+        self._load_documents()
+        self._start_processing_documents(document_ids)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

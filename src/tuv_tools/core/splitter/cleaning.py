@@ -390,6 +390,25 @@ def _looks_like_metadata_value_row(after_cells: list[str]) -> bool:
     return any(token in value for token in ("℃", "%", "/", ",", "---", "--"))
 
 
+def _metadata_row_reduced_to_values(before_cells: list[str], after_cells: list[str]) -> bool:
+    before_normalized = [clean_text(value) for value in before_cells if clean_text(value)]
+    after_normalized = [clean_text(value) for value in after_cells if clean_text(value)]
+    if not before_normalized or not after_normalized:
+        return False
+    if not _is_metadata_row(before_cells):
+        return False
+    if len(after_normalized) > 2:
+        return False
+
+    saw_value_signal = False
+    for value in after_normalized:
+        if len(re.findall(r"[A-Za-z]{3,}", value)) >= 3 and not re.fullmatch(r"See\s+below", value, re.IGNORECASE):
+            return False
+        if re.search(r"\d", value) or any(token in value for token in ("℃", "%", "/", ",", "---", "--")):
+            saw_value_signal = True
+    return saw_value_signal
+
+
 def _clean_table_element(table: ET.Element, patterns: CleanPatterns) -> ET.Element | None:
     source_table = ET.fromstring(ET.tostring(table, encoding="unicode"))
     rows = table.findall("./w:tr", NS)
@@ -422,6 +441,10 @@ def _clean_table_element(table: ET.Element, patterns: CleanPatterns) -> ET.Eleme
         if is_metadata_label:
             table.remove(row)
             previous_row_was_metadata_label = True
+            continue
+        if _metadata_row_reduced_to_values(before_parts, after_cells):
+            table.remove(row)
+            previous_row_was_metadata_label = False
             continue
         if previous_row_was_metadata_label and _looks_like_metadata_value_row(after_cells):
             table.remove(row)

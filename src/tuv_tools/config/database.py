@@ -434,6 +434,21 @@ class DatabaseManager:
         ).fetchone()
         return dict(row) if row else None
 
+    def update_document_standard_number(self, doc_id: int, standard_number: str | None) -> None:
+        from datetime import datetime
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        normalized = (standard_number or "").strip() or None
+        self._conn.execute(
+            """
+            UPDATE imported_documents
+            SET standard_number = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (normalized, now, doc_id),
+        )
+        self._conn.commit()
+
     def update_document_status(
         self, doc_id: int, status: str,
         section_count: int | None = None,

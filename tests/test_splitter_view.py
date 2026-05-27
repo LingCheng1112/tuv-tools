@@ -25,9 +25,12 @@ def qapp():
 class TestSplitterView:
     @staticmethod
     def _use_temp_db(monkeypatch, tmp_path):
-        monkeypatch.setattr(db_module, "DB_PATH", tmp_path / "test.db")
         db_module.DatabaseManager._instance = None
         db_module.DatabaseManager._initialized = False
+        monkeypatch.setattr(
+            "tuv_tools.config.settings.AppSettings.get_database_path",
+            lambda self: tmp_path / "test.db",
+        )
 
     def test_dropped_files_reuse_add_paths_flow(self, qapp, monkeypatch):
         captured: list[list[str]] = []
@@ -39,6 +42,50 @@ class TestSplitterView:
         view._table.files_dropped.emit(["a.docx", "b.docx"])
 
         assert captured == [["a.docx", "b.docx"]]
+
+    def test_add_paths_prompts_for_missing_standard_number(self, qapp, monkeypatch, tmp_path):
+        self._use_temp_db(monkeypatch, tmp_path)
+        monkeypatch.setattr(SplitterView, "_resume_preparing_if_needed", lambda self: None)
+        monkeypatch.setattr(
+            "PySide6.QtWidgets.QInputDialog.getText",
+            lambda *args, **kwargs: ("60335-2-35", True),
+        )
+
+        path = tmp_path / "unknown.docx"
+        path.write_text("x", encoding="utf-8")
+
+        queued = []
+        view = SplitterView()
+        monkeypatch.setattr(
+            view,
+            "_ensure_preparing_worker",
+            lambda: setattr(
+                view,
+                "_preparing_worker",
+                type("W", (), {"add_items": lambda self, items: queued.extend(items), "isRunning": lambda self: True})(),
+            ),
+        )
+
+        view._add_paths([str(path)])
+
+        doc = view._db.get_documents()[0]
+        assert doc["standard_number"] == "60335-2-35"
+        assert queued == [(doc["id"], str(path))]
+
+    def test_save_document_standard_updates_database(self, qapp, monkeypatch, tmp_path):
+        self._use_temp_db(monkeypatch, tmp_path)
+        monkeypatch.setattr(SplitterView, "_resume_preparing_if_needed", lambda self: None)
+
+        path = tmp_path / "sample.docx"
+        path.write_text("x", encoding="utf-8")
+
+        view = SplitterView()
+        doc_id = view._db.add_document(str(path))
+        view._load_documents()
+
+        view._save_document_standard(doc_id, "60335-2-30")
+
+        assert view._db.get_document(doc_id)["standard_number"] == "60335-2-30"
 
     def test_has_resume_check_hook_after_initial_load(self, qapp, monkeypatch):
         calls = []

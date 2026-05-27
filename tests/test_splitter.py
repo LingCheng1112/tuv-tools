@@ -648,6 +648,58 @@ class TestCleanTableXml:
         assert "19.112 Abnormal operation" in rendered
         assert "overturned position" in rendered
 
+    def test_removes_metadata_row_that_becomes_values_after_inline_cleanup(self, patterns):
+        xml = (
+            '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>☒ 13.3 Electric strength at operation temperature</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>Test date:</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>Ambient:</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>23</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>Equipment ID:</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>9015116, G1809438</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>Sample ID</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>Test voltage applied between:</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>Voltage (V)</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>Breakdown (Yes/No)</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "</w:tbl>"
+        )
+
+        result = clean_table_xml(xml, patterns)
+
+        assert result is not None
+        rendered = ET.tostring(result, encoding="unicode")
+        assert "Ambient" not in rendered
+        assert "23" not in rendered
+        assert "Equipment ID" not in rendered
+        assert "9015116, G1809438" not in rendered
+        assert "Test voltage applied between:" in rendered
+
+    def test_keeps_clause_sentence_when_inline_metadata_prefix_is_trimmed(self, patterns):
+        xml = (
+            '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>☐ 19.5 Abnormal operation Test date : . Ambient temperature : . Equipment : sample ID: . Test of 19.4 repeated on Class 0I and I appliances with tubular sheathed or embedded heating elements.</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "</w:tbl>"
+        )
+
+        result = clean_table_xml(xml, patterns)
+
+        assert result is not None
+        rendered = ET.tostring(result, encoding="unicode")
+        assert "Test date" not in rendered
+        assert "Ambient temperature" not in rendered
+        assert "Equipment : sample ID" not in rendered
+        assert "Test of 19.4 repeated on Class 0I and I appliances" in rendered
+
 
 class TestPreserveOuterBordersAfterCleanup:
     def test_restores_top_border_when_first_remaining_row_lost_original_top_row(self):
@@ -1227,6 +1279,21 @@ class TestExportIntegration:
         assert final_dir.exists()
         assert not partial_dir.exists()
         assert any((final_dir / "clauses_docx").glob("*.docx"))
+
+    def test_export_uses_overridden_base_dir_name(self, tmp_path):
+        sections = build_sections(FIXTURE)
+        output_root = tmp_path / "output"
+
+        export_docx_outputs(
+            FIXTURE,
+            sections[:1],
+            output_root,
+            [],
+            base_dir_name="60335-2-override",
+        )
+
+        assert (output_root / "60335-2-override" / "clauses_docx").exists()
+        assert not (output_root / safe_name(extract_standard_number(FIXTURE.stem) or FIXTURE.stem)).exists()
 
 
 class TestSplitterUiHelpers:
