@@ -200,9 +200,18 @@ class ChapterBatchClauseTable(QTableWidget):
             checkbox.blockSignals(False)
         self._sync_header_state()
 
-    def available_actions_for_status(self, status: str, editable: bool = True) -> list[str]:
+    def available_actions_for_status(
+        self,
+        status: str,
+        editable: bool = True,
+        *,
+        chapter_id: int | None = None,
+    ) -> list[str]:
         if status == ClauseStatus.UPLOAD_FAILED.value:
-            actions = ["重试上传", "上传", "打开本地 docx", "打开后端 chapter 记录", "查看错误信息"]
+            if chapter_id is not None:
+                actions = ["重新上传", "打开本地 docx", "打开后端 chapter 记录", "查看错误信息"]
+            else:
+                actions = ["重试上传", "上传", "打开本地 docx", "打开后端 chapter 记录", "查看错误信息"]
         elif status == ClauseStatus.PENDING_UPLOAD.value:
             actions = ["上传", "打开本地 docx", "打开后端 chapter 记录"]
         elif status == ClauseStatus.UPLOAD_SUCCESS.value:
@@ -251,7 +260,20 @@ class ChapterBatchClauseTable(QTableWidget):
             return
         editable = bool(term_item.data(Qt.ItemDataRole.UserRole + 1))
         menu = QMenu(self)
-        for action_name in self.available_actions_for_status(status_item.text(), editable):
+        chapter_id_text = self.item(row, self.COL_CHAPTER_ID)
+        chapter_id = None
+        if chapter_id_text is not None:
+            normalized = chapter_id_text.text().strip()
+            if normalized:
+                try:
+                    chapter_id = int(normalized)
+                except ValueError:
+                    chapter_id = None
+        for action_name in self.available_actions_for_status(
+            status_item.text(),
+            editable,
+            chapter_id=chapter_id,
+        ):
             action = menu.addAction(action_name)
             action.triggered.connect(
                 lambda _checked=False, name=action_name, cid=int(clause_id): self.action_requested.emit(name, cid)

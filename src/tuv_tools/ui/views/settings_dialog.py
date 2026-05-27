@@ -294,7 +294,12 @@ class SettingsDialog(QDialog):
         selected_app_data_root = Path(self._app_data_root_edit.text().strip()).resolve()
         app_data_root_changed = selected_app_data_root != self._original_app_data_root
         if app_data_root_changed:
-            self._settings.switch_app_data_root(selected_app_data_root, source_root=self._original_app_data_root)
+            self._db.close()
+            copied = self._settings.import_app_data_root(
+                selected_app_data_root,
+                source_root=self._original_app_data_root,
+            )
+            self._settings.set_app_data_root(selected_app_data_root)
             self._db = self._get_db()
         self._db.set_config("splitter.output_path", self._output_edit.text().strip())
         self._db.set_config("splitter.auto_open",
@@ -302,6 +307,15 @@ class SettingsDialog(QDialog):
         self._settings.save_api_config(api_config)
         self._db.save_clean_rules(rules)
         if app_data_root_changed:
+            if copied and self._original_app_data_root.exists():
+                reply = QMessageBox.question(
+                    self,
+                    "删除旧目录",
+                    "旧的本地数据目录数据已导入到新路径。是否删除旧文件夹？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    self._settings.remove_app_data_root(self._original_app_data_root)
             QMessageBox.information(self, "设置已保存", "本地数据目录已更新，重启工具后生效。")
         self.accept()
 

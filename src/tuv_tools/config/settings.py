@@ -166,6 +166,35 @@ class AppSettings:
         self.set_app_data_root(target_root)
         return True
 
+    def import_app_data_root(self, target_root: str | Path, *, source_root: Path | None = None) -> bool:
+        target = _normalize_path(target_root)
+        source = _normalize_path(source_root or self.get_app_data_root())
+        if target == source or not source.exists():
+            return False
+        tracked_entries = [
+            entry
+            for entry in (DEFAULT_DB_FILE, DEFAULT_TOKEN_CACHE_FILE, CHAPTER_BATCH_DIR_NAME)
+            if (source / entry).exists()
+        ]
+        if not tracked_entries:
+            return False
+        target.mkdir(parents=True, exist_ok=True)
+        for entry in tracked_entries:
+            source_path = source / entry
+            target_path = target / entry
+            if source_path.is_dir():
+                shutil.copytree(source_path, target_path, dirs_exist_ok=True)
+            else:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_path, target_path)
+        return all((target / entry).exists() for entry in tracked_entries)
+
+    @staticmethod
+    def remove_app_data_root(data_root: str | Path) -> None:
+        root = _normalize_path(data_root)
+        if root.exists():
+            shutil.rmtree(root, ignore_errors=True)
+
     def ensure_app_data_root_ready(self) -> Path:
         self.migrate_legacy_app_data_root()
         app_data_root = self.get_app_data_root()

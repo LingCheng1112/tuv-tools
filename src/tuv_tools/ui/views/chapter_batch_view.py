@@ -781,17 +781,45 @@ class ChapterBatchView(QWidget):
             return
         if not self._resolve_upload_duplicates(document_id, clause_ids):
             return
-        uploadable_clause_ids = [
-            clause.id
-            for clause in self._repo.get_clauses(document_id)
-            if clause.id in set(clause_ids) and clause.clause_status == ClauseStatus.PENDING_UPLOAD.value
-        ]
+        uploadable_clause_ids = self._collect_uploadable_clause_ids(
+            document_id,
+            clause_ids,
+            allow_reupload=False,
+        )
         if not uploadable_clause_ids:
             self._repo.reaggregate_document(document_id)
             self._load_documents()
             self._load_drawer_clauses(document_id)
             return
         self._start_clause_upload(document_id, uploadable_clause_ids)
+
+    def _collect_uploadable_clause_ids(
+        self,
+        document_id: int,
+        clause_ids: list[int],
+        *,
+        allow_reupload: bool,
+    ) -> list[int]:
+        wanted = {int(clause_id) for clause_id in clause_ids}
+        uploadable_clause_ids: list[int] = []
+        for clause in self._repo.get_clauses(document_id):
+            if clause.id not in wanted:
+                continue
+            if clause.id is None:
+                continue
+            if clause.clause_status == ClauseStatus.PENDING_UPLOAD.value:
+                uploadable_clause_ids.append(clause.id)
+                continue
+            if clause.clause_status == ClauseStatus.UPLOAD_FAILED.value:
+                uploadable_clause_ids.append(clause.id)
+                continue
+            if (
+                allow_reupload
+                and clause.clause_status == ClauseStatus.UPLOAD_SUCCESS.value
+                and clause.chapter_id is not None
+            ):
+                uploadable_clause_ids.append(clause.id)
+        return uploadable_clause_ids
 
     def _save_documents(self, document_ids: list[int]) -> list[int]:
         if not document_ids:
@@ -1079,7 +1107,13 @@ class ChapterBatchView(QWidget):
             if not self._resolve_upload_duplicates(document.id):
                 return
             clauses = self._repo.get_clauses(document.id)
-            if any(clause.clause_status == ClauseStatus.PENDING_UPLOAD.value for clause in clauses):
+            if any(
+                clause.clause_status in {
+                    ClauseStatus.PENDING_UPLOAD.value,
+                    ClauseStatus.UPLOAD_FAILED.value,
+                }
+                for clause in clauses
+            ):
                 ready_document_ids.append(document.id)
             else:
                 self._repo.reaggregate_document(document.id)
@@ -1301,7 +1335,15 @@ class ChapterBatchView(QWidget):
         if document is not None and is_document_running(document.document_status):
             return False
         if action_name == "重新上传":
-            return clause.chapter_id is not None and clause.clause_status == ClauseStatus.UPLOAD_SUCCESS.value
+            return clause.chapter_id is not None and clause.clause_status in {
+                ClauseStatus.PENDING_UPLOAD.value,
+                ClauseStatus.UPLOAD_SUCCESS.value,
+                ClauseStatus.UPLOAD_FAILED.value,
+            }
+        if action_name == "上传" and clause.chapter_id is not None:
+            return clause.clause_status == ClauseStatus.PENDING_UPLOAD.value
+        if action_name == "重试上传" and clause.chapter_id is not None:
+            return clause.clause_status == ClauseStatus.UPLOAD_FAILED.value
         editable, _reason = get_clause_edit_state(
             clause_status=clause.clause_status,
             chapter_id=clause.chapter_id,
@@ -1331,7 +1373,17 @@ class ChapterBatchView(QWidget):
             return
         if not self._ask_reupload_overwrite(document, clause):
             return
-        self._start_clause_upload(clause.document_id, [clause_id])
+        uploadable_clause_ids = self._collect_uploadable_clause_ids(
+            clause.document_id,
+            [clause_id],
+            allow_reupload=True,
+        )
+        if not uploadable_clause_ids:
+            self._repo.reaggregate_document(clause.document_id)
+            self._load_documents()
+            self._load_drawer_clauses(clause.document_id)
+            return
+        self._start_clause_upload(clause.document_id, uploadable_clause_ids)
 
     def _set_clause_status_for_retry(self, clause_id: int, from_status: str) -> None:
         clause = self._repo.get_clause(clause_id)

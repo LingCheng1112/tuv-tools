@@ -367,3 +367,42 @@ class TestChapterBatchRepository:
         assert first.is_queued is False
         assert second.is_queued is False
         assert third.is_queued is False
+
+    def test_repository_resolves_legacy_absolute_clause_paths_under_current_data_root(self, tmp_path):
+        from tuv_tools.config import AppSettings
+        from tuv_tools.core.chapter_batch.repository import ChapterBatchRepository
+
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        data_root = project_root / ".tuv-tools"
+        chapter_batch_root = data_root / "chapter-batch"
+        settings = AppSettings(project_root=project_root)
+        settings.set_app_data_root(data_root)
+
+        db = DatabaseManager(data_root / "batch.db")
+        repo = ChapterBatchRepository(db)
+        doc_id = repo.create_document(
+            BatchImportDocument(
+                file_path="C:/docs/a.docx",
+                file_name="a.docx",
+            )
+        )
+        legacy_root = tmp_path / "legacy-home" / ".tuv-tools" / "chapter-batch"
+        expected_runtime_path = chapter_batch_root / "14" / "clauses_docx" / "13.2.docx"
+        expected_runtime_path.parent.mkdir(parents=True, exist_ok=True)
+        expected_runtime_path.write_text("docx", encoding="utf-8")
+
+        repo.replace_clauses(
+            doc_id,
+            [
+                BatchImportClause(
+                    sort_index=0,
+                    term="13.2",
+                    source_docx_path=str(legacy_root / "14" / "clauses_docx" / "13.2.docx"),
+                )
+            ],
+        )
+
+        clause = repo.get_clauses(doc_id)[0]
+
+        assert clause.source_docx_path == str(expected_runtime_path.resolve())

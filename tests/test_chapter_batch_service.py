@@ -28,7 +28,7 @@ def _new_service():
     tmp = tempfile.mkdtemp()
     db = DatabaseManager(Path(tmp) / "batch.db")
     repo = ChapterBatchRepository(db)
-    return ChapterBatchService(repo), repo
+    return ChapterBatchService(repo, output_root=Path(tmp) / "chapter-batch"), repo
 
 
 class TestChapterBatchService:
@@ -61,13 +61,16 @@ class TestChapterBatchService:
         assert saved.split_mode == SplitMode.SECTION.value
 
     def test_service_defaults_output_root_to_project_app_data_dir(self, tmp_path):
+        from tuv_tools.core.chapter_batch.service import ChapterBatchService
+
         project_root = tmp_path / "repo"
         project_root.mkdir(parents=True)
 
         with patch("tuv_tools.core.chapter_batch.service.AppSettings") as settings_cls:
             settings = settings_cls.return_value
             settings.get_chapter_batch_root.return_value = project_root / ".tuv-tools" / "chapter-batch"
-            service, _repo = _new_service()
+            _service, repo = _new_service()
+            service = ChapterBatchService(repo)
 
         assert service.get_output_root() == project_root / ".tuv-tools" / "chapter-batch"
 
@@ -416,7 +419,6 @@ class TestChapterBatchService:
 
     def test_split_document_creates_clause_rows_from_real_docx(self, tmp_path):
         service, repo = _new_service()
-        service._output_root = tmp_path
         fixture = Path(__file__).parent / "fixtures" / "Test Plan for IEC 60335-2-24.doc.docx"
         docs = service.import_documents([str(fixture)], split_mode=SplitMode.CLAUSE.value)
 
@@ -440,9 +442,25 @@ class TestChapterBatchService:
         ]
         assert [clause.test_content for clause in clauses] == expected
 
+    def test_split_document_stores_clause_output_path_as_relocatable_reference(self, tmp_path):
+        service, repo = _new_service()
+        fixture = Path(__file__).parent / "fixtures" / "Test Plan for IEC 60335-2-24.doc.docx"
+        docs = service.import_documents([str(fixture)], split_mode=SplitMode.CLAUSE.value)
+
+        service.split_document(docs[0].id)
+
+        clause = repo.get_clauses(docs[0].id)[0]
+        stored_path = repo._conn.execute(
+            "SELECT source_docx_path FROM batch_import_clauses WHERE document_id = ? ORDER BY sort_index ASC LIMIT 1",
+            (docs[0].id,),
+        ).fetchone()["source_docx_path"]
+
+        assert ":" not in stored_path
+        assert stored_path.startswith(f"{docs[0].id}/clauses_docx/")
+        assert Path(clause.source_docx_path).exists()
+
     def test_split_document_section_mode_uses_major_version_rows(self, tmp_path):
         service, repo = _new_service()
-        service._output_root = tmp_path
         fixture = Path(__file__).parent / "fixtures" / "Test Plan for IEC 60335-2-24.doc.docx"
         docs = service.import_documents([str(fixture)], split_mode=SplitMode.SECTION.value)
 
@@ -469,7 +487,6 @@ class TestChapterBatchService:
 
     def test_clause_mode_uses_standard_mapping_when_display_content_is_empty(self, tmp_path, monkeypatch):
         service, repo = _new_service()
-        service._output_root = tmp_path
         fixture = Path(__file__).parent / "fixtures" / "Test Plan for IEC 60335-2-24.doc.docx"
         docs = service.import_documents([str(fixture)], split_mode=SplitMode.CLAUSE.value)
 
@@ -492,7 +509,6 @@ class TestChapterBatchService:
 
     def test_clause_mode_uses_null_when_display_content_is_empty_and_no_standard_mapping(self, tmp_path, monkeypatch):
         service, repo = _new_service()
-        service._output_root = tmp_path
         fixture = Path(__file__).parent / "fixtures" / "Test Plan for IEC 60335-2-24.doc.docx"
         docs = service.import_documents([str(fixture)], split_mode=SplitMode.CLAUSE.value)
         repo.update_document(docs[0].id, standard="custom-standard")

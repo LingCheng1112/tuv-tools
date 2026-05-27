@@ -11,14 +11,16 @@ from typing import Any
 
 from tuv_tools.core.chapter.models import ApiConfig
 
+_STANDARD_WITH_PREFIX_BODY = r"(\d+(?:\.\d+)?(?:-\d+(?:\.\d+)?)*)"
+
 _STANDARD_PATTERNS = [
-    re.compile(r"IEC[\s_]*(\d+[-\d]*)", re.IGNORECASE),
-    re.compile(r"EN[\s_]*(\d+[-\d]*)", re.IGNORECASE),
-    re.compile(r"UL[\s_]*(\d+[-\d]*)", re.IGNORECASE),
-    re.compile(r"ISO[\s_]*(\d+[-\d]*)", re.IGNORECASE),
-    re.compile(r"GB[\s_]*(\d+(?:\.\d+)?(?:-\d+)?)", re.IGNORECASE),
-    # 通用无前缀模式：数字-数字-数字 如 60335-2-23
-    re.compile(r"(?<!\d)(\d{2,}-\d+[-\d]*)", re.IGNORECASE),
+    re.compile(rf"IEC[\s_]*{_STANDARD_WITH_PREFIX_BODY}", re.IGNORECASE),
+    re.compile(rf"EN[\s_]*{_STANDARD_WITH_PREFIX_BODY}", re.IGNORECASE),
+    re.compile(rf"UL[\s_]*{_STANDARD_WITH_PREFIX_BODY}", re.IGNORECASE),
+    re.compile(rf"ISO[\s_]*{_STANDARD_WITH_PREFIX_BODY}", re.IGNORECASE),
+    re.compile(rf"(?<![A-Za-z])GB[\s_]*{_STANDARD_WITH_PREFIX_BODY}", re.IGNORECASE),
+    # 通用无前缀模式：至少包含一个连字符的标准号，如 60335-2-23 / 4943.1-2022
+    re.compile(r"(?<!\d)(\d{2,}(?:\.\d+)?(?:-\d+(?:\.\d+)?)+)", re.IGNORECASE),
 ]
 
 

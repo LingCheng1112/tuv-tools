@@ -38,6 +38,9 @@ class TestStandardExtraction:
     def test_gb_standard(self):
         assert _extract_standard_number("GB 4943.1-2022.doc") == "4943.1-2022"
 
+    def test_non_gb_prefix_does_not_truncate_generic_standard(self):
+        assert _extract_standard_number("QMF-OR-31057 NGB 60335-2-35.doc.docx") == "60335-2-35"
+
     def test_no_standard(self):
         assert _extract_standard_number("random_document.docx") is None
 

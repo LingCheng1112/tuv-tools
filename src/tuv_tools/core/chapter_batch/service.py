@@ -24,6 +24,7 @@ from .models import (
     DocumentStatus,
     SplitMode,
     is_document_running,
+    normalize_clause_source_docx_path,
 )
 from .repository import ChapterBatchRepository
 
@@ -141,6 +142,9 @@ class ChapterBatchService:
 
     def get_output_root(self) -> Path:
         return Path(self._output_root)
+
+    def _to_stored_clause_docx_path(self, output_path: Path) -> str:
+        return normalize_clause_source_docx_path(str(output_path), self.get_output_root())
 
     def import_documents(self, paths: list[str], split_mode: str) -> list[BatchImportDocument]:
         created: list[BatchImportDocument] = []
@@ -362,7 +366,7 @@ class ChapterBatchService:
                         raw_title=section.title,
                         standard=standard,
                     ),
-                    source_docx_path=str(output_path),
+                    source_docx_path=self._to_stored_clause_docx_path(output_path),
                 )
             )
         return clauses
@@ -398,7 +402,7 @@ class ChapterBatchService:
                         term=major_version,
                         standard=standard,
                     ),
-                    source_docx_path=str(output_path),
+                    source_docx_path=self._to_stored_clause_docx_path(output_path),
                 )
             )
         return clauses

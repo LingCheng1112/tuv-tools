@@ -12,6 +12,8 @@ from .models import (
     BatchImportDocument,
     ClauseStatus,
     DocumentStatus,
+    normalize_clause_source_docx_path,
+    resolve_clause_source_docx_path,
 )
 
 _LEGACY_DOCUMENT_STATUS_MAP = {
@@ -62,10 +64,17 @@ class ChapterBatchRepository:
 
     def __init__(self, db: DatabaseManager):
         self._db = db
+        self._chapter_batch_root = self._db._db_path.resolve().parent / "chapter-batch"
 
     @property
     def _conn(self):
         return self._db._conn
+
+    def _normalize_clause_path_for_storage(self, source_docx_path: str) -> str:
+        return normalize_clause_source_docx_path(source_docx_path, self._chapter_batch_root)
+
+    def _resolve_clause_path_for_runtime(self, source_docx_path: str) -> str:
+        return resolve_clause_source_docx_path(source_docx_path, self._chapter_batch_root)
 
     def create_document(self, document: BatchImportDocument) -> int:
         now = _now()
@@ -188,7 +197,7 @@ class ChapterBatchRepository:
                     _normalize_clause_status(clause.clause_status),
                     clause.chapter_id,
                     clause.backend_chapter_status,
-                    clause.source_docx_path,
+                    self._normalize_clause_path_for_storage(clause.source_docx_path),
                     int(clause.duplicate_flag),
                     clause.duplicate_reason,
                     clause.user_decision,
@@ -214,6 +223,9 @@ class ChapterBatchRepository:
         clauses: list[BatchImportClause] = []
         for row in rows:
             data = _normalize_clause_row(dict(row))
+            data["source_docx_path"] = self._resolve_clause_path_for_runtime(
+                data.get("source_docx_path", "")
+            )
             clauses.append(BatchImportClause(**{key: data.get(key) for key in allowed}))
         return clauses
 
@@ -225,6 +237,9 @@ class ChapterBatchRepository:
         if row is None:
             return None
         data = _normalize_clause_row(dict(row))
+        data["source_docx_path"] = self._resolve_clause_path_for_runtime(
+            data.get("source_docx_path", "")
+        )
         allowed = {item.name for item in fields(BatchImportClause)}
         return BatchImportClause(**{key: data.get(key) for key in allowed})
 
@@ -234,6 +249,10 @@ class ChapterBatchRepository:
         if "clause_status" in fields_to_update:
             fields_to_update["clause_status"] = _normalize_clause_status(
                 fields_to_update["clause_status"]
+            )
+        if "source_docx_path" in fields_to_update:
+            fields_to_update["source_docx_path"] = self._normalize_clause_path_for_storage(
+                fields_to_update["source_docx_path"]
             )
         fields_to_update["updated_at"] = _now()
         columns = ", ".join(f"{key} = ?" for key in fields_to_update)

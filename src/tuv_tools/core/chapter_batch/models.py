@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
 from tuv_tools.core.chapter.models import ChapterStatus
 
@@ -70,6 +71,49 @@ RUNNING_DOCUMENT_STATUSES = {
     DocumentStatus.SPLITTING.value,
     DocumentStatus.UPLOADING.value,
 }
+
+
+def _extract_path_inside_chapter_batch(path: Path) -> Path | None:
+    parts = list(path.parts)
+    lowered = [part.lower() for part in parts]
+    if "chapter-batch" not in lowered:
+        return None
+    marker_index = max(index for index, part in enumerate(lowered) if part == "chapter-batch")
+    if marker_index >= len(parts) - 1:
+        return Path()
+    return Path(*parts[marker_index + 1 :])
+
+
+def normalize_clause_source_docx_path(source_docx_path: str, chapter_batch_root: str | Path) -> str:
+    normalized_text = (source_docx_path or "").strip()
+    if not normalized_text:
+        return ""
+    root = Path(chapter_batch_root).expanduser().resolve()
+    raw_path = Path(normalized_text).expanduser()
+    if raw_path.is_absolute():
+        try:
+            return raw_path.resolve().relative_to(root).as_posix()
+        except ValueError:
+            relative = _extract_path_inside_chapter_batch(raw_path)
+            if relative is not None:
+                return relative.as_posix()
+            return str(raw_path.resolve())
+    relative = _extract_path_inside_chapter_batch(raw_path) or raw_path
+    return relative.as_posix()
+
+
+def resolve_clause_source_docx_path(source_docx_path: str, chapter_batch_root: str | Path) -> str:
+    normalized_text = (source_docx_path or "").strip()
+    if not normalized_text:
+        return ""
+    root = Path(chapter_batch_root).expanduser().resolve()
+    raw_path = Path(normalized_text).expanduser()
+    if raw_path.is_absolute():
+        relative = _extract_path_inside_chapter_batch(raw_path)
+        if relative is None:
+            return str(raw_path.resolve())
+        return str((root / relative).resolve())
+    return str((root / normalize_clause_source_docx_path(normalized_text, root)).resolve())
 
 
 def is_document_executable(status: str) -> bool:

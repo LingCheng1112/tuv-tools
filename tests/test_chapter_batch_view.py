@@ -636,6 +636,42 @@ def test_reupload_single_clause_skips_duplicate_resolution(qapp, monkeypatch):
     assert started == [(doc_id, [clause_id])]
 
 
+def test_reupload_single_clause_uses_success_clause_without_status_fallback(qapp, monkeypatch):
+    from tuv_tools.core.chapter_batch.models import BatchImportClause, BatchImportDocument, ClauseStatus, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/reupload-direct.docx",
+            file_name="reupload-direct.docx",
+            document_status=DocumentStatus.COMPLETED.value,
+        )
+    )
+    repo.replace_clauses(
+        doc_id,
+        [
+            BatchImportClause(
+                sort_index=0,
+                term="10.1",
+                test_content="Heating",
+                clause_status=ClauseStatus.UPLOAD_SUCCESS.value,
+                chapter_id=808,
+                source_docx_path="C:/out/10_1.docx",
+            )
+        ],
+    )
+    view._drawer.mark_saved(doc_id)
+    monkeypatch.setattr(view, "_ask_reupload_overwrite", lambda document, clause: True)
+    started = []
+    monkeypatch.setattr(view, "_start_clause_upload", lambda document_id, clause_ids: started.append((document_id, clause_ids)))
+
+    view._reupload_single_clause(repo.get_clauses(doc_id)[0].id)
+
+    assert started == [(doc_id, [repo.get_clauses(doc_id)[0].id])]
+
+
 def test_reupload_single_clause_cancelled_by_user_does_not_start(qapp, monkeypatch):
     from tuv_tools.core.chapter_batch.models import BatchImportClause, BatchImportDocument, ClauseStatus, DocumentStatus
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
@@ -975,6 +1011,68 @@ def test_clause_table_includes_view_error_action(qapp):
     assert "查看错误信息" in table.available_actions_for_status(ClauseStatus.UPLOAD_FAILED.value, editable=False)
 
 
+def test_failed_clause_with_chapter_id_prefers_reupload_action(qapp):
+    from tuv_tools.core.chapter_batch.models import BatchImportClause, BatchImportDocument, ClauseStatus, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/reupload-failed.docx",
+            file_name="reupload-failed.docx",
+            document_status=DocumentStatus.FAILED.value,
+        )
+    )
+    repo.replace_clauses(
+        doc_id,
+        [
+            BatchImportClause(
+                sort_index=0,
+                term="10.1",
+                clause_status=ClauseStatus.UPLOAD_FAILED.value,
+                chapter_id=808,
+                source_docx_path="C:/out/10_1.docx",
+            )
+        ],
+    )
+
+    assert view._can_apply_clause_action("重新上传", repo.get_clauses(doc_id)[0].id) is True
+    assert view._can_apply_clause_action("上传", repo.get_clauses(doc_id)[0].id) is True
+
+
+def test_pending_clause_with_chapter_id_can_still_use_upload_action(qapp):
+    from tuv_tools.core.chapter_batch.models import BatchImportClause, BatchImportDocument, ClauseStatus, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/pending-existing.docx",
+            file_name="pending-existing.docx",
+            document_status=DocumentStatus.PENDING_UPLOAD.value,
+        )
+    )
+    repo.replace_clauses(
+        doc_id,
+        [
+            BatchImportClause(
+                sort_index=0,
+                term="10.1",
+                clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                chapter_id=809,
+                source_docx_path="C:/out/10_1.docx",
+            )
+        ],
+    )
+
+    clause_id = repo.get_clauses(doc_id)[0].id
+    assert clause_id is not None
+    assert view._can_apply_clause_action("上传", clause_id) is True
+    assert view._can_apply_clause_action("重新上传", clause_id) is True
+
+
 def test_clause_table_filters_mutating_actions_when_readonly(qapp):
     from tuv_tools.core.chapter_batch.models import ClauseStatus
     from tuv_tools.ui.widgets.chapter_batch_clause_table import ChapterBatchClauseTable
@@ -1002,6 +1100,18 @@ def test_clause_table_actions_follow_status(qapp):
     assert "重新上传" in table.available_actions_for_status(ClauseStatus.UPLOAD_SUCCESS.value)
     assert "打开后端 chapter 记录" in table.available_actions_for_status(ClauseStatus.PENDING_UPLOAD.value)
     assert "上传" in table.available_actions_for_status(ClauseStatus.PENDING_UPLOAD.value)
+
+
+def test_clause_table_pending_with_chapter_id_keeps_upload_action(qapp):
+    from tuv_tools.core.chapter_batch.models import ClauseStatus
+    from tuv_tools.ui.widgets.chapter_batch_clause_table import ChapterBatchClauseTable
+
+    table = ChapterBatchClauseTable()
+
+    actions = table.available_actions_for_status(ClauseStatus.PENDING_UPLOAD.value, chapter_id=123)
+
+    assert "上传" in actions
+    assert "重新上传" not in actions
 
 
 def test_clause_local_actions_update_status(qapp):
@@ -1177,6 +1287,54 @@ def test_clause_upload_action_starts_single_clause_upload(qapp, monkeypatch):
     repo.replace_clauses(
         doc_id,
         [BatchImportClause(sort_index=0, term="10.1", test_content="Heating", source_docx_path="C:/out/10_1.docx")],
+    )
+    doc = repo.get_document(doc_id)
+    assert doc is not None
+    view._drawer.set_documents([doc])
+    view._load_drawer_clauses(doc_id)
+    view._drawer.mark_saved(doc_id)
+    clause_id = repo.get_clauses(doc_id)[0].id
+    assert clause_id is not None
+    started = []
+    monkeypatch.setattr(view, "_resolve_upload_duplicates", lambda document_id, clause_ids=None: True)
+    monkeypatch.setattr(view, "_start_clause_upload", lambda document_id, clause_ids: started.append((document_id, clause_ids)))
+
+    view._on_clause_action_requested("上传", clause_id)
+
+    assert started == [(doc_id, [clause_id])]
+
+
+def test_clause_upload_action_with_existing_chapter_id_starts_single_clause_upload(qapp, monkeypatch):
+    from tuv_tools.core.chapter_batch.models import BatchImportClause, BatchImportDocument, ClauseStatus, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/single-upload-existing.docx",
+            file_name="single-upload-existing.docx",
+            document_status=DocumentStatus.PENDING_UPLOAD.value,
+            standard="60335-2-35",
+            folder_id=1061,
+            folder_name="60335-2-35",
+            product_type="家电",
+            plan_sr="1",
+            chapter_version="1.0",
+        )
+    )
+    repo.replace_clauses(
+        doc_id,
+        [
+            BatchImportClause(
+                sort_index=0,
+                term="11",
+                test_content="Heating",
+                clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                chapter_id=1234,
+                source_docx_path="C:/out/11.docx",
+            )
+        ],
     )
     doc = repo.get_document(doc_id)
     assert doc is not None
