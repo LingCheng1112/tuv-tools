@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 import shutil
 
@@ -72,8 +72,18 @@ def resolve_chapter_batch_root(project_root: Path | None = None) -> Path:
     return resolve_app_data_root(project_root) / CHAPTER_BATCH_DIR_NAME
 
 
+def normalize_token_cache_file(token_cache_file: str | None) -> str:
+    normalized = (token_cache_file or "").strip()
+    if not normalized:
+        return DEFAULT_TOKEN_CACHE_FILE
+    path = Path(normalized).expanduser()
+    if path.is_absolute():
+        return DEFAULT_TOKEN_CACHE_FILE
+    return normalized
+
+
 def resolve_token_cache_path(token_cache_file: str, project_root: Path | None = None) -> Path:
-    normalized = (token_cache_file or "").strip() or DEFAULT_TOKEN_CACHE_FILE
+    normalized = normalize_token_cache_file(token_cache_file)
     path = Path(normalized).expanduser()
     if path.is_absolute():
         return path.resolve()
@@ -103,7 +113,7 @@ class AppSettings:
     @property
     def _db(self):
         from tuv_tools.config.database import DatabaseManager
-        return DatabaseManager()
+        return DatabaseManager(self.get_database_path())
 
     def get_bootstrap_config_path(self) -> Path:
         return get_bootstrap_config_path(self.project_root)
@@ -236,17 +246,22 @@ class AppSettings:
             key_path = RSA_KEY_FILE
             if key_path.exists():
                 config.rsa_private_key = key_path.read_text(encoding="utf-8").strip()
-            config.token_cache_file = str(self.get_token_cache_path(config.token_cache_file))
+            config.token_cache_file = str(
+                self.get_token_cache_path(normalize_token_cache_file(config.token_cache_file))
+            )
             return config
         config = self._db.load_api_config()
         if config is None:
             return None
-        config.token_cache_file = str(self.get_token_cache_path(config.token_cache_file))
+        config.token_cache_file = str(
+            self.get_token_cache_path(normalize_token_cache_file(config.token_cache_file))
+        )
         return config
 
     def save_api_config(self, config, config_path: Path | None = None) -> None:
         """保存 API 配置。指定 path 时写旧 JSON 文件，否则写 DB。"""
         from dataclasses import asdict
+        config = replace(config, token_cache_file=normalize_token_cache_file(config.token_cache_file))
         if config_path is not None:
             data = asdict(config)
             data.pop("rsa_private_key", None)

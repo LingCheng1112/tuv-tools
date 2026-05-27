@@ -55,7 +55,7 @@ class SettingsDialog(QDialog):
 
     def _get_db(self):
         from tuv_tools.config.database import DatabaseManager
-        return DatabaseManager()
+        return DatabaseManager(self._settings.get_database_path())
 
     # ---- 拆分配置标签页 ----
 

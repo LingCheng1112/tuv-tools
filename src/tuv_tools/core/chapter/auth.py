@@ -16,7 +16,9 @@ from .models import ApiConfig
 def save_token_cache(cache_path: str, token: str, username: str) -> None:
     """保存 token 到缓存文件"""
     data = {"token": token, "username": username, "time": time.time()}
-    Path(cache_path).write_text(json.dumps(data), encoding="utf-8")
+    path = Path(cache_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
 
 
 def load_token_cache(cache_path: str, timeout: int) -> dict | None:

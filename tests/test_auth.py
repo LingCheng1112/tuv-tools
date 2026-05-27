@@ -43,6 +43,11 @@ class TestTokenCache:
         assert result["token"] == "abc123"
         assert result["username"] == "tyler"
 
+    def test_save_creates_parent_directory(self, tmp_path):
+        nested_cache = tmp_path / "nested" / ".token_cache"
+        save_token_cache(str(nested_cache), "abc123", "tyler")
+        assert nested_cache.exists()
+
     def test_load_expired(self, tmp_cache):
         save_token_cache(str(tmp_cache), "old_token", "tyler")
         data = json.loads(Path(tmp_cache).read_text())
@@ -125,3 +130,20 @@ class TestAutoLogin:
         client = TuvClient(config.base_url)
         result = auto_login(client, config)
         assert result is False
+
+    @patch("tuv_tools.core.chapter.auth.encrypt_password")
+    def test_login_saves_token_when_cache_parent_missing(self, mock_encrypt, config, tmp_path):
+        config.rsa_private_key = "fake_key"
+        config.token_cache_file = str(tmp_path / "missing" / ".token_cache")
+        mock_encrypt.return_value = "encrypted_pw"
+        client = TuvClient(config.base_url)
+        login_resp = MagicMock()
+        login_resp.status_code = 200
+        login_resp.json.return_value = {"token": "Bearer new_token"}
+
+        with patch.object(client, "post", return_value=login_resp):
+            result = auto_login(client, config)
+
+        assert result is True
+        assert client.token == "new_token"
+        assert Path(config.token_cache_file).exists()

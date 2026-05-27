@@ -440,6 +440,56 @@ class TestDatabaseManager:
         assert bootstrap == {"appDataRoot": str(target_root)}
         assert settings.get_app_data_root() == target_root
 
+    def test_app_settings_save_api_config_uses_project_database(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        settings = AppSettings(project_root=project_root)
+        settings.ensure_app_data_root_ready()
+
+        settings.save_api_config(
+            ApiConfig(
+                base_url="http://localhost:8080",
+                username="admin",
+                password="secret",
+                rsa_private_key="KEY123",
+                token_cache_file=str(tmp_path / "pytest-temp" / ".token_cache"),
+            )
+        )
+
+        db = DatabaseManager(settings.get_database_path())
+        loaded = db.load_api_config()
+
+        assert settings.get_database_path().exists()
+        assert loaded is not None
+        assert loaded.base_url == "http://localhost:8080"
+        assert loaded.username == "admin"
+        assert loaded.password == "secret"
+        assert loaded.rsa_private_key == "KEY123"
+        assert loaded.token_cache_file == ".token_cache"
+
+    def test_app_settings_rebases_legacy_absolute_token_cache_to_current_data_root(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        settings = AppSettings(project_root=project_root)
+        settings.ensure_app_data_root_ready()
+        legacy_cache = tmp_path / "pytest-temp" / ".token_cache"
+
+        db = DatabaseManager(settings.get_database_path())
+        db.save_api_config(
+            ApiConfig(
+                base_url="http://localhost:8080",
+                username="admin",
+                password="secret",
+                rsa_private_key="KEY123",
+                token_cache_file=str(legacy_cache),
+            )
+        )
+
+        loaded = settings.load_api_config()
+
+        assert loaded is not None
+        assert loaded.token_cache_file == str(settings.get_app_data_root() / ".token_cache")
+
     def test_migrate_user_home_data_root_copies_required_data_and_removes_old_root(self, tmp_path):
         project_root = tmp_path / "repo"
         project_root.mkdir(parents=True)
