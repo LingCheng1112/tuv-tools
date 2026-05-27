@@ -43,7 +43,7 @@ def test_folder_selector_can_apply_dialog_selection(qapp, monkeypatch):
     widget = ChapterFolderSelector()
 
     class Dialog:
-        def __init__(self, parent=None):
+        def __init__(self, parent=None, session_manager=None):
             pass
 
         def exec(self):
@@ -62,3 +62,44 @@ def test_folder_selector_can_apply_dialog_selection(qapp, monkeypatch):
     widget._open_dialog()
 
     assert widget.selected_folder() == (88, "60335-2-9")
+
+
+def test_folder_selector_button_disabled_when_session_not_connected(qapp):
+    from tuv_tools.core.chapter.session import ChapterSessionManager
+    from tuv_tools.ui.widgets.chapter_folder_selector import ChapterFolderSelector
+
+    session = ChapterSessionManager()
+    widget = ChapterFolderSelector(session_manager=session)
+
+    assert widget._button.isEnabled() is False
+
+
+def test_folder_selector_passes_session_manager_to_dialog(qapp, monkeypatch):
+    from tuv_tools.core.chapter.session import ChapterConnectionStatus
+    from tuv_tools.core.chapter.session import ChapterSessionManager
+    from tuv_tools.ui.widgets.chapter_folder_selector import ChapterFolderSelector
+
+    session = ChapterSessionManager()
+    session._client = object()
+    session._set_status(ChapterConnectionStatus.CONNECTED)
+    captured = {}
+
+    class Dialog:
+        def __init__(self, parent=None, session_manager=None):
+            captured["session_manager"] = session_manager
+
+        def exec(self):
+            from PySide6.QtWidgets import QDialog
+
+            return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(
+        "tuv_tools.ui.widgets.chapter_folder_selector.ChapterFolderDialog",
+        Dialog,
+    )
+
+    widget = ChapterFolderSelector(session_manager=session)
+    widget.set_connection_enabled(True)
+    widget._open_dialog()
+
+    assert captured["session_manager"] is session

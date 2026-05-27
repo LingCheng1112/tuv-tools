@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -58,6 +59,17 @@ class TestChapterBatchService:
         assert saved is not None
         assert saved.standard == ""
         assert saved.split_mode == SplitMode.SECTION.value
+
+    def test_service_defaults_output_root_to_project_app_data_dir(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+
+        with patch("tuv_tools.core.chapter_batch.service.AppSettings") as settings_cls:
+            settings = settings_cls.return_value
+            settings.get_chapter_batch_root.return_value = project_root / ".tuv-tools" / "chapter-batch"
+            service, _repo = _new_service()
+
+        assert service.get_output_root() == project_root / ".tuv-tools" / "chapter-batch"
 
     def test_complete_folder_context_fills_folder_and_product_type_from_tree(self):
         service, repo = _new_service()
@@ -147,6 +159,30 @@ class TestChapterBatchService:
         assert saved.folder_id is None
         assert saved.folder_name == ""
         assert saved.product_type == ""
+
+    def test_delete_documents_removes_workspace_outputs_but_keeps_source_file(self, tmp_path):
+        service, repo = _new_service()
+        service._output_root = tmp_path / "chapter-batch"
+        source_file = tmp_path / "imports" / "sample.docx"
+        source_file.parent.mkdir(parents=True)
+        source_file.write_text("source", encoding="utf-8")
+        doc_id = repo.create_document(
+            BatchImportDocument(
+                file_path=str(source_file),
+                file_name="sample.docx",
+                document_status=DocumentStatus.PENDING_UPLOAD.value,
+            )
+        )
+        output_dir = service.get_output_root() / str(doc_id) / "clauses_docx"
+        output_dir.mkdir(parents=True)
+        (output_dir / "10_1.docx").write_text("split", encoding="utf-8")
+
+        deleted = service.delete_documents([doc_id])
+
+        assert deleted == [doc_id]
+        assert source_file.exists()
+        assert not (service.get_output_root() / str(doc_id)).exists()
+        assert repo.get_document(doc_id) is None
 
     def test_reset_document_for_resplit_clears_local_result_only(self):
         service, repo = _new_service()

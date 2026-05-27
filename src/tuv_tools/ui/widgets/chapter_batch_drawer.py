@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tuv_tools.core.chapter.session import ChapterSessionManager
 from tuv_tools.core.chapter_batch.models import BatchImportDocument
 from .chapter_batch_clause_table import ChapterBatchClauseTable
 from .chapter_batch_document_form import ChapterBatchDocumentForm
@@ -30,7 +31,7 @@ class ChapterBatchDrawer(QWidget):
     upload_requested = Signal(int, list)
     clause_action_requested = Signal(str, int)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, session_manager: ChapterSessionManager | None = None):
         super().__init__(parent)
         self._document_field_cache: dict[int, dict] = {}
         self._clause_field_cache: dict[int, dict[int, dict]] = {}
@@ -97,7 +98,7 @@ class ChapterBatchDrawer(QWidget):
         self._summary.setStyleSheet("color: #b8bec6;")
         layout.addWidget(self._summary)
 
-        self._document_form = ChapterBatchDocumentForm(self)
+        self._document_form = ChapterBatchDocumentForm(self, session_manager=session_manager)
         layout.addWidget(self._document_form)
 
         self._clause_table = ChapterBatchClauseTable(self)

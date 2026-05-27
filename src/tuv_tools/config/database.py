@@ -11,9 +11,6 @@ from typing import Any
 
 from tuv_tools.core.chapter.models import ApiConfig
 
-DB_DIR = Path.home() / ".tuv-tools"
-DB_PATH = DB_DIR / "tuv-tools.db"
-
 _STANDARD_PATTERNS = [
     re.compile(r"IEC[\s_]*(\d+[-\d]*)", re.IGNORECASE),
     re.compile(r"EN[\s_]*(\d+[-\d]*)", re.IGNORECASE),
@@ -175,7 +172,12 @@ class DatabaseManager:
     def __init__(self, db_path: Path | None = None):
         if db_path is None and DatabaseManager._initialized:
             return
-        self._db_path = db_path or DB_PATH
+        if db_path is None:
+            from tuv_tools.config.settings import AppSettings
+
+            self._db_path = AppSettings().get_database_path()
+        else:
+            self._db_path = db_path
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         self._init_db()

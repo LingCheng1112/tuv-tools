@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -11,6 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from tuv_tools.config.database import DatabaseManager, _extract_standard_number
+from tuv_tools.config.settings import AppSettings
 from tuv_tools.core.chapter.models import ApiConfig
 
 
@@ -401,3 +404,78 @@ class TestDatabaseManager:
 
         assert db.get_config("migrated_from_legacy") == "1"
         assert db.get_config("api.username") == "admin"
+
+    def test_app_settings_defaults_app_data_root_to_project_dot_dir(self):
+        settings = AppSettings()
+
+        assert settings.get_app_data_root() == settings.project_root / ".tuv-tools"
+        assert settings.get_database_path() == settings.project_root / ".tuv-tools" / "tuv-tools.db"
+        assert settings.get_chapter_batch_root() == settings.project_root / ".tuv-tools" / "chapter-batch"
+
+    def test_app_settings_reads_explicit_app_data_root_from_bootstrap_file(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        bootstrap_path = project_root / ".tuv-tools-config.json"
+        data_root = tmp_path / "custom-root"
+        bootstrap_path.write_text(
+            json.dumps({"appDataRoot": str(data_root)}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        settings = AppSettings(project_root=project_root)
+
+        assert settings.get_app_data_root() == data_root
+        assert settings.get_database_path() == data_root / "tuv-tools.db"
+        assert settings.get_chapter_batch_root() == data_root / "chapter-batch"
+
+    def test_app_settings_persists_explicit_app_data_root_to_bootstrap_file(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        settings = AppSettings(project_root=project_root)
+        target_root = tmp_path / "workspace-data"
+
+        settings.set_app_data_root(target_root)
+
+        bootstrap = json.loads((project_root / ".tuv-tools-config.json").read_text(encoding="utf-8"))
+        assert bootstrap == {"appDataRoot": str(target_root)}
+        assert settings.get_app_data_root() == target_root
+
+    def test_migrate_user_home_data_root_copies_required_data_and_removes_old_root(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        old_root = tmp_path / "old-home" / ".tuv-tools"
+        new_root = project_root / ".tuv-tools"
+        old_root.mkdir(parents=True)
+        (old_root / "chapter-batch" / "42").mkdir(parents=True)
+        (old_root / "chapter-batch" / "42" / "clauses_docx").mkdir(parents=True)
+        (old_root / "chapter-batch" / "42" / "clauses_docx" / "10_1.docx").write_text("docx", encoding="utf-8")
+        (old_root / ".token_cache").write_text(json.dumps({"token": "abc"}), encoding="utf-8")
+        shutil.copyfile(tmp_path / "seed.db", tmp_path / "seed.db") if False else None
+        (old_root / "tuv-tools.db").write_text("db-bytes", encoding="utf-8")
+
+        settings = AppSettings(project_root=project_root)
+
+        migrated = settings.migrate_legacy_app_data_root(legacy_root=old_root)
+
+        assert migrated is True
+        assert (new_root / "tuv-tools.db").exists()
+        assert (new_root / ".token_cache").exists()
+        assert (new_root / "chapter-batch" / "42" / "clauses_docx" / "10_1.docx").exists()
+        assert not old_root.exists()
+
+    def test_migrate_user_home_data_root_keeps_old_root_when_validation_fails(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        old_root = tmp_path / "old-home" / ".tuv-tools"
+        old_root.mkdir(parents=True)
+        (old_root / ".token_cache").write_text(json.dumps({"token": "abc"}), encoding="utf-8")
+
+        settings = AppSettings(project_root=project_root)
+
+        migrated = settings.migrate_legacy_app_data_root(
+            legacy_root=old_root,
+            required_files=("tuv-tools.db",),
+        )
+
+        assert migrated is False
+        assert old_root.exists()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -17,10 +17,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from tuv_tools.config import AppSettings
 from tuv_tools.core.chapter.api import get_folders
-from tuv_tools.core.chapter.auth import auto_login
 from tuv_tools.core.chapter.client import TuvClient
+from tuv_tools.core.chapter.session import ChapterSessionManager
 
 
 CHAPTER_ROOT_FOLDER_ID = 2
@@ -30,20 +29,17 @@ class FolderLoadWorker(QThread):
     loaded = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, pid: int | None, folder_name: str = ""):
-        super().__init__()
+    def __init__(self, client: TuvClient | None, pid: int | None, folder_name: str = "", parent: QObject | None = None):
+        super().__init__(parent)
+        self._client = client
         self._pid = pid
         self._folder_name = folder_name
 
     def run(self) -> None:
         try:
-            config = AppSettings().load_api_config()
-            if config is None:
-                raise RuntimeError("请先在设置中配置后端接口账号。")
-            client = TuvClient(config.base_url, config.request_timeout)
-            if not auto_login(client, config):
-                raise RuntimeError("后端登录失败。")
-            self.loaded.emit(get_folders(client, pid=self._pid, folder_name=self._folder_name))
+            if self._client is None:
+                raise RuntimeError("当前未连接后端。")
+            self.loaded.emit(get_folders(self._client, pid=self._pid, folder_name=self._folder_name))
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -51,8 +47,9 @@ class FolderLoadWorker(QThread):
 class ChapterFolderDialog(QDialog):
     """条款目录树选择弹窗。"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, session_manager: ChapterSessionManager | None = None):
         super().__init__(parent)
+        self._session_manager = session_manager
         self.setWindowTitle("选择归属文件夹")
         self.resize(460, 560)
         self._selected_folder_id: int | None = None
@@ -109,7 +106,8 @@ class ChapterFolderDialog(QDialog):
         self._selected_folder_name = item.text(0)
 
     def _run_loader(self, pid: int | None, folder_name: str, callback) -> None:
-        worker = FolderLoadWorker(pid, folder_name)
+        client = self._session_manager.get_connected_client() if self._session_manager is not None else None
+        worker = FolderLoadWorker(client, pid, folder_name, self)
         worker.loaded.connect(callback)
         worker.failed.connect(lambda message: QMessageBox.warning(self, "目录加载失败", message))
         worker.finished.connect(lambda: self._cleanup_worker(worker))
@@ -128,8 +126,9 @@ class ChapterFolderSelector(QWidget):
 
     folder_changed = Signal(object, str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, session_manager: ChapterSessionManager | None = None):
         super().__init__(parent)
+        self._session_manager = session_manager
         self._selected_folder_id: int | None = None
         self._selected_folder_name = ""
 
@@ -144,6 +143,12 @@ class ChapterFolderSelector(QWidget):
         self._button = QPushButton("选择")
         self._button.clicked.connect(self._open_dialog)
         layout.addWidget(self._button)
+        self.set_connection_enabled(self._session_manager is None or self._session_manager.is_connected())
+
+    def set_connection_enabled(self, enabled: bool) -> None:
+        self._button.setEnabled(enabled)
+        if not enabled and not self._selected_folder_name:
+            self._display.setText("")
 
     def set_selected_folder(self, folder_id: int | None, folder_name: str = "") -> None:
         self._selected_folder_id = folder_id
@@ -158,7 +163,9 @@ class ChapterFolderSelector(QWidget):
         self.folder_changed.emit(folder_id, folder_name)
 
     def _open_dialog(self) -> None:
-        dialog = ChapterFolderDialog(self)
+        if self._session_manager is not None and not self._session_manager.is_connected():
+            return
+        dialog = ChapterFolderDialog(self, session_manager=self._session_manager)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         folder_id, folder_name = dialog.selected_folder()

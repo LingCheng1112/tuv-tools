@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from tuv_tools.config import AppSettings
+from tuv_tools.core.chapter.session import ChapterConnectionStatus, ChapterSessionManager
 from tuv_tools.ui.widgets import CHECKBOX_STYLE
 from tuv_tools.ui.widgets.chapter_folder_selector import ChapterFolderSelector
 from tuv_tools.core.chapter.api import (
@@ -36,10 +37,7 @@ from tuv_tools.core.chapter.api import (
     get_folders,
     update_chapter,
 )
-from tuv_tools.core.chapter.auth import auto_login
-from tuv_tools.core.chapter.client import TuvClient
 from tuv_tools.core.chapter.models import (
-    ApiConfig,
     Chapter,
     ChapterStatus,
     FolderNode,
@@ -73,60 +71,38 @@ class ChapterWorker(QThread):
 class ChapterView(QWidget):
     """条款管理视图"""
 
-    def __init__(self):
+    def __init__(self, session_manager: ChapterSessionManager | None = None):
         super().__init__()
         self._settings = AppSettings()
-        self._client: TuvClient | None = None
-        self._config: ApiConfig | None = None
+        self._session_manager = session_manager
         self._workers: list[ChapterWorker] = []
         self._current_page = 0
         self._page_size = 20
         self._total = 0
-        self._connected = False
         self._selected_folder_id: int | None = None
         self._search_timer = QTimer()
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(300)
         self._search_timer.timeout.connect(self._do_folder_search)
         self._setup_ui()
+        if self._session_manager is not None:
+            self._session_manager.status_changed.connect(self._on_session_status_changed)
+            self._apply_connection_state()
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        if not self._connected:
-            self._try_connect()
+    @property
+    def _client(self):
+        return self._session_manager.client if self._session_manager is not None else None
 
-    def _try_connect(self):
-        self._config = self._settings.load_api_config()
-        if not self._config:
-            from tuv_tools.ui.views.settings_dialog import SettingsDialog
-            dlg = SettingsDialog(self)
-            if dlg.exec() != QDialog.DialogCode.Accepted:
-                return
-            self._config = self._settings.load_api_config()
-            if not self._config:
-                return
-        self._client = TuvClient(self._config.base_url, self._config.request_timeout)
-        self._run_worker(
-            lambda: auto_login(self._client, self._config),
-            self._on_login_result,
-            self._on_login_error,
-        )
+    def _on_session_status_changed(self, _status: str) -> None:
+        self._apply_connection_state()
 
-    def _on_login_result(self, success):
-        if success:
-            self._connected = True
-            self._status_label.setText("● 已连接")
-            self._status_label.setStyleSheet("color: #4caf50; font-weight: bold;")
+    def _apply_connection_state(self) -> None:
+        connected = self._session_manager is not None and self._session_manager.is_connected()
+        self._content_root.setEnabled(connected)
+        self._offline_hint.setVisible(not connected)
+        if connected:
             self._load_folder_tree()
             self._fetch_chapters()
-        else:
-            self._status_label.setText("● 未连接")
-            self._status_label.setStyleSheet("color: #f44336; font-weight: bold;")
-
-    def _on_login_error(self, msg):
-        self._status_label.setText("● 未连接")
-        self._status_label.setStyleSheet("color: #f44336; font-weight: bold;")
-        self._info_label.setText(f"Connection error: {msg}")
 
 
     def _setup_ui(self):
@@ -134,15 +110,16 @@ class ChapterView(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(8)
 
-        # 顶部状态栏
-        top_row = QHBoxLayout()
-        self._status_label = QLabel("● 未连接")
-        self._status_label.setStyleSheet("color: #888; font-weight: bold;")
-        top_row.addWidget(self._status_label)
-        top_row.addStretch()
-        layout.addLayout(top_row)
+        self._offline_hint = QLabel("当前未连接后端，请点击左下角连接后使用条款管理。")
+        self._offline_hint.setStyleSheet("color: #d9534f; font-size: 13px; padding: 4px 0;")
+        self._offline_hint.setVisible(False)
+        layout.addWidget(self._offline_hint)
 
         # 主体：左侧目录树 + 右侧内容
+        self._content_root = QWidget(self)
+        content_layout = QVBoxLayout(self._content_root)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # 左侧目录树
@@ -240,7 +217,8 @@ class ChapterView(QWidget):
         splitter.setSizes([200, 800])
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
-        layout.addWidget(splitter, stretch=1)
+        content_layout.addWidget(splitter, stretch=1)
+        layout.addWidget(self._content_root, stretch=1)
 
 
     def _load_folder_tree(self):

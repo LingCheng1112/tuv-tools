@@ -7,11 +7,11 @@ from functools import lru_cache
 from hashlib import sha1
 from pathlib import Path
 import re
+import shutil
 
 from tuv_tools.config.database import _extract_standard_number
 from tuv_tools.config.settings import AppSettings, RESOURCES_DIR
 from tuv_tools.core.chapter.api import get_folders
-from tuv_tools.core.chapter.auth import auto_login
 from tuv_tools.core.chapter.client import TuvClient
 from tuv_tools.core.splitter.exporting import _write_docx_from_template
 from tuv_tools.core.splitter.parsing import build_sections
@@ -136,8 +136,11 @@ class ChapterBatchService:
 
     def __init__(self, repo: ChapterBatchRepository, output_root: Path | None = None):
         self._repo = repo
-        self._output_root = output_root or (Path.home() / ".tuv-tools" / "chapter-batch")
+        self._output_root = output_root or AppSettings().get_chapter_batch_root()
         self._folder_context_cache: dict[str, tuple[int, str, str]] = {}
+
+    def get_output_root(self) -> Path:
+        return Path(self._output_root)
 
     def import_documents(self, paths: list[str], split_mode: str) -> list[BatchImportDocument]:
         created: list[BatchImportDocument] = []
@@ -175,11 +178,59 @@ class ChapterBatchService:
         document.folder_name = folder_name
         document.product_type = product_type or document.product_type or "家电"
 
-    def _resolve_folder_context_for_standard(self, standard: str) -> tuple[int, str, str] | None:
+    def complete_folder_context(self, document_id: int, client: TuvClient | None = None) -> None:
+        document = self._repo.get_document(document_id)
+        if document is None:
+            return
+        standard = (document.standard or "").strip()
+        if not standard:
+            return
+        context = self._resolve_folder_context_for_standard(standard, client=client)
+        if context is None:
+            return
+        folder_id, folder_name, product_type = context
+        self._repo.update_document(
+            document_id,
+            folder_id=folder_id,
+            folder_name=folder_name,
+            product_type=product_type or document.product_type or "家电",
+        )
+
+    def _load_full_folder_tree(self, client: TuvClient | None = None) -> list:
+        client = client or None
+        if client is None:
+            return []
+
+        results = []
+        queue = [CHAPTER_ROOT_FOLDER_ID]
+        visited: set[int] = set()
+        while queue:
+            pid = queue.pop(0)
+            if pid in visited:
+                continue
+            visited.add(pid)
+            try:
+                children = get_folders(client, pid=pid)
+            except Exception:
+                continue
+            for child in children:
+                results.append(child)
+                if child.has_children:
+                    queue.append(child.id)
+        return results
+
+    def _resolve_folder_context_for_standard(
+        self,
+        standard: str,
+        client: TuvClient | None = None,
+    ) -> tuple[int, str, str] | None:
         cached = self._folder_context_cache.get(standard)
         if cached is not None:
             return cached
-        nodes = self._load_full_folder_tree()
+        if client is None:
+            nodes = self._load_full_folder_tree()
+        else:
+            nodes = self._load_full_folder_tree(client=client)
         if not nodes:
             return None
 
@@ -201,53 +252,6 @@ class ChapterBatchService:
         result = (target.id, target.folder_name, product_type)
         self._folder_context_cache[standard] = result
         return result
-
-    def complete_folder_context(self, document_id: int) -> None:
-        document = self._repo.get_document(document_id)
-        if document is None:
-            return
-        standard = (document.standard or "").strip()
-        if not standard:
-            return
-        context = self._resolve_folder_context_for_standard(standard)
-        if context is None:
-            return
-        folder_id, folder_name, product_type = context
-        self._repo.update_document(
-            document_id,
-            folder_id=folder_id,
-            folder_name=folder_name,
-            product_type=product_type or document.product_type or "家电",
-        )
-
-    def _load_full_folder_tree(self) -> list:
-        try:
-            config = AppSettings().load_api_config()
-            if config is None:
-                return []
-            client = TuvClient(config.base_url, config.request_timeout)
-            if not auto_login(client, config):
-                return []
-        except Exception:
-            return []
-
-        results = []
-        queue = [CHAPTER_ROOT_FOLDER_ID]
-        visited: set[int] = set()
-        while queue:
-            pid = queue.pop(0)
-            if pid in visited:
-                continue
-            visited.add(pid)
-            try:
-                children = get_folders(client, pid=pid)
-            except Exception:
-                continue
-            for child in children:
-                results.append(child)
-                if child.has_children:
-                    queue.append(child.id)
-        return results
 
     def _lookup_standard_chapter_title(self, standard: str, term: str) -> str:
         """实例级封装，便于测试替换章节测试内容映射。"""
@@ -324,6 +328,19 @@ class ChapterBatchService:
             skipped_clause_count=0,
             last_error="",
         )
+
+    def delete_documents(self, document_ids: list[int]) -> list[int]:
+        deleted_ids: list[int] = []
+        for document_id in document_ids:
+            document = self._repo.get_document(document_id)
+            if document is None or is_document_running(document.document_status):
+                continue
+            output_dir = self.get_output_root() / str(document_id)
+            if output_dir.exists():
+                shutil.rmtree(output_dir, ignore_errors=True)
+            self._repo.delete_documents([document_id])
+            deleted_ids.append(document_id)
+        return deleted_ids
 
     def _export_clause_mode(self, docx_path, output_dir, sections, clean_patterns, standard: str) -> list[BatchImportClause]:
         output_dir = Path(output_dir) / "clauses_docx"

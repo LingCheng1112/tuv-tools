@@ -29,8 +29,8 @@ from PySide6.QtWidgets import (
 from tuv_tools.config import AppSettings
 from tuv_tools.config.database import DatabaseManager
 from tuv_tools.core.chapter.api import get_chapters
-from tuv_tools.core.chapter.auth import auto_login
 from tuv_tools.core.chapter.client import TuvClient
+from tuv_tools.core.chapter.session import ChapterSessionManager
 from tuv_tools.core.chapter_batch.api import create_chapter_and_return_id, import_chapter_doc
 from tuv_tools.core.chapter_batch.executor import ChapterBatchExecutionController, ChapterBatchExecutor
 from tuv_tools.core.chapter_batch.models import (
@@ -61,9 +61,10 @@ class ChapterBatchExecutionWorker(QThread):
     failed = Signal(str)
     progress_changed = Signal(object)
 
-    def __init__(self, repo: ChapterBatchRepository, document_ids: list[int]):
+    def __init__(self, repo: ChapterBatchRepository, client: TuvClient, document_ids: list[int]):
         super().__init__()
         self._repo = repo
+        self._client = client
         self._document_ids = document_ids
         self._controller = ChapterBatchExecutionController()
 
@@ -72,17 +73,10 @@ class ChapterBatchExecutionWorker(QThread):
 
     def run(self) -> None:
         try:
-            settings = AppSettings()
-            config = settings.load_api_config()
-            if config is None:
-                raise RuntimeError("请先在设置中配置后端接口账号。")
-            client = TuvClient(config.base_url, config.request_timeout)
-            if not auto_login(client, config):
-                raise RuntimeError("后端登录失败。")
             executor = ChapterBatchExecutor(
                 self._repo,
-                create_chapter=lambda chapter: create_chapter_and_return_id(client, chapter),
-                upload_chapter_doc=lambda chapter_id, path: import_chapter_doc(client, chapter_id, path),
+                create_chapter=lambda chapter: create_chapter_and_return_id(self._client, chapter),
+                upload_chapter_doc=lambda chapter_id, path: import_chapter_doc(self._client, chapter_id, path),
                 controller=self._controller,
                 progress=self.progress_changed.emit,
             )
@@ -99,9 +93,10 @@ class ChapterClauseExecutionWorker(QThread):
     failed = Signal(str)
     progress_changed = Signal(object)
 
-    def __init__(self, repo: ChapterBatchRepository, document_id: int, clause_ids: list[int]):
+    def __init__(self, repo: ChapterBatchRepository, client: TuvClient, document_id: int, clause_ids: list[int]):
         super().__init__()
         self._repo = repo
+        self._client = client
         self._document_id = document_id
         self._clause_ids = clause_ids
         self._controller = ChapterBatchExecutionController()
@@ -111,17 +106,10 @@ class ChapterClauseExecutionWorker(QThread):
 
     def run(self) -> None:
         try:
-            settings = AppSettings()
-            config = settings.load_api_config()
-            if config is None:
-                raise RuntimeError("请先在设置中配置后端接口账号。")
-            client = TuvClient(config.base_url, config.request_timeout)
-            if not auto_login(client, config):
-                raise RuntimeError("后端登录失败。")
             executor = ChapterBatchExecutor(
                 self._repo,
-                create_chapter=lambda chapter: create_chapter_and_return_id(client, chapter),
-                upload_chapter_doc=lambda chapter_id, path: import_chapter_doc(client, chapter_id, path),
+                create_chapter=lambda chapter: create_chapter_and_return_id(self._client, chapter),
+                upload_chapter_doc=lambda chapter_id, path: import_chapter_doc(self._client, chapter_id, path),
                 controller=self._controller,
                 progress=self.progress_changed.emit,
             )
@@ -138,11 +126,18 @@ class ChapterBatchProcessingWorker(QThread):
     failed = Signal(int, str)
     progress_changed = Signal(object)
 
-    def __init__(self, repo: ChapterBatchRepository, document_ids: list[int], output_root: Path | None = None):
+    def __init__(
+        self,
+        repo: ChapterBatchRepository,
+        document_ids: list[int],
+        output_root: Path | None = None,
+        backend_client: TuvClient | None = None,
+    ):
         super().__init__()
         self._repo = repo
         self._document_ids = list(document_ids)
         self._output_root = output_root
+        self._backend_client = backend_client
 
     def run(self) -> None:
         import pythoncom  # type: ignore[import-untyped]
@@ -169,7 +164,7 @@ class ChapterBatchProcessingWorker(QThread):
                         percent=0,
                         message="补全目录参数",
                     )
-                    service.complete_folder_context(document_id)
+                    service.complete_folder_context(document_id, client=self._backend_client)
                     self._emit_processing_progress(
                         document_id=document_id,
                         total_docs=total_docs,
@@ -286,8 +281,9 @@ class ChapterBatchView(QWidget):
 
     VIEW_ONLY_CLAUSE_ACTIONS = {"打开本地 docx", "打开后端 chapter 记录", "查看错误信息"}
 
-    def __init__(self, repo: ChapterBatchRepository | None = None):
+    def __init__(self, repo: ChapterBatchRepository | None = None, session_manager: ChapterSessionManager | None = None):
         super().__init__()
+        self._session_manager = session_manager
         self._repo = repo or ChapterBatchRepository(DatabaseManager())
         self._service = ChapterBatchService(self._repo)
         self._documents = []
@@ -383,12 +379,15 @@ class ChapterBatchView(QWidget):
         self._upload_btn.clicked.connect(self._upload_selected_documents)
         self._delete_btn.clicked.connect(self._delete_selected_documents)
 
-        self._drawer = ChapterBatchDrawer(self)
+        self._drawer = ChapterBatchDrawer(self, session_manager=session_manager)
         self._drawer.document_selected.connect(self._load_drawer_clauses)
         self._drawer.save_requested.connect(self._on_save_requested)
         self._drawer.upload_requested.connect(self._on_upload_requested)
         self._drawer.clause_action_requested.connect(self._on_clause_action_requested)
         self._drawer.hide()
+
+        if self._session_manager is not None:
+            self._session_manager.status_changed.connect(self._on_session_status_changed)
 
         self._load_documents()
 
@@ -600,11 +599,29 @@ class ChapterBatchView(QWidget):
         )
         self._detail_btn.setEnabled(has_selection)
         self._upload_btn.setEnabled(
-            has_executable
+            self._is_backend_connected()
+            and has_executable
             and self._execution_worker is None
             and self._clause_execution_worker is None
         )
         self._delete_btn.setEnabled(has_deletable)
+
+    def _is_backend_connected(self) -> bool:
+        return self._session_manager is None or self._session_manager.is_connected()
+
+    def _current_backend_client(self) -> TuvClient | None:
+        if self._session_manager is None:
+            return None
+        return self._session_manager.get_connected_client()
+
+    def _on_session_status_changed(self, _status: str) -> None:
+        self._update_selected_label()
+
+    def _ensure_backend_available(self) -> bool:
+        if self._is_backend_connected() and (self._session_manager is None or self._current_backend_client() is not None):
+            return True
+        QMessageBox.warning(self, "未连接", "当前未连接后端，相关上传与目录功能不可用。")
+        return False
 
     def _import_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "选择 DOCX 文件", "", "Word Documents (*.docx)")
@@ -648,7 +665,11 @@ class ChapterBatchView(QWidget):
             return
         if self._processing_worker is not None:
             return
-        self._processing_worker = ChapterBatchProcessingWorker(self._repo, document_ids)
+        self._processing_worker = ChapterBatchProcessingWorker(
+            self._repo,
+            document_ids,
+            backend_client=self._current_backend_client(),
+        )
         self._processing_worker.progress_changed.connect(self._on_progress_changed)
         self._processing_worker.failed.connect(self._on_processing_failed)
         self._processing_worker.finished_ok.connect(self._on_processing_finished)
@@ -750,6 +771,8 @@ class ChapterBatchView(QWidget):
             QMessageBox.information(self, "保存", "已保存当前文档。")
 
     def _on_upload_requested(self, document_id: int, clause_ids: list[int]) -> None:
+        if not self._ensure_backend_available():
+            return
         if self._drawer.is_dirty(document_id):
             QMessageBox.warning(self, "提示", "请先保存修改后再上传")
             return
@@ -939,13 +962,10 @@ class ChapterBatchView(QWidget):
         document = self._repo.get_document(document_id)
         if document is None or document.folder_id is None:
             return []
+        client = self._current_backend_client()
+        if client is None:
+            return []
         try:
-            config = AppSettings().load_api_config()
-            if config is None:
-                return []
-            client = TuvClient(config.base_url, config.request_timeout)
-            if not auto_login(client, config):
-                return []
             params = {
                 "folder_id": document.folder_id,
                 "size": 100,
@@ -1036,6 +1056,8 @@ class ChapterBatchView(QWidget):
         return message_box.clickedButton() is overwrite_button
 
     def _upload_selected_documents(self) -> None:
+        if not self._ensure_backend_available():
+            return
         if self._execution_worker is not None or self._clause_execution_worker is not None:
             return
         selected_documents = [
@@ -1069,10 +1091,14 @@ class ChapterBatchView(QWidget):
     def _start_documents(self, document_ids: list[int]) -> None:
         if not document_ids or self._execution_worker is not None or self._clause_execution_worker is not None:
             return
+        client = self._current_backend_client()
+        if client is None:
+            self._ensure_backend_available()
+            return
         for order, document_id in enumerate(document_ids):
             self._repo.update_document(document_id, is_queued=1, queue_order=order)
         self._load_documents()
-        self._execution_worker = ChapterBatchExecutionWorker(self._repo, document_ids)
+        self._execution_worker = ChapterBatchExecutionWorker(self._repo, client, document_ids)
         self._execution_worker.progress_changed.connect(self._on_progress_changed)
         self._execution_worker.finished_ok.connect(self._on_execution_finished)
         self._execution_worker.failed.connect(self._on_execution_failed)
@@ -1082,6 +1108,10 @@ class ChapterBatchView(QWidget):
 
     def _start_clause_upload(self, document_id: int, clause_ids: list[int]) -> None:
         if self._execution_worker is not None or self._clause_execution_worker is not None:
+            return
+        client = self._current_backend_client()
+        if client is None:
+            self._ensure_backend_available()
             return
         document = self._repo.get_document(document_id)
         if document is None or is_document_running(document.document_status):
@@ -1095,7 +1125,7 @@ class ChapterBatchView(QWidget):
             return
         self._repo.update_document(document_id, is_queued=1, queue_order=0)
         self._load_documents()
-        self._clause_execution_worker = ChapterClauseExecutionWorker(self._repo, document_id, ordered_clause_ids)
+        self._clause_execution_worker = ChapterClauseExecutionWorker(self._repo, client, document_id, ordered_clause_ids)
         self._clause_execution_worker.progress_changed.connect(self._on_progress_changed)
         self._clause_execution_worker.finished_ok.connect(self._on_execution_finished)
         self._clause_execution_worker.failed.connect(self._on_execution_failed)
@@ -1120,7 +1150,7 @@ class ChapterBatchView(QWidget):
         reply = QMessageBox.question(
             self,
             "删除记录",
-            "仅删除本地工作台记录，不删除后端条款或文档文件。是否继续？",
+            "将删除本地工作台记录及其拆分结果，不删除原始导入文件，也不删除后端条款或后端文档。是否继续？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -1138,7 +1168,7 @@ class ChapterBatchView(QWidget):
             deletable_ids.append(document_id)
         if not deletable_ids:
             return
-        self._repo.delete_documents(deletable_ids)
+        self._service.delete_documents(deletable_ids)
         self._selected_document_ids = []
         self._load_documents()
 
@@ -1286,6 +1316,8 @@ class ChapterBatchView(QWidget):
         self._on_upload_requested(clause.document_id, [clause_id])
 
     def _reupload_single_clause(self, clause_id: int) -> None:
+        if not self._ensure_backend_available():
+            return
         clause = self._repo.get_clause(clause_id)
         if clause is None or clause.document_id is None:
             return

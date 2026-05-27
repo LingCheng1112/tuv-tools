@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from PySide6.QtWidgets import QApplication
 
 from tuv_tools.config.database import DatabaseManager
+from tuv_tools.core.chapter.session import ChapterSessionManager
 from tuv_tools.core.chapter_batch.repository import ChapterBatchRepository
 
 
@@ -33,10 +34,26 @@ def _new_repo():
     return ChapterBatchRepository(db)
 
 
+def _connected_session():
+    from tuv_tools.core.chapter.session import ChapterConnectionStatus
+
+    session = ChapterSessionManager()
+    session._client = object()
+    session._set_status(ChapterConnectionStatus.CONNECTED)
+    return session
+
+
 def test_main_window_registers_chapter_batch_workspace(qapp):
     from tuv_tools.ui.main_window import MainWindow
+    from tuv_tools.core.chapter.session import ChapterSessionManager
 
-    window = MainWindow()
+    original_initialize = ChapterSessionManager.initialize_on_startup
+    ChapterSessionManager.initialize_on_startup = lambda self: None
+    try:
+        window = MainWindow()
+    finally:
+        ChapterSessionManager.initialize_on_startup = original_initialize
+
     labels = [window._nav.item(i).text() for i in range(window._nav.count())]
 
     assert "条款批量上传" in labels
@@ -52,6 +69,14 @@ def test_workspace_has_upload_title_and_actions(qapp):
     assert view._upload_btn.text() == "批量上传"
     assert "批量确认" not in all_button_texts
     assert "开始执行" not in all_button_texts
+
+
+def test_workspace_disables_upload_when_session_not_connected(qapp):
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    view = ChapterBatchView(repo=_new_repo(), session_manager=ChapterSessionManager())
+
+    assert view._upload_btn.isEnabled() is False
 
 
 def test_choose_import_mode_returns_user_selection(qapp, monkeypatch):
@@ -72,7 +97,7 @@ def test_import_selected_paths_imports_then_starts_background_processing(qapp, m
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     calls = []
     monkeypatch.setattr(view, "_choose_import_mode", lambda: SplitMode.CLAUSE.value)
 
@@ -98,12 +123,24 @@ def test_import_selected_paths_imports_then_starts_background_processing(qapp, m
     assert started == [[repo.list_documents()[0].id]]
 
 
+def test_upload_selected_documents_warns_when_backend_not_connected(qapp, monkeypatch):
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    view = ChapterBatchView(repo=_new_repo(), session_manager=ChapterSessionManager())
+    warnings = []
+    monkeypatch.setattr("PySide6.QtWidgets.QMessageBox.warning", lambda *args, **kwargs: warnings.append(args[2]))
+
+    view._upload_selected_documents()
+
+    assert warnings == ["当前未连接后端，相关上传与目录功能不可用。"]
+
+
 def test_import_selected_paths_shows_processing_document_immediately(qapp, monkeypatch):
     from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus, SplitMode
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
 
     def fake_import_documents(paths, split_mode):
         doc_id = repo.create_document(
@@ -132,7 +169,7 @@ def test_import_selected_paths_creates_records_before_background_processing(qapp
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     started = []
 
     monkeypatch.setattr(view, "_choose_import_mode", lambda: SplitMode.CLAUSE.value)
@@ -162,7 +199,7 @@ def test_import_selected_paths_loads_rows_before_starting_processing(qapp, monke
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     started = []
 
     monkeypatch.setattr(view, "_choose_import_mode", lambda: SplitMode.CLAUSE.value)
@@ -197,7 +234,7 @@ def test_checkboxes_update_selected_document_ids_in_list_order(qapp):
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     for idx in range(3):
         repo.create_document(
             BatchImportDocument(
@@ -306,7 +343,7 @@ def test_save_documents_keeps_saved_data_without_queue(qapp):
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     doc_id = repo.create_document(
         BatchImportDocument(
             file_path="C:/docs/cancel.docx",
@@ -344,7 +381,7 @@ def test_upload_requested_uses_current_saved_document_without_forced_save(qapp, 
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     doc_id = repo.create_document(
         BatchImportDocument(
             file_path="C:/docs/upload.docx",
@@ -386,7 +423,7 @@ def test_upload_requested_blocks_when_drawer_has_unsaved_edits(qapp, monkeypatch
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     doc_id = repo.create_document(
         BatchImportDocument(
             file_path="C:/docs/upload-dirty.docx",
@@ -428,7 +465,7 @@ def test_save_confirm_allows_user_to_skip_duplicate_clause(qapp, monkeypatch):
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     doc_id = repo.create_document(
         BatchImportDocument(
             file_path="C:/docs/dup.docx",
@@ -470,7 +507,7 @@ def test_duplicate_skip_restores_original_success_clause_state(qapp, monkeypatch
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     doc_id = repo.create_document(
         BatchImportDocument(
             file_path="C:/docs/dup-success.docx",
@@ -516,7 +553,7 @@ def test_pending_clause_with_existing_chapter_id_skips_duplicate_lookup(qapp, mo
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     doc_id = repo.create_document(
         BatchImportDocument(
             file_path="C:/docs/existing-chapter.docx",
@@ -555,7 +592,7 @@ def test_reupload_single_clause_skips_duplicate_resolution(qapp, monkeypatch):
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     doc_id = repo.create_document(
         BatchImportDocument(
             file_path="C:/docs/reupload-skip-dup.docx",
@@ -604,7 +641,7 @@ def test_reupload_single_clause_cancelled_by_user_does_not_start(qapp, monkeypat
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     doc_id = repo.create_document(
         BatchImportDocument(
             file_path="C:/docs/reupload-cancel.docx",
@@ -681,7 +718,7 @@ def test_duplicate_lookup_queries_backend_by_clause_term_and_test_content(qapp, 
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     doc_id = repo.create_document(
         BatchImportDocument(
             file_path="C:/docs/dup-query.docx",
@@ -700,13 +737,6 @@ def test_duplicate_lookup_queries_backend_by_clause_term_and_test_content(qapp, 
         [BatchImportClause(sort_index=0, term="7.14", test_content="RUBBING TEST FOR RATING LABEL", source_docx_path="C:/out/7_14.docx")],
     )
 
-    class DummyConfig:
-        base_url = "http://example.com"
-        request_timeout = 30
-
-    monkeypatch.setattr("tuv_tools.ui.views.chapter_batch_view.AppSettings.load_api_config", lambda _self: DummyConfig())
-    monkeypatch.setattr("tuv_tools.ui.views.chapter_batch_view.TuvClient", lambda *args, **kwargs: object())
-    monkeypatch.setattr("tuv_tools.ui.views.chapter_batch_view.auto_login", lambda client, config: True)
     calls = []
 
     def fake_get_chapters(client, **kwargs):
@@ -748,7 +778,7 @@ def test_duplicate_lookup_queries_backend_with_specific_product_when_present(qap
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     doc_id = repo.create_document(
         BatchImportDocument(
             file_path="C:/docs/dup-query-product.docx",
@@ -768,13 +798,6 @@ def test_duplicate_lookup_queries_backend_with_specific_product_when_present(qap
         [BatchImportClause(sort_index=0, term="7.14", test_content="RUBBING TEST FOR RATING LABEL", source_docx_path="C:/out/7_14.docx")],
     )
 
-    class DummyConfig:
-        base_url = "http://example.com"
-        request_timeout = 30
-
-    monkeypatch.setattr("tuv_tools.ui.views.chapter_batch_view.AppSettings.load_api_config", lambda _self: DummyConfig())
-    monkeypatch.setattr("tuv_tools.ui.views.chapter_batch_view.TuvClient", lambda *args, **kwargs: object())
-    monkeypatch.setattr("tuv_tools.ui.views.chapter_batch_view.auto_login", lambda client, config: True)
     calls = []
 
     def fake_get_chapters(client, **kwargs):
@@ -805,7 +828,7 @@ def test_duplicate_lookup_scans_multiple_pages_until_exact_duplicate_found(qapp,
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     repo = _new_repo()
-    view = ChapterBatchView(repo=repo)
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     doc_id = repo.create_document(
         BatchImportDocument(
             file_path="C:/docs/dup-query-pages.docx",
@@ -825,13 +848,6 @@ def test_duplicate_lookup_scans_multiple_pages_until_exact_duplicate_found(qapp,
         [BatchImportClause(sort_index=0, term="7.14", test_content="RUBBING TEST FOR RATING LABEL", source_docx_path="C:/out/7_14.docx")],
     )
 
-    class DummyConfig:
-        base_url = "http://example.com"
-        request_timeout = 30
-
-    monkeypatch.setattr("tuv_tools.ui.views.chapter_batch_view.AppSettings.load_api_config", lambda _self: DummyConfig())
-    monkeypatch.setattr("tuv_tools.ui.views.chapter_batch_view.TuvClient", lambda *args, **kwargs: object())
-    monkeypatch.setattr("tuv_tools.ui.views.chapter_batch_view.auto_login", lambda client, config: True)
     calls = []
 
     def fake_get_chapters(client, **kwargs):
@@ -884,6 +900,69 @@ def test_duplicate_lookup_scans_multiple_pages_until_exact_duplicate_found(qapp,
             "test_content": "RUBBING TEST FOR RATING LABEL",
         },
     ]
+
+
+def test_duplicate_lookup_returns_empty_when_session_has_no_client(qapp):
+    from tuv_tools.core.chapter_batch.models import BatchImportClause, BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo, session_manager=ChapterSessionManager())
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/offline-dup.docx",
+            file_name="offline-dup.docx",
+            document_status=DocumentStatus.PENDING_UPLOAD.value,
+            folder_id=1059,
+        )
+    )
+    repo.replace_clauses(
+        doc_id,
+        [BatchImportClause(sort_index=0, term="7.14", test_content="TEST", source_docx_path="C:/out/7_14.docx")],
+    )
+
+    clause = repo.get_clauses(doc_id)[0]
+
+    assert view._existing_rows_for_duplicate_check(doc_id, clause) == []
+
+
+def test_start_documents_passes_connected_client_to_worker(qapp, monkeypatch):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    session = _connected_session()
+    view = ChapterBatchView(repo=repo, session_manager=session)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/upload-worker.docx",
+            file_name="upload-worker.docx",
+            document_status=DocumentStatus.PENDING_UPLOAD.value,
+        )
+    )
+    captured = {}
+
+    class DummyWorker:
+        def __init__(self, repo_arg, client_arg, document_ids_arg):
+            captured["repo"] = repo_arg
+            captured["client"] = client_arg
+            captured["document_ids"] = document_ids_arg
+            self.progress_changed = type("Sig", (), {"connect": lambda self, fn: None})()
+            self.finished_ok = type("Sig", (), {"connect": lambda self, fn: None})()
+            self.failed = type("Sig", (), {"connect": lambda self, fn: None})()
+            self.finished = type("Sig", (), {"connect": lambda self, fn: None})()
+
+        def start(self):
+            captured["started"] = True
+
+    monkeypatch.setattr("tuv_tools.ui.views.chapter_batch_view.ChapterBatchExecutionWorker", DummyWorker)
+
+    view._start_documents([doc_id])
+
+    assert captured["repo"] is repo
+    assert captured["client"] is session._client
+    assert captured["document_ids"] == [doc_id]
+    assert captured["started"] is True
 
 
 def test_clause_table_includes_view_error_action(qapp):
@@ -998,6 +1077,27 @@ def test_stable_status_row_uses_plain_status_item(qapp):
 
     assert view._table.cellWidget(0, view.COL_STATUS) is None
     assert view._table.item(0, view.COL_STATUS) is not None
+
+
+def test_delete_documents_uses_service_cleanup_instead_of_repo_direct_delete(qapp, monkeypatch):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/delete-me.docx",
+            file_name="delete-me.docx",
+            document_status=DocumentStatus.PENDING_UPLOAD.value,
+        )
+    )
+    deleted = []
+    monkeypatch.setattr(view._service, "delete_documents", lambda ids: deleted.extend(ids) or ids)
+
+    view._delete_documents([doc_id])
+
+    assert deleted == [doc_id]
 
 
 def test_running_document_disables_form_and_save_button(qapp):

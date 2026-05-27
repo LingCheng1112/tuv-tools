@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from tuv_tools.config import AppSettings
 from tuv_tools.ui.widgets import CHECKBOX_STYLE
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -27,12 +29,14 @@ from PySide6.QtWidgets import (
 class SettingsDialog(QDialog):
     """统一设置弹窗，三个标签页"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, settings: AppSettings | None = None):
         super().__init__(parent)
         self.setWindowTitle("设置")
         self.setMinimumSize(520, 420)
         self.resize(550, 480)
+        self._settings = settings or AppSettings()
         self._db = self._get_db()
+        self._original_app_data_root = self._settings.get_app_data_root()
 
         layout = QVBoxLayout(self)
         self._tabs = QTabWidget()
@@ -59,6 +63,15 @@ class SettingsDialog(QDialog):
         widget = QWidget()
         layout = QFormLayout(widget)
 
+        self._app_data_root_edit = QLineEdit(str(self._original_app_data_root))
+        self._app_data_root_edit.setReadOnly(True)
+        data_row = QHBoxLayout()
+        data_row.addWidget(self._app_data_root_edit)
+        data_btn = QPushButton("选择...")
+        data_btn.clicked.connect(self._choose_app_data_root)
+        data_row.addWidget(data_btn)
+        layout.addRow("本地数据目录:", data_row)
+
         output_path = self._db.get_config("splitter.output_path", "")
         self._output_edit = QLineEdit(output_path)
         self._output_edit.setPlaceholderText("默认: 文档所在目录下的 clauses_docx 和 versions_docx")
@@ -83,13 +96,22 @@ class SettingsDialog(QDialog):
         if path:
             self._output_edit.setText(path)
 
+    def _choose_app_data_root(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "选择本地数据目录",
+            self._app_data_root_edit.text().strip() or str(self._original_app_data_root),
+        )
+        if path:
+            self._app_data_root_edit.setText(str(Path(path).resolve()))
+
     # ---- API 配置标签页 ----
 
     def _build_api_tab(self) -> QWidget:
         widget = QWidget()
         layout = QFormLayout(widget)
 
-        api_config = self._db.load_api_config()
+        api_config = self._settings.load_api_config()
         self._api_url_edit = QLineEdit(api_config.base_url if api_config else "http://127.0.0.1:8080")
         layout.addRow("API URL:", self._api_url_edit)
         self._api_user_edit = QLineEdit(api_config.username if api_config else "")
@@ -134,7 +156,6 @@ class SettingsDialog(QDialog):
         )
         if path:
             try:
-                from pathlib import Path
                 self._rsa_edit.setText(Path(path).read_text(encoding="utf-8").strip())
                 self._update_rsa_status()
             except Exception as exc:
@@ -203,7 +224,6 @@ class SettingsDialog(QDialog):
         if not path:
             return
         try:
-            from pathlib import Path
             data = json.loads(Path(path).read_text(encoding="utf-8"))
             rules = data.get("inline_clean_rules", [])
             self._rules_table.setRowCount(len(rules))
@@ -224,7 +244,6 @@ class SettingsDialog(QDialog):
         try:
             rules = self._collect_rules()
             data = {"inline_clean_rules": rules}
-            from pathlib import Path
             Path(path).write_text(
                 json.dumps(data, indent=2, ensure_ascii=False),
                 encoding="utf-8",
@@ -264,11 +283,7 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "清洗规则错误", str(exc))
             return
 
-        self._db.set_config("splitter.output_path", self._output_edit.text().strip())
-        self._db.set_config("splitter.auto_open",
-                            "true" if self._auto_open_cb.isChecked() else "false")
-
-        existing = self._db.load_api_config() or ApiConfig()
+        existing = self._settings.load_api_config() or ApiConfig()
         api_config = replace(
             existing,
             base_url=self._api_url_edit.text().strip(),
@@ -276,8 +291,18 @@ class SettingsDialog(QDialog):
             password=self._api_pass_edit.text(),
             rsa_private_key=self._rsa_edit.text().strip(),
         )
-        self._db.save_api_config(api_config)
+        selected_app_data_root = Path(self._app_data_root_edit.text().strip()).resolve()
+        app_data_root_changed = selected_app_data_root != self._original_app_data_root
+        if app_data_root_changed:
+            self._settings.switch_app_data_root(selected_app_data_root, source_root=self._original_app_data_root)
+            self._db = self._get_db()
+        self._db.set_config("splitter.output_path", self._output_edit.text().strip())
+        self._db.set_config("splitter.auto_open",
+                            "true" if self._auto_open_cb.isChecked() else "false")
+        self._settings.save_api_config(api_config)
         self._db.save_clean_rules(rules)
+        if app_data_root_changed:
+            QMessageBox.information(self, "设置已保存", "本地数据目录已更新，重启工具后生效。")
         self.accept()
 
     @staticmethod

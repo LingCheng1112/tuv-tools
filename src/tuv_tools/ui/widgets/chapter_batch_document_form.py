@@ -4,18 +4,20 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QFormLayout, QLineEdit, QWidget
 
+from tuv_tools.core.chapter.session import ChapterSessionManager
+
 from .chapter_folder_selector import ChapterFolderSelector
 
 
 class ChapterBatchDocumentForm(QWidget):
     """承载文档级公共字段编辑。"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, session_manager: ChapterSessionManager | None = None):
         super().__init__(parent)
         layout = QFormLayout(self)
 
         self._standard_edit = QLineEdit()
-        self._folder_selector = ChapterFolderSelector(self)
+        self._folder_selector = ChapterFolderSelector(self, session_manager=session_manager)
         self._product_type_edit = QLineEdit()
         self._plan_sr_edit = QLineEdit()
         self._standard_version_edit = QLineEdit()
