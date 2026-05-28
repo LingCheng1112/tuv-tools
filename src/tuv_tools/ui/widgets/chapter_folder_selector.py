@@ -144,6 +144,8 @@ class ChapterFolderSelector(QWidget):
         self._button.clicked.connect(self._open_dialog)
         layout.addWidget(self._button)
         self.set_connection_enabled(self._session_manager is None or self._session_manager.is_connected())
+        if self._session_manager is not None:
+            self._session_manager.status_changed.connect(self._on_session_status_changed)
 
     def set_connection_enabled(self, enabled: bool) -> None:
         self._button.setEnabled(enabled)
@@ -161,6 +163,9 @@ class ChapterFolderSelector(QWidget):
     def _emit_folder_changed(self, folder_id: int | None, folder_name: str) -> None:
         self.set_selected_folder(folder_id, folder_name)
         self.folder_changed.emit(folder_id, folder_name)
+
+    def _on_session_status_changed(self, _status: str) -> None:
+        self.set_connection_enabled(self._session_manager is None or self._session_manager.is_connected())
 
     def _open_dialog(self) -> None:
         if self._session_manager is not None and not self._session_manager.is_connected():

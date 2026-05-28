@@ -73,6 +73,35 @@ class TestDatabaseManager:
         db.set_config("key1", "v2")
         assert db.get_config("key1") == "v2"
 
+    def test_api_config_persists_ca_certificate_path(self):
+        db, _ = self._new_db()
+        config = ApiConfig(
+            base_url="https://example.com",
+            username="admin",
+            password="secret",
+            rsa_private_key="rsa",
+            ca_cert_file="C:/certs/root.pem",
+        )
+
+        db.save_api_config(config)
+        loaded = db.load_api_config()
+
+        assert loaded is not None
+        assert loaded.ca_cert_file == "C:/certs/root.pem"
+
+    def test_app_settings_copy_ca_cert_to_app_data_stores_relative_path(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        settings = AppSettings(project_root=project_root)
+        settings.ensure_app_data_root_ready()
+        source_cert = tmp_path / "root.pem"
+        source_cert.write_text("pem-data", encoding="utf-8")
+
+        stored = settings.copy_ca_cert_to_app_data(source_cert)
+
+        assert stored == "certs/root.pem"
+        assert (settings.get_app_data_root() / "certs" / "root.pem").read_text(encoding="utf-8") == "pem-data"
+
     def test_clean_rules_save_and_load(self):
         db, _ = self._new_db()
         rules = [
@@ -510,9 +539,11 @@ class TestDatabaseManager:
         old_root = tmp_path / "old-home" / ".tuv-tools"
         new_root = project_root / ".tuv-tools"
         old_root.mkdir(parents=True)
+        (old_root / "certs").mkdir(parents=True)
         (old_root / "chapter-batch" / "42").mkdir(parents=True)
         (old_root / "chapter-batch" / "42" / "clauses_docx").mkdir(parents=True)
         (old_root / "chapter-batch" / "42" / "clauses_docx" / "10_1.docx").write_text("docx", encoding="utf-8")
+        (old_root / "certs" / "ca.pem").write_text("pem", encoding="utf-8")
         (old_root / ".token_cache").write_text(json.dumps({"token": "abc"}), encoding="utf-8")
         shutil.copyfile(tmp_path / "seed.db", tmp_path / "seed.db") if False else None
         (old_root / "tuv-tools.db").write_text("db-bytes", encoding="utf-8")
@@ -524,6 +555,7 @@ class TestDatabaseManager:
         assert migrated is True
         assert (new_root / "tuv-tools.db").exists()
         assert (new_root / ".token_cache").exists()
+        assert (new_root / "certs" / "ca.pem").exists()
         assert (new_root / "chapter-batch" / "42" / "clauses_docx" / "10_1.docx").exists()
         assert not old_root.exists()
 

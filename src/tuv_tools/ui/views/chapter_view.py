@@ -110,7 +110,7 @@ class ChapterView(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(8)
 
-        self._offline_hint = QLabel("当前未连接后端，请点击左下角连接后使用条款管理。")
+        self._offline_hint = QLabel("当前未连接后端，请先在设置中登录后再使用条款管理。")
         self._offline_hint.setStyleSheet("color: #d9534f; font-size: 13px; padding: 4px 0;")
         self._offline_hint.setVisible(False)
         layout.addWidget(self._offline_hint)

@@ -1,12 +1,19 @@
-"""测试条款数据模型序列化"""
+"""测试条款数据模型序列化。"""
 
-from tuv_tools.core.chapter.models import Chapter, PageResult
+from tuv_tools.core.chapter.models import ApiConfig, Chapter, PageResult
 
 
 class TestChapterSerialization:
     def test_to_api_dict_basic(self):
-        ch = Chapter(term="10.2", test_content="温度测试", standard="IEC 60335",
-                     version=1, product_type="家电", folder_id=5, plan_sr="1.0")
+        ch = Chapter(
+            term="10.2",
+            test_content="温度测试",
+            standard="IEC 60335",
+            version=1,
+            product_type="家电",
+            folder_id=5,
+            plan_sr="1.0",
+        )
         d = ch.to_api_dict()
         assert d["term"] == "10.2"
         assert d["testContent"] == "温度测试"
@@ -15,8 +22,13 @@ class TestChapterSerialization:
         assert "id" not in d
 
     def test_to_api_dict_with_id(self):
-        ch = Chapter(id=42, term="10.3", test_content="泄漏", standard="IEC 60335",
-                     folder_id=1)
+        ch = Chapter(
+            id=42,
+            term="10.3",
+            test_content="泄漏",
+            standard="IEC 60335",
+            folder_id=1,
+        )
         d = ch.to_api_dict()
         assert d["id"] == 42
 
@@ -55,18 +67,26 @@ class TestChapterSerialization:
 
     def test_from_api_dict_full(self):
         data = {
-            "id": 1, "term": "10.2", "testContent": "温度测试",
-            "standard": "IEC 60335", "standardVersion": "6th",
-            "version": 2, "status": 1, "productType": "家电",
-            "planSr": "1.5", "specificProduct": "电饭煲",
+            "id": 1,
+            "term": "10.2",
+            "testContent": "温度测试",
+            "standard": "IEC 60335",
+            "standardVersion": "6th",
+            "version": 2,
+            "status": 1,
+            "productType": "家电",
+            "planSr": "1.5",
+            "specificProduct": "电饭煲",
             "folder": {"id": 3, "folderName": "EMC"},
             "minioFileUrl": "http://minio/file.docx",
             "quoteCnt": 2,
             "draftBy": {"username": "tyler"},
             "reviewBy": None,
             "reviewOpinion": None,
-            "createBy": "admin", "updateBy": "admin",
-            "createTime": "2025-01-01", "updateTime": "2025-01-02",
+            "createBy": "admin",
+            "updateBy": "admin",
+            "createTime": "2025-01-01",
+            "updateTime": "2025-01-02",
         }
         ch = Chapter.from_api_dict(data)
         assert ch.id == 1
@@ -90,8 +110,14 @@ class TestChapterSerialization:
         assert ch.review_by == "reviewer_str"
 
     def test_roundtrip(self):
-        original = Chapter(id=10, term="11.1", test_content="能量限制",
-                           standard="IEC 62368", folder_id=7, plan_sr="2.0")
+        original = Chapter(
+            id=10,
+            term="11.1",
+            test_content="能量限制",
+            standard="IEC 62368",
+            folder_id=7,
+            plan_sr="2.0",
+        )
         api_dict = original.to_api_dict()
         api_dict["draftBy"] = None
         api_dict["reviewBy"] = None
@@ -125,3 +151,10 @@ class TestPageResult:
         page = PageResult.from_api_dict({"content": [], "totalElements": 0})
         assert page.total_elements == 0
         assert page.content == []
+
+
+class TestApiConfig:
+    def test_ca_certificate_field_defaults_to_empty(self):
+        config = ApiConfig()
+
+        assert config.ca_cert_file == ""

@@ -32,6 +32,7 @@ def test_chapter_view_is_disabled_when_session_not_connected(qapp):
 
     assert view._content_root.isEnabled() is False
     assert view._offline_hint.isHidden() is False
+    assert "设置" in view._offline_hint.text()
 
 
 def test_chapter_view_enables_content_when_session_connected(qapp):

@@ -74,6 +74,20 @@ def test_folder_selector_button_disabled_when_session_not_connected(qapp):
     assert widget._button.isEnabled() is False
 
 
+def test_folder_selector_button_reenabled_after_session_connects(qapp):
+    from tuv_tools.core.chapter.session import ChapterConnectionStatus
+    from tuv_tools.core.chapter.session import ChapterSessionManager
+    from tuv_tools.ui.widgets.chapter_folder_selector import ChapterFolderSelector
+
+    session = ChapterSessionManager()
+    widget = ChapterFolderSelector(session_manager=session)
+
+    session._client = object()
+    session._set_status(ChapterConnectionStatus.CONNECTED)
+
+    assert widget._button.isEnabled() is True
+
+
 def test_folder_selector_passes_session_manager_to_dialog(qapp, monkeypatch):
     from tuv_tools.core.chapter.session import ChapterConnectionStatus
     from tuv_tools.core.chapter.session import ChapterSessionManager

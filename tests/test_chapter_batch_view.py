@@ -77,6 +77,24 @@ def test_workspace_disables_upload_when_session_not_connected(qapp):
     view = ChapterBatchView(repo=_new_repo(), session_manager=ChapterSessionManager())
 
     assert view._upload_btn.isEnabled() is False
+    assert view._backend_hint.isHidden() is False
+    assert "设置" in view._backend_hint.text()
+    assert view._drawer._document_form._folder_selector._button.isEnabled() is False
+
+
+def test_workspace_reacts_to_connected_session_state(qapp):
+    from tuv_tools.core.chapter.session import ChapterConnectionStatus
+    from tuv_tools.core.chapter.session import ChapterSessionManager
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    session = ChapterSessionManager()
+    view = ChapterBatchView(repo=_new_repo(), session_manager=session)
+
+    session._client = object()
+    session._set_status(ChapterConnectionStatus.CONNECTED)
+
+    assert view._backend_hint.isHidden() is True
+    assert view._drawer._document_form._folder_selector._button.isEnabled() is True
 
 
 def test_choose_import_mode_returns_user_selection(qapp, monkeypatch):

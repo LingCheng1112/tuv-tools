@@ -1,4 +1,4 @@
-"""测试主窗口的全局连接状态展示。"""
+"""测试主窗口的启动接管与设置入口。"""
 
 from __future__ import annotations
 
@@ -23,40 +23,41 @@ def qapp():
     yield app
 
 
-def test_main_window_shows_connection_button(qapp, monkeypatch):
+def test_main_window_does_not_auto_initialize_session(qapp, monkeypatch):
     from tuv_tools.core.chapter.session import ChapterSessionManager
     from tuv_tools.ui.main_window import MainWindow
 
-    monkeypatch.setattr(ChapterSessionManager, "initialize_on_startup", lambda self: None)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        ChapterSessionManager,
+        "initialize_on_startup",
+        lambda self: calls.append("initialize"),
+    )
+
+    MainWindow()
+
+    assert calls == []
+
+
+def test_main_window_has_display_only_connection_status_block(qapp):
+    from tuv_tools.ui.main_window import MainWindow
 
     window = MainWindow()
 
-    assert window._connection_btn.text() == "● 未连接"
+    assert hasattr(window, "_connection_status")
+    assert window._connection_status.text() == "未连接"
 
 
-def test_main_window_updates_connection_button_text_from_session(qapp, monkeypatch):
-    from tuv_tools.core.chapter.session import ChapterConnectionStatus, ChapterSessionManager
+def test_main_window_opens_settings_with_shared_dependencies(qapp, monkeypatch):
     from tuv_tools.ui.main_window import MainWindow
 
-    monkeypatch.setattr(ChapterSessionManager, "initialize_on_startup", lambda self: None)
-
-    window = MainWindow()
-    window._chapter_session._set_status(ChapterConnectionStatus.CONNECTED)
-
-    assert window._connection_btn.text() == "● 已连接"
-
-
-def test_main_window_opens_settings_with_shared_settings(qapp, monkeypatch):
-    from tuv_tools.core.chapter.session import ChapterSessionManager
-    from tuv_tools.ui.main_window import MainWindow
-
-    monkeypatch.setattr(ChapterSessionManager, "initialize_on_startup", lambda self: None)
     captured = {}
 
     class DummyDialog:
-        def __init__(self, parent=None, settings=None):
+        def __init__(self, parent=None, settings=None, session_manager=None):
             captured["parent"] = parent
             captured["settings"] = settings
+            captured["session_manager"] = session_manager
 
         def exec(self):
             return 0
@@ -68,3 +69,4 @@ def test_main_window_opens_settings_with_shared_settings(qapp, monkeypatch):
 
     assert captured["parent"] is window
     assert captured["settings"] is window._settings
+    assert captured["session_manager"] is window._chapter_session

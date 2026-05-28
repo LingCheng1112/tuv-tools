@@ -28,7 +28,14 @@ APP_DATA_BOOTSTRAP_KEY = "appDataRoot"
 DEFAULT_TOKEN_CACHE_FILE = ".token_cache"
 DEFAULT_DB_FILE = "tuv-tools.db"
 CHAPTER_BATCH_DIR_NAME = "chapter-batch"
+APP_DATA_CERTS_DIR_NAME = "certs"
 LEGACY_APP_DATA_ROOT = Path.home() / APP_DATA_DIR_NAME
+TRACKED_APP_DATA_ENTRIES = (
+    DEFAULT_DB_FILE,
+    DEFAULT_TOKEN_CACHE_FILE,
+    CHAPTER_BATCH_DIR_NAME,
+    APP_DATA_CERTS_DIR_NAME,
+)
 
 
 def _normalize_path(path: str | Path) -> Path:
@@ -72,6 +79,10 @@ def resolve_chapter_batch_root(project_root: Path | None = None) -> Path:
     return resolve_app_data_root(project_root) / CHAPTER_BATCH_DIR_NAME
 
 
+def resolve_app_data_certs_root(project_root: Path | None = None) -> Path:
+    return resolve_app_data_root(project_root) / APP_DATA_CERTS_DIR_NAME
+
+
 def normalize_token_cache_file(token_cache_file: str | None) -> str:
     normalized = (token_cache_file or "").strip()
     if not normalized:
@@ -82,12 +93,29 @@ def normalize_token_cache_file(token_cache_file: str | None) -> str:
     return normalized
 
 
+def normalize_ca_cert_file(ca_cert_file: str | Path | None) -> str:
+    if ca_cert_file is None:
+        return ""
+    return str(ca_cert_file).strip()
+
+
 def resolve_token_cache_path(token_cache_file: str, project_root: Path | None = None) -> Path:
     normalized = normalize_token_cache_file(token_cache_file)
     path = Path(normalized).expanduser()
     if path.is_absolute():
         return path.resolve()
     return resolve_app_data_root(project_root) / normalized
+
+
+def resolve_ca_cert_path(ca_cert_file: str, project_root: Path | None = None) -> Path:
+    normalized = normalize_ca_cert_file(ca_cert_file)
+    path = Path(normalized).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    app_data_candidate = resolve_app_data_root(project_root) / normalized
+    if app_data_candidate.exists():
+        return app_data_candidate.resolve()
+    return (_normalize_path(project_root or PROJECT_ROOT) / normalized).resolve()
 
 
 def store_bootstrap_config(data_root: Path, project_root: Path | None = None) -> None:
@@ -131,8 +159,14 @@ class AppSettings:
     def get_chapter_batch_root(self) -> Path:
         return resolve_chapter_batch_root(self.project_root)
 
+    def get_app_data_certs_root(self) -> Path:
+        return resolve_app_data_certs_root(self.project_root)
+
     def get_token_cache_path(self, token_cache_file: str = DEFAULT_TOKEN_CACHE_FILE) -> Path:
         return resolve_token_cache_path(token_cache_file, self.project_root)
+
+    def get_ca_cert_path(self, ca_cert_file: str) -> Path:
+        return resolve_ca_cert_path(ca_cert_file, self.project_root)
 
     def set_app_data_root(self, data_root: str | Path) -> None:
         store_bootstrap_config(_normalize_path(data_root), self.project_root)
@@ -145,11 +179,7 @@ class AppSettings:
             self.set_app_data_root(target_root)
             return False
 
-        tracked_entries = [
-            entry
-            for entry in (DEFAULT_DB_FILE, DEFAULT_TOKEN_CACHE_FILE, CHAPTER_BATCH_DIR_NAME)
-            if (current_root / entry).exists()
-        ]
+        tracked_entries = [entry for entry in TRACKED_APP_DATA_ENTRIES if (current_root / entry).exists()]
         target_root.mkdir(parents=True, exist_ok=True)
         for entry in tracked_entries:
             source_path = current_root / entry
@@ -171,11 +201,7 @@ class AppSettings:
         source = _normalize_path(source_root or self.get_app_data_root())
         if target == source or not source.exists():
             return False
-        tracked_entries = [
-            entry
-            for entry in (DEFAULT_DB_FILE, DEFAULT_TOKEN_CACHE_FILE, CHAPTER_BATCH_DIR_NAME)
-            if (source / entry).exists()
-        ]
+        tracked_entries = [entry for entry in TRACKED_APP_DATA_ENTRIES if (source / entry).exists()]
         if not tracked_entries:
             return False
         target.mkdir(parents=True, exist_ok=True)
@@ -201,6 +227,36 @@ class AppSettings:
         app_data_root.mkdir(parents=True, exist_ok=True)
         return app_data_root
 
+    def copy_ca_cert_to_app_data(
+        self,
+        ca_cert_file: str | Path | None,
+        *,
+        target_root: Path | None = None,
+    ) -> str:
+        normalized = normalize_ca_cert_file(ca_cert_file)
+        if not normalized:
+            return ""
+
+        source_path = Path(normalized).expanduser().resolve()
+        if not source_path.exists():
+            raise FileNotFoundError(f"CA certificate file not found: {source_path}")
+
+        target_root = _normalize_path(target_root or self.get_app_data_root())
+        target_dir = target_root / APP_DATA_CERTS_DIR_NAME
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            relative_existing = source_path.relative_to(target_root)
+        except ValueError:
+            relative_existing = None
+
+        if relative_existing is not None:
+            return Path(relative_existing).as_posix()
+
+        target_path = target_dir / source_path.name
+        shutil.copy2(source_path, target_path)
+        return Path(APP_DATA_CERTS_DIR_NAME, source_path.name).as_posix()
+
     def migrate_legacy_app_data_root(
         self,
         *,
@@ -219,11 +275,7 @@ class AppSettings:
         if must_exist and any(not (source_root / entry).exists() for entry in must_exist):
             return False
 
-        candidate_entries = [
-            DEFAULT_DB_FILE,
-            DEFAULT_TOKEN_CACHE_FILE,
-            CHAPTER_BATCH_DIR_NAME,
-        ]
+        candidate_entries = list(TRACKED_APP_DATA_ENTRIES)
         tracked_entries = [entry for entry in candidate_entries if (source_root / entry).exists()]
         if not tracked_entries:
             return False
@@ -278,6 +330,11 @@ class AppSettings:
             config.token_cache_file = str(
                 self.get_token_cache_path(normalize_token_cache_file(config.token_cache_file))
             )
+            config.ca_cert_file = (
+                str(self.get_ca_cert_path(config.ca_cert_file))
+                if normalize_ca_cert_file(config.ca_cert_file)
+                else ""
+            )
             return config
         config = self._db.load_api_config()
         if config is None:
@@ -285,12 +342,21 @@ class AppSettings:
         config.token_cache_file = str(
             self.get_token_cache_path(normalize_token_cache_file(config.token_cache_file))
         )
+        config.ca_cert_file = (
+            str(self.get_ca_cert_path(config.ca_cert_file))
+            if normalize_ca_cert_file(config.ca_cert_file)
+            else ""
+        )
         return config
 
     def save_api_config(self, config, config_path: Path | None = None) -> None:
         """保存 API 配置。指定 path 时写旧 JSON 文件，否则写 DB。"""
         from dataclasses import asdict
-        config = replace(config, token_cache_file=normalize_token_cache_file(config.token_cache_file))
+        config = replace(
+            config,
+            token_cache_file=normalize_token_cache_file(config.token_cache_file),
+            ca_cert_file=normalize_ca_cert_file(config.ca_cert_file),
+        )
         if config_path is not None:
             data = asdict(config)
             data.pop("rsa_private_key", None)

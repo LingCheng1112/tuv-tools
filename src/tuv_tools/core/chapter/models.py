@@ -1,4 +1,4 @@
-"""条款数据模型定义"""
+"""条款数据模型定义。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 
 
 class ChapterStatus(IntEnum):
-    """条款状态枚举"""
+    """条款状态枚举。"""
 
     DRAFT = 0
     VALID = 1
@@ -24,13 +24,13 @@ STATUS_LABELS: dict[int, str] = {
     ChapterStatus.INVALID: "无效",
     ChapterStatus.IN_REVIEW: "审核中",
     ChapterStatus.REJECT: "驳回",
-    ChapterStatus.OBSOLETED: "已废弃",
+    ChapterStatus.OBSOLETED: "已废止",
 }
 
 
 @dataclass
 class Chapter:
-    """条款数据模型"""
+    """条款数据模型。"""
 
     id: int | None = None
     term: str = ""
@@ -54,8 +54,8 @@ class Chapter:
     update_time: str = ""
 
     def to_api_dict(self) -> dict[str, Any]:
-        """转换为 API 请求所需的 camelCase 字典"""
-        d: dict[str, Any] = {
+        """转换为 API 请求所需的 camelCase 字典。"""
+        data: dict[str, Any] = {
             "term": self.term,
             "testContent": self.test_content,
             "standard": self.standard,
@@ -76,10 +76,10 @@ class Chapter:
             "updateTime": self.update_time,
         }
         if self.id is not None:
-            d["id"] = self.id
+            data["id"] = self.id
         if self.folder_id is not None:
-            d["folder"] = {"id": self.folder_id}
-        return d
+            data["folder"] = {"id": self.folder_id}
+        return data
 
     def to_create_api_dict(self) -> dict[str, Any]:
         """转换为创建条款时使用的最小请求体。"""
@@ -102,7 +102,7 @@ class Chapter:
 
     @classmethod
     def from_api_dict(cls, data: dict[str, Any]) -> Chapter:
-        """从 API 响应字典反序列化"""
+        """从 API 响应字典反序列化。"""
         folder = data.get("folder")
         folder_id = folder.get("id") if isinstance(folder, dict) else None
 
@@ -146,24 +146,22 @@ class Chapter:
 
 @dataclass
 class PageResult:
-    """分页查询结果"""
+    """分页查询结果。"""
 
     content: list[Chapter] = field(default_factory=list)
     total_elements: int = 0
 
     @classmethod
     def from_api_dict(cls, data: dict[str, Any]) -> PageResult:
-        """从 API 分页响应反序列化"""
-        content = [
-            Chapter.from_api_dict(item) for item in data.get("content", [])
-        ]
+        """从 API 分页响应反序列化。"""
+        content = [Chapter.from_api_dict(item) for item in data.get("content", [])]
         total_elements = data.get("totalElements", 0)
         return cls(content=content, total_elements=total_elements)
 
 
 @dataclass
 class FolderNode:
-    """目录树节点"""
+    """目录树节点。"""
 
     id: int = 0
     pid: int | None = None
@@ -176,7 +174,7 @@ class FolderNode:
 
     @classmethod
     def from_api_dict(cls, data: dict[str, Any]) -> FolderNode:
-        """从 API 响应反序列化"""
+        """从 API 响应反序列化。"""
         return cls(
             id=data.get("id", 0),
             pid=data.get("pid"),
@@ -187,12 +185,13 @@ class FolderNode:
 
 @dataclass
 class ApiConfig:
-    """API 连接配置"""
+    """API 连接配置。"""
 
     base_url: str = ""
     username: str = ""
     password: str = ""
     rsa_private_key: str = ""
+    ca_cert_file: str = ""
     token_cache_file: str = ".token_cache"
     token_idle_timeout: int = 1800
     request_timeout: int = 30

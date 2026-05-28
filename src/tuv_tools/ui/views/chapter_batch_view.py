@@ -321,6 +321,11 @@ class ChapterBatchView(QWidget):
         title_row.addStretch()
         layout.addLayout(title_row)
 
+        self._backend_hint = QLabel("当前未连接后端。文档导入与本地核对仍可使用，上传与目录相关操作请先到设置中登录。")
+        self._backend_hint.setWordWrap(True)
+        self._backend_hint.setStyleSheet("color: #d9534f; font-size: 13px;")
+        layout.addWidget(self._backend_hint)
+
         toolbar = QHBoxLayout()
         self._import_file_btn = QPushButton("导入文件")
         self._import_dir_btn = QPushButton("导入文件夹")
@@ -407,6 +412,7 @@ class ChapterBatchView(QWidget):
             self._session_manager.status_changed.connect(self._on_session_status_changed)
 
         self._load_documents()
+        self._apply_backend_connection_state()
 
     def _configure_table(self) -> None:
         self._table.setColumnCount(7)
@@ -509,34 +515,6 @@ class ChapterBatchView(QWidget):
             return "处理中"
         return status or "-"
 
-    def _build_running_status_widget(self, document) -> QWidget:
-        progress_event = self._progress_by_document_id.get(document.id or -1)
-        container = QWidget(self._table)
-        tooltip = self._build_status_tooltip(document)
-        if progress_event is not None and progress_event.message:
-            tooltip = f"{tooltip}\n进度：{progress_event.percent}%\n{progress_event.message}"
-        container.setToolTip(tooltip)
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(6, 2, 6, 2)
-        layout.setSpacing(6)
-
-        layout.addWidget(_StatusProgressRing(progress_event.percent if progress_event is not None else 0, container))
-
-        status_label = QLabel(self._display_status_text(document.document_status))
-        status_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-        status_label.setStyleSheet("color: #dcdcdc; font-size: 13px;")
-        status_label.setMinimumWidth(52)
-        layout.addWidget(status_label)
-
-        if progress_event is not None:
-            percent_label = QLabel(f"{progress_event.percent}%")
-            percent_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            percent_label.setStyleSheet("color: #9fbce6; font-size: 12px;")
-            percent_label.setMinimumWidth(34)
-            layout.addWidget(percent_label)
-        layout.addStretch()
-        return container
-
     def _load_documents(self) -> None:
         selected = {document_id for document_id in self._selected_document_ids if document_id is not None}
         status = self._status_filter.currentText()
@@ -631,8 +609,16 @@ class ChapterBatchView(QWidget):
             return None
         return self._session_manager.get_connected_client()
 
-    def _on_session_status_changed(self, _status: str) -> None:
+    def _apply_backend_connection_state(self) -> None:
+        connected = self._is_backend_connected() and (
+            self._session_manager is None or self._current_backend_client() is not None
+        )
+        self._backend_hint.setVisible(not connected)
+        self._drawer._document_form._folder_selector.set_connection_enabled(connected)
         self._update_selected_label()
+
+    def _on_session_status_changed(self, _status: str) -> None:
+        self._apply_backend_connection_state()
 
     def _ensure_backend_available(self) -> bool:
         if self._is_backend_connected() and (self._session_manager is None or self._current_backend_client() is not None):
