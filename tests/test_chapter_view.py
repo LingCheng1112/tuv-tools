@@ -46,3 +46,16 @@ def test_chapter_view_enables_content_when_session_connected(qapp):
 
     assert view._content_root.isEnabled() is True
     assert view._offline_hint.isHidden() is True
+
+
+def test_chapter_view_uses_dark_table_style_contract(qapp):
+    from tuv_tools.core.chapter.session import ChapterSessionManager
+    from tuv_tools.ui.views.chapter_view import ChapterView
+
+    view = ChapterView(ChapterSessionManager())
+
+    assert view._table.alternatingRowColors() is True
+    assert view._table.showGrid() is False
+    assert view._table.verticalHeader().isVisible() is False
+    assert "alternate-background-color" in view._table.styleSheet()
+    assert "QHeaderView::section" in view._table.styleSheet()

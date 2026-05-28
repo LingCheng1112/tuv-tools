@@ -141,7 +141,7 @@ class MainWindow(QMainWindow):
         """注册所有功能视图。"""
         self._add_view("文档拆分", SplitterView())
         self._add_view("条款管理", ChapterView(self._chapter_session))
-        self._add_view("条款批量上传", ChapterBatchView(session_manager=self._chapter_session))
+        self._add_view("批量上传", ChapterBatchView(session_manager=self._chapter_session))
 
     def _add_view(self, label: str, widget: QWidget):
         item = QListWidgetItem(label)

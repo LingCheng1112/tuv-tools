@@ -56,7 +56,8 @@ def test_main_window_registers_chapter_batch_workspace(qapp):
 
     labels = [window._nav.item(i).text() for i in range(window._nav.count())]
 
-    assert "条款批量上传" in labels
+    assert "批量上传" in labels
+    assert "条款批量上传" not in labels
 
 
 def test_workspace_has_upload_title_and_actions(qapp):
@@ -65,10 +66,22 @@ def test_workspace_has_upload_title_and_actions(qapp):
     view = ChapterBatchView(repo=_new_repo())
     all_button_texts = [button.text() for button in view.findChildren(__import__("PySide6.QtWidgets").QtWidgets.QPushButton)]
 
-    assert view._title_label.text() == "条款批量上传"
+    assert view._title_label.text() == "批量上传"
     assert view._upload_btn.text() == "批量上传"
+    assert "查看详情" not in all_button_texts
     assert "批量确认" not in all_button_texts
     assert "开始执行" not in all_button_texts
+
+
+def test_workspace_shows_filter_labels(qapp):
+    from PySide6.QtWidgets import QLabel
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    view = ChapterBatchView(repo=_new_repo())
+    label_texts = [label.text() for label in view.findChildren(QLabel)]
+
+    assert "状态" in label_texts
+    assert "拆分方式" in label_texts
 
 
 def test_workspace_disables_upload_when_session_not_connected(qapp):
@@ -127,6 +140,7 @@ def test_import_selected_paths_imports_then_starts_background_processing(qapp, m
                 file_name="a.docx",
                 document_status=DocumentStatus.PREPARING.value,
                 split_mode=split_mode,
+                standard="60335-2-9",
             )
         )
         return [repo.get_document(doc_id)]
@@ -167,6 +181,7 @@ def test_import_selected_paths_shows_processing_document_immediately(qapp, monke
                 file_name="a.docx",
                 document_status=DocumentStatus.PREPARING.value,
                 split_mode=split_mode,
+                standard="60335-2-9",
             )
         )
         return [repo.get_document(doc_id)]
@@ -199,6 +214,7 @@ def test_import_selected_paths_creates_records_before_background_processing(qapp
                 file_name="b.docx",
                 document_status=DocumentStatus.PREPARING.value,
                 split_mode=split_mode,
+                standard="60335-2-9",
             )
         )
         return [repo.get_document(doc_id)]
@@ -229,6 +245,7 @@ def test_import_selected_paths_loads_rows_before_starting_processing(qapp, monke
                 file_name="visible-first.docx",
                 document_status=DocumentStatus.PREPARING.value,
                 split_mode=split_mode,
+                standard="60335-2-9",
             )
         )
         return [repo.get_document(doc_id)]
@@ -1091,7 +1108,7 @@ def test_failed_clause_with_chapter_id_prefers_reupload_action(qapp):
     )
 
     assert view._can_apply_clause_action("重新上传", repo.get_clauses(doc_id)[0].id) is True
-    assert view._can_apply_clause_action("上传", repo.get_clauses(doc_id)[0].id) is True
+    assert view._can_apply_clause_action("上传", repo.get_clauses(doc_id)[0].id) is False
 
 
 def test_pending_clause_with_chapter_id_can_still_use_upload_action(qapp):
@@ -1281,6 +1298,43 @@ def test_build_summary_text_omits_skipped_count(qapp):
     document = BatchImportDocument(success_clause_count=2, failed_clause_count=1, skipped_clause_count=3)
 
     assert ChapterBatchView._build_summary_text(document) == "成功 2 / 失败 1"
+
+
+def test_pending_confirm_document_displays_as_pending_upload(qapp):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo)
+    repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/pending-confirm.docx",
+            file_name="pending-confirm.docx",
+            document_status=DocumentStatus.PENDING_CONFIRM.value,
+        )
+    )
+
+    view._load_documents()
+
+    assert view._table.item(0, view.COL_STATUS).text() == DocumentStatus.PENDING_UPLOAD.value
+
+
+def test_drawer_summary_displays_pending_confirm_as_pending_upload(qapp):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    view = ChapterBatchView(repo=_new_repo())
+    document = BatchImportDocument(
+        file_path="C:/docs/pending-confirm.docx",
+        file_name="pending-confirm.docx",
+        document_status=DocumentStatus.PENDING_CONFIRM.value,
+        split_mode="条款",
+    )
+
+    view._drawer.set_documents([document])
+
+    assert "待上传" in view._drawer._summary.text()
+    assert "待确认" not in view._drawer._summary.text()
 
 
 def test_delete_documents_uses_service_cleanup_instead_of_repo_direct_delete(qapp, monkeypatch):

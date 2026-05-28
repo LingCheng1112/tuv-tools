@@ -198,6 +198,31 @@ class TestChapterBatchRepository:
         assert doc.failed_clause_count == 1
         assert doc.skipped_clause_count == 0
 
+    def test_list_documents_pending_upload_includes_pending_confirm(self):
+        repo = _new_repo()
+        repo.create_document(
+            BatchImportDocument(
+                file_path="C:/docs/pending-upload.docx",
+                file_name="pending-upload.docx",
+                document_status=DocumentStatus.PENDING_UPLOAD.value,
+            )
+        )
+        repo.create_document(
+            BatchImportDocument(
+                file_path="C:/docs/pending-confirm.docx",
+                file_name="pending-confirm.docx",
+                document_status=DocumentStatus.PENDING_CONFIRM.value,
+            )
+        )
+
+        documents = repo.list_documents(status=DocumentStatus.PENDING_UPLOAD.value)
+
+        assert len(documents) == 2
+        assert {document.document_status for document in documents} == {
+            DocumentStatus.PENDING_UPLOAD.value,
+            DocumentStatus.PENDING_CONFIRM.value,
+        }
+
     def test_repository_normalizes_legacy_statuses_on_read(self):
         repo = _new_repo()
         doc_id = repo.create_document(

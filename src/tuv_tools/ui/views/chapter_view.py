@@ -193,6 +193,39 @@ class ChapterView(QWidget):
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setAlternatingRowColors(True)
+        self._table.setShowGrid(False)
+        self._table.setStyleSheet(
+            """
+            QTableWidget {
+                background-color: #2b2d30;
+                alternate-background-color: #303336;
+                color: #dcdcdc;
+                border: none;
+                font-size: 13px;
+                outline: none;
+            }
+            QTableWidget::item {
+                padding: 8px 10px;
+                border: none;
+            }
+            QTableWidget::item:selected {
+                background-color: #3c3f41;
+                color: #ffffff;
+            }
+            QHeaderView::section {
+                background-color: #2b2d30;
+                color: #999;
+                border: none;
+                border-bottom: 2px solid #4a4d50;
+                padding: 8px 10px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            """
+        )
         right_layout.addWidget(self._table)
 
         # 分页

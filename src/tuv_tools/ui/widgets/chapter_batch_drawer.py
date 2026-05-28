@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from tuv_tools.core.chapter.session import ChapterSessionManager
-from tuv_tools.core.chapter_batch.models import BatchImportDocument
+from tuv_tools.core.chapter_batch.models import BatchImportDocument, display_document_status
 from .chapter_batch_clause_table import ChapterBatchClauseTable
 from .chapter_batch_document_form import ChapterBatchDocumentForm
 
@@ -152,7 +152,7 @@ class ChapterBatchDrawer(QWidget):
     def _update_summary(self, document: BatchImportDocument) -> None:
         self._title.setText(document.file_name or "文档详情")
         self._summary.setText(
-            f"状态：{document.document_status} | 模式：{document.split_mode} | 标准：{document.standard or '(空)'}"
+            f"状态：{display_document_status(document.document_status)} | 模式：{document.split_mode} | 标准：{document.standard or '(空)'}"
         )
         fields = self._document_field_cache.get(
             document.id or -1,

@@ -39,6 +39,7 @@ from tuv_tools.core.chapter_batch.models import (
     ClauseStatus,
     DocumentStatus,
     SplitMode,
+    display_document_status,
     get_clause_edit_state,
     is_document_executable,
     is_document_running,
@@ -285,8 +286,25 @@ class _RunningStatusWidget(QWidget):
         self._label.setGeometry(0, 0, self.width(), self.height())
 
 
+class _SummaryTextWidget(QWidget):
+    """单元格内摘要视图，保持文本垂直居中。"""
+
+    def __init__(self, text: str, tooltip: str = "", parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        label = QLabel(text, self)
+        label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        label.setStyleSheet("color: #dcdcdc; font-size: 13px; padding: 0 10px;")
+        layout.addWidget(label)
+        if tooltip:
+            self.setToolTip(tooltip)
+            label.setToolTip(tooltip)
+
+
 class ChapterBatchView(QWidget):
-    """条款批量上传工作台。"""
+    """批量上传工作台。"""
 
     COL_CHECK = 0
     COL_FILE_NAME = 1
@@ -315,7 +333,7 @@ class ChapterBatchView(QWidget):
         layout.setSpacing(10)
 
         title_row = QHBoxLayout()
-        self._title_label = QLabel("条款批量上传")
+        self._title_label = QLabel("批量上传")
         self._title_label.setStyleSheet("font-size: 18px; font-weight: bold;")
         title_row.addWidget(self._title_label)
         title_row.addStretch()
@@ -340,20 +358,21 @@ class ChapterBatchView(QWidget):
         layout.addLayout(toolbar)
 
         filters = QHBoxLayout()
+        filters.addWidget(QLabel("状态"))
         self._status_filter = QComboBox()
         self._status_filter.addItems(
             [
                 "全部",
-                DocumentStatus.PENDING_CONFIRM.value,
                 DocumentStatus.PENDING_UPLOAD.value,
                 DocumentStatus.PARTIAL.value,
                 DocumentStatus.FAILED.value,
                 DocumentStatus.COMPLETED.value,
             ]
         )
+        filters.addWidget(self._status_filter)
+        filters.addWidget(QLabel("拆分方式"))
         self._mode_filter = QComboBox()
         self._mode_filter.addItems(["全部", SplitMode.SECTION.value, SplitMode.CLAUSE.value])
-        filters.addWidget(self._status_filter)
         filters.addWidget(self._mode_filter)
         filters.addStretch()
         layout.addLayout(filters)
@@ -379,11 +398,6 @@ class ChapterBatchView(QWidget):
         bottom.addWidget(self._selected_label)
         bottom.addStretch()
 
-        self._detail_btn = QPushButton("查看详情")
-        self._detail_btn.setStyleSheet(self._action_btn_style("#6a6d72"))
-        self._detail_btn.setEnabled(False)
-        bottom.addWidget(self._detail_btn)
-
         self._upload_btn = QPushButton("批量上传")
         self._upload_btn.setStyleSheet(self._action_btn_style("#4a9eff"))
         self._upload_btn.setEnabled(False)
@@ -397,7 +411,6 @@ class ChapterBatchView(QWidget):
 
         self._import_file_btn.clicked.connect(self._import_files)
         self._import_dir_btn.clicked.connect(self._import_dir)
-        self._detail_btn.clicked.connect(self._open_bulk_confirm)
         self._upload_btn.clicked.connect(self._upload_selected_documents)
         self._delete_btn.clicked.connect(self._delete_selected_documents)
 
@@ -493,16 +506,8 @@ class ChapterBatchView(QWidget):
         return item
 
     @staticmethod
-    def _build_summary_text(document) -> str:
-        return (
-            f"成功 {document.success_clause_count} / "
-            f"失败 {document.failed_clause_count} / "
-            f"跳过 {document.skipped_clause_count}"
-        )
-
-    @staticmethod
     def _build_status_tooltip(document) -> str:
-        parts = [document.document_status]
+        parts = [display_document_status(document.document_status)]
         if document.is_queued:
             parts.append("已加入当前执行队列")
         if document.last_error:
@@ -511,9 +516,7 @@ class ChapterBatchView(QWidget):
 
     @staticmethod
     def _display_status_text(status: str) -> str:
-        if status in {DocumentStatus.PREPARING.value, DocumentStatus.SPLITTING.value}:
-            return "处理中"
-        return status or "-"
+        return display_document_status(status)
 
     def _load_documents(self) -> None:
         selected = {document_id for document_id in self._selected_document_ids if document_id is not None}
@@ -558,13 +561,13 @@ class ChapterBatchView(QWidget):
                     ),
                 )
             summary = self._build_summary_text(document)
-            self._table.setItem(
+            self._table.setCellWidget(
                 row,
                 self.COL_SUMMARY,
-                self._make_item(
+                _SummaryTextWidget(
                     summary,
                     document.last_error or summary,
-                    alignment=Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                    self._table,
                 ),
             )
             updated_at = document.updated_at or "-"
@@ -592,7 +595,6 @@ class ChapterBatchView(QWidget):
             and not is_document_running(document.document_status)
             for document in selected_documents
         )
-        self._detail_btn.setEnabled(has_selection)
         self._upload_btn.setEnabled(
             self._is_backend_connected()
             and has_executable
@@ -721,12 +723,6 @@ class ChapterBatchView(QWidget):
             if document.id in wanted:
                 selected.append(document)
         return selected
-
-    def _open_bulk_confirm(self) -> None:
-        documents = self._selected_documents()
-        if not documents:
-            return
-        self._open_drawer_for_documents([documents[0]])
 
     def _show_document_context_menu(self, pos) -> None:
         row = self._table.rowAt(pos.y())

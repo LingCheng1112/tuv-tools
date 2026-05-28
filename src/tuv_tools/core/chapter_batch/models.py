@@ -73,6 +73,16 @@ RUNNING_DOCUMENT_STATUSES = {
 }
 
 
+def display_document_status(status: str) -> str:
+    """返回批量上传文档状态的用户可见文案。"""
+
+    if status in {DocumentStatus.PREPARING.value, DocumentStatus.SPLITTING.value}:
+        return "处理中"
+    if status == DocumentStatus.PENDING_CONFIRM.value:
+        return DocumentStatus.PENDING_UPLOAD.value
+    return status or "-"
+
+
 def _extract_path_inside_chapter_batch(path: Path) -> Path | None:
     parts = list(path.parts)
     lowered = [part.lower() for part in parts]

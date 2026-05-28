@@ -138,8 +138,12 @@ class ChapterBatchRepository:
         sql = ["SELECT * FROM batch_import_documents WHERE 1 = 1"]
         params: list[Any] = []
         if status and status != "全部":
-            sql.append("AND document_status = ?")
-            params.append(status)
+            if status == DocumentStatus.PENDING_UPLOAD.value:
+                sql.append("AND document_status IN (?, ?)")
+                params.extend([DocumentStatus.PENDING_UPLOAD.value, DocumentStatus.PENDING_CONFIRM.value])
+            else:
+                sql.append("AND document_status = ?")
+                params.append(status)
         if split_mode and split_mode != "全部":
             sql.append("AND split_mode = ?")
             params.append(split_mode)
