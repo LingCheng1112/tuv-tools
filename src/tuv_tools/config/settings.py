@@ -7,10 +7,25 @@ import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import shutil
+import sys
+
+
+def _normalize_path(path: str | Path) -> Path:
+    return Path(path).expanduser().resolve()
+
+
+def _detect_runtime_root() -> Path | None:
+    """冻结运行时返回可执行文件目录，否则返回 None。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return None
 
 
 def _find_project_root() -> Path:
-    """从当前文件向上查找包含 pyproject.toml 的目录作为项目根"""
+    """从当前文件向上查找包含 pyproject.toml 的目录作为项目根。"""
+    runtime_root = _detect_runtime_root()
+    if runtime_root is not None:
+        return runtime_root
     current = Path(__file__).resolve().parent
     for parent in [current, *current.parents]:
         if (parent / "pyproject.toml").exists():
@@ -18,8 +33,33 @@ def _find_project_root() -> Path:
     return current
 
 
+def _resolve_resources_dir(project_root: Path | None = None) -> Path:
+    """解析资源目录，优先兼容 PyInstaller 等冻结运行时。"""
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        bundled = Path(meipass).resolve() / "resources"
+        if bundled.exists():
+            return bundled
+    root = _normalize_path(project_root or PROJECT_ROOT)
+    return root / "resources"
+
+
+def _resolve_from_root(path: str | Path, root: Path) -> Path:
+    raw_path = Path(path).expanduser()
+    if raw_path.is_absolute():
+        return raw_path.resolve()
+    return (root / raw_path).resolve()
+
+
+def _path_text_for_storage(path: Path, root: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return str(path.resolve())
+
+
 PROJECT_ROOT = _find_project_root()
-RESOURCES_DIR = PROJECT_ROOT / "resources"
+RESOURCES_DIR = _resolve_resources_dir(PROJECT_ROOT)
 API_CONFIG_FILE = PROJECT_ROOT / "api_config.json"
 RSA_KEY_FILE = PROJECT_ROOT / "rsa_private.key"
 APP_DATA_DIR_NAME = ".tuv-tools"
@@ -27,8 +67,13 @@ APP_DATA_BOOTSTRAP_FILE = ".tuv-tools-config.json"
 APP_DATA_BOOTSTRAP_KEY = "appDataRoot"
 DEFAULT_TOKEN_CACHE_FILE = ".token_cache"
 DEFAULT_DB_FILE = "tuv-tools.db"
+DEFAULT_SPLITTER_OUTPUT_DIR_NAME = "doc_output"
 CHAPTER_BATCH_DIR_NAME = "chapter-batch"
 APP_DATA_CERTS_DIR_NAME = "certs"
+PACKAGING_DEFAULTS_DIR_NAME = "defaults"
+DEFAULTS_API_CONFIG_FILE = "api_config.json"
+DEFAULTS_RSA_KEY_FILE = "rsa_private.key"
+DEFAULTS_CLEAN_RULES_FILE = "inline_clean_rules.json"
 LEGACY_APP_DATA_ROOT = Path.home() / APP_DATA_DIR_NAME
 TRACKED_APP_DATA_ENTRIES = (
     DEFAULT_DB_FILE,
@@ -36,10 +81,6 @@ TRACKED_APP_DATA_ENTRIES = (
     CHAPTER_BATCH_DIR_NAME,
     APP_DATA_CERTS_DIR_NAME,
 )
-
-
-def _normalize_path(path: str | Path) -> Path:
-    return Path(path).expanduser().resolve()
 
 
 def get_bootstrap_config_path(project_root: Path | None = None) -> Path:
@@ -64,11 +105,33 @@ def resolve_default_app_data_root(project_root: Path | None = None) -> Path:
 
 
 def resolve_app_data_root(project_root: Path | None = None) -> Path:
+    root = _normalize_path(project_root or PROJECT_ROOT)
     bootstrap = load_bootstrap_config(project_root)
     configured = str(bootstrap.get(APP_DATA_BOOTSTRAP_KEY, "")).strip()
     if configured:
-        return _normalize_path(configured)
-    return resolve_default_app_data_root(project_root)
+        return _resolve_from_root(configured, root)
+    return resolve_default_app_data_root(root)
+
+
+def resolve_default_splitter_output_root(project_root: Path | None = None) -> Path:
+    root = _normalize_path(project_root or PROJECT_ROOT)
+    return root / DEFAULT_SPLITTER_OUTPUT_DIR_NAME
+
+
+def normalize_splitter_output_path(output_path: str | Path | None, project_root: Path | None = None) -> str:
+    root = _normalize_path(project_root or PROJECT_ROOT)
+    normalized = str(output_path or "").strip()
+    if not normalized:
+        return DEFAULT_SPLITTER_OUTPUT_DIR_NAME
+    return _path_text_for_storage(_resolve_from_root(normalized, root), root)
+
+
+def resolve_splitter_output_root(output_path: str | Path | None, project_root: Path | None = None) -> Path:
+    root = _normalize_path(project_root or PROJECT_ROOT)
+    normalized = str(output_path or "").strip()
+    if not normalized:
+        return resolve_default_splitter_output_root(root)
+    return _resolve_from_root(normalized, root)
 
 
 def resolve_database_path(project_root: Path | None = None) -> Path:
@@ -119,9 +182,18 @@ def resolve_ca_cert_path(ca_cert_file: str, project_root: Path | None = None) ->
 
 
 def store_bootstrap_config(data_root: Path, project_root: Path | None = None) -> None:
-    config_path = get_bootstrap_config_path(project_root)
+    root = _normalize_path(project_root or PROJECT_ROOT)
+    config_path = get_bootstrap_config_path(root)
+    if _normalize_path(data_root) == resolve_default_app_data_root(root):
+        if config_path.exists():
+            config_path.unlink()
+        return
     config_path.write_text(
-        json.dumps({APP_DATA_BOOTSTRAP_KEY: str(_normalize_path(data_root))}, ensure_ascii=False, indent=2),
+        json.dumps(
+            {APP_DATA_BOOTSTRAP_KEY: _path_text_for_storage(_normalize_path(data_root), root)},
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
 
@@ -136,7 +208,7 @@ class AppSettings:
     def __post_init__(self) -> None:
         self.project_root = _normalize_path(self.project_root)
         if self.default_rules_path is None:
-            self.default_rules_path = self.project_root / "resources" / "inline_clean_rules.json"
+            self.default_rules_path = self.get_resources_dir() / "inline_clean_rules.json"
 
     @property
     def _db(self):
@@ -146,12 +218,27 @@ class AppSettings:
     def get_bootstrap_config_path(self) -> Path:
         return get_bootstrap_config_path(self.project_root)
 
+    def get_resources_dir(self) -> Path:
+        return _resolve_resources_dir(self.project_root)
+
+    def get_packaging_defaults_dir(self) -> Path:
+        return self.get_resources_dir() / PACKAGING_DEFAULTS_DIR_NAME
+
     def has_explicit_app_data_root(self) -> bool:
         bootstrap = load_bootstrap_config(self.project_root)
         return bool(str(bootstrap.get(APP_DATA_BOOTSTRAP_KEY, "")).strip())
 
     def get_app_data_root(self) -> Path:
         return resolve_app_data_root(self.project_root)
+
+    def get_default_splitter_output_root(self) -> Path:
+        return resolve_default_splitter_output_root(self.project_root)
+
+    def get_splitter_output_root(self, output_path: str | Path | None) -> Path:
+        return resolve_splitter_output_root(output_path, self.project_root)
+
+    def normalize_splitter_output_path(self, output_path: str | Path | None) -> str:
+        return normalize_splitter_output_path(output_path, self.project_root)
 
     def get_database_path(self) -> Path:
         return resolve_database_path(self.project_root)
@@ -225,7 +312,68 @@ class AppSettings:
         self.migrate_legacy_app_data_root()
         app_data_root = self.get_app_data_root()
         app_data_root.mkdir(parents=True, exist_ok=True)
+        store_bootstrap_config(app_data_root, self.project_root)
+        self._seed_packaging_defaults(app_data_root)
         return app_data_root
+
+    @staticmethod
+    def _load_default_rules_from_file(rules_path: Path) -> list[dict]:
+        data = json.loads(rules_path.read_text(encoding="utf-8"))
+        rules = data.get("inline_clean_rules", [])
+        return rules if isinstance(rules, list) else []
+
+    @staticmethod
+    def _load_default_api_config_from_file(config_path: Path):
+        from tuv_tools.core.chapter.models import ApiConfig
+
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        filtered = {
+            key: value
+            for key, value in data.items()
+            if key in ApiConfig.__dataclass_fields__ and key != "rsa_private_key"
+        }
+        return ApiConfig(**filtered)
+
+    def _seed_packaging_defaults(self, app_data_root: Path) -> bool:
+        defaults_dir = self.get_packaging_defaults_dir()
+        if not defaults_dir.exists():
+            return False
+
+        seeded = False
+        db = self._db
+
+        rules_path = defaults_dir / DEFAULTS_CLEAN_RULES_FILE
+        if not db.load_clean_rules() and rules_path.exists():
+            db.save_clean_rules(self._load_default_rules_from_file(rules_path))
+            seeded = True
+
+        rsa_path = defaults_dir / DEFAULTS_RSA_KEY_FILE
+        rsa_missing = not db.load_rsa_private_key()
+        rsa_text = ""
+        if rsa_missing and rsa_path.exists():
+            rsa_text = rsa_path.read_text(encoding="utf-8").strip()
+
+        api_config_path = defaults_dir / DEFAULTS_API_CONFIG_FILE
+        if db.load_api_config() is None and api_config_path.exists():
+            config = self._load_default_api_config_from_file(api_config_path)
+            default_ca_value = normalize_ca_cert_file(config.ca_cert_file)
+            if default_ca_value:
+                ca_source = defaults_dir / Path(default_ca_value).name
+                if ca_source.exists():
+                    config = replace(
+                        config,
+                        ca_cert_file=self.copy_ca_cert_to_app_data(ca_source, target_root=app_data_root),
+                    )
+                else:
+                    config = replace(config, ca_cert_file="")
+            db.save_api_config(config)
+            seeded = True
+
+        if rsa_missing and rsa_text:
+            db.save_rsa_private_key(rsa_text)
+            seeded = True
+
+        return seeded
 
     def copy_ca_cert_to_app_data(
         self,

@@ -477,7 +477,7 @@ class SplitterView(QWidget):
             return
 
         patterns = self._settings.load_inline_clean_patterns()
-        output_root = self._db.get_config("splitter.output_path", "")
+        output_root = str(self._settings.get_splitter_output_root(self._db.get_config("splitter.output_path", "")))
 
         self._progress_title.setVisible(True)
         self._progress_title.setText("准备拆分文档...")
@@ -539,7 +539,7 @@ class SplitterView(QWidget):
             return
 
         patterns = self._settings.load_inline_clean_patterns()
-        output_root = db.get_config("splitter.output_path", "")
+        output_root = str(self._settings.get_splitter_output_root(db.get_config("splitter.output_path", "")))
 
         self._progress_title.setVisible(True)
         self._progress_title.setText("准备拆分文档...")
@@ -661,7 +661,7 @@ class SplitterView(QWidget):
 
     def _open_output_dir(self, doc_id: int | None = None) -> None:
         db = self._db
-        output_root = db.get_config("splitter.output_path", "")
+        output_root = self._settings.get_splitter_output_root(db.get_config("splitter.output_path", ""))
 
         target_id = doc_id
         if target_id is None:
@@ -671,23 +671,14 @@ class SplitterView(QWidget):
         doc = db.get_document(target_id) if target_id else None
         std_num = doc.get("standard_number") if doc else None
 
-        if output_root and std_num:
-            clause_dir = os.path.join(output_root, std_num)
-            if os.path.isdir(clause_dir):
-                os.startfile(clause_dir)
+        if std_num:
+            clause_dir = output_root / safe_name(std_num)
+            if clause_dir.is_dir():
+                os.startfile(str(clause_dir))
                 return
 
-        if not output_root and doc:
-            base_dir = os.path.join(
-                str(Path(doc["file_path"]).parent),
-                safe_name(std_num or Path(doc["file_path"]).stem),
-            )
-            if os.path.isdir(base_dir):
-                os.startfile(base_dir)
-                return
-
-        if output_root and os.path.isdir(output_root):
-            os.startfile(output_root)
+        if output_root.is_dir():
+            os.startfile(str(output_root))
             return
 
         if doc and os.path.exists(doc["file_path"]):

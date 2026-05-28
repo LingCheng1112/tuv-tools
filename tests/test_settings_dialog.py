@@ -120,6 +120,35 @@ def test_settings_dialog_persists_ca_certificate_path(qapp, tmp_path):
     assert dialog._ca_cert_status.text() == "已配置"
 
 
+def test_settings_dialog_uses_default_splitter_output_root(qapp, tmp_path):
+    from tuv_tools.config import AppSettings
+    from tuv_tools.ui.views.settings_dialog import SettingsDialog
+
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True)
+    settings = AppSettings(project_root=project_root)
+
+    dialog = SettingsDialog(settings=settings)
+
+    assert dialog._output_edit.text() == str(project_root / "doc_output")
+
+
+def test_settings_dialog_persists_splitter_output_root_as_project_relative_path(qapp, tmp_path):
+    from tuv_tools.config import AppSettings
+    from tuv_tools.ui.views.settings_dialog import SettingsDialog
+
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True)
+    settings = AppSettings(project_root=project_root)
+
+    dialog = SettingsDialog(settings=settings)
+    dialog._output_edit.setText(str(project_root / "custom-output"))
+
+    dialog._persist_changes()
+
+    assert dialog._db.get_config("splitter.output_path", "") == "custom-output"
+
+
 def test_settings_dialog_can_clear_ca_certificate_status(qapp, tmp_path):
     from tuv_tools.config import AppSettings
     from tuv_tools.ui.views.settings_dialog import SettingsDialog

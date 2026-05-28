@@ -1498,3 +1498,30 @@ def test_clause_upload_action_with_existing_chapter_id_starts_single_clause_uplo
     view._on_clause_action_requested("上传", clause_id)
 
     assert started == [(doc_id, [clause_id])]
+
+
+def test_clause_table_term_column_is_fixed_and_elides_text(qapp):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QHeaderView
+    from tuv_tools.ui.widgets.chapter_batch_clause_table import ChapterBatchClauseTable
+
+    table = ChapterBatchClauseTable()
+
+    assert table.horizontalHeader().sectionResizeMode(table.COL_TERM) == QHeaderView.ResizeMode.Fixed
+    assert table.columnWidth(table.COL_TERM) == 136
+    assert table.textElideMode() == Qt.TextElideMode.ElideRight
+    assert table.verticalHeader().defaultSectionSize() >= 38
+
+
+def test_clause_table_header_checkbox_paints_without_native_style_dependency(qapp):
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QPainter, QPixmap
+    from tuv_tools.ui.widgets.chapter_batch_clause_table import ChapterBatchClauseTable
+
+    table = ChapterBatchClauseTable()
+    header = table.horizontalHeader()
+    pixmap = QPixmap(44, 24)
+    pixmap.fill()
+    painter = QPainter(pixmap)
+    header.paintSection(painter, QRect(0, 0, 44, 24), table.COL_CHECK)
+    painter.end()

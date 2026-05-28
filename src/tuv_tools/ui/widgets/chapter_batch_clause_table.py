@@ -10,8 +10,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QMenu,
     QSizePolicy,
-    QStyle,
-    QStyleOptionButton,
     QTableWidget,
     QTableWidgetItem,
     QWidget,
@@ -102,11 +100,14 @@ class ChapterBatchClauseTable(QTableWidget):
         )
         header = self.horizontalHeader()
         self.setColumnWidth(self.COL_CHECK, 44)
+        self.setColumnWidth(self.COL_TERM, 136)
         header.setSectionResizeMode(self.COL_CHECK, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(self.COL_TERM, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(self.COL_TERM, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(self.COL_CONTENT, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(self.COL_STATUS, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(self.COL_CHAPTER_ID, QHeaderView.ResizeMode.ResizeToContents)
+        self.verticalHeader().setDefaultSectionSize(38)
+        self.setTextElideMode(Qt.TextElideMode.ElideRight)
 
     def load_clauses(self, clauses: list[dict]) -> None:
         self.setRowCount(len(clauses))
@@ -124,6 +125,7 @@ class ChapterBatchClauseTable(QTableWidget):
             term_item = QTableWidgetItem(clause.get("term", ""))
             term_item.setData(Qt.ItemDataRole.UserRole, clause_id)
             term_item.setData(Qt.ItemDataRole.UserRole + 1, editable)
+            term_item.setToolTip(clause.get("term", ""))
             if not editable:
                 term_item.setFlags(term_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.setItem(row, self.COL_TERM, term_item)
@@ -304,32 +306,22 @@ class _ClauseCheckHeader(QHeaderView):
         super().paintSection(painter, rect, logical_index)
         if logical_index != ChapterBatchClauseTable.COL_CHECK:
             return
-        option = QStyleOptionButton()
-        indicator_w = self.style().pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth, option, self)
-        indicator_h = self.style().pixelMetric(QStyle.PixelMetric.PM_IndicatorHeight, option, self)
-        option.rect = QRect(
-            rect.x() + (rect.width() - indicator_w) // 2,
-            rect.y() + (rect.height() - indicator_h) // 2,
-            indicator_w,
-            indicator_h,
+        indicator_rect = QRect(
+            rect.x() + (rect.width() - 14) // 2,
+            rect.y() + (rect.height() - 14) // 2,
+            14,
+            14,
         )
-        option.state = QStyle.StateFlag.State_Enabled
-        option.state |= QStyle.StateFlag.State_On if self._checked else QStyle.StateFlag.State_Off
-        option.palette = self.palette()
-        option.palette.setColor(option.palette.ColorRole.Button, Qt.GlobalColor.transparent)
-        option.palette.setColor(option.palette.ColorRole.Base, Qt.GlobalColor.transparent)
-        option.palette.setColor(option.palette.ColorRole.Window, Qt.GlobalColor.transparent)
-        self.style().drawControl(QStyle.ControlElement.CE_CheckBox, option, painter, self)
         border_color = "#8d96a1" if self._checked else "#7a818a"
         fill_color = "#6f7782" if self._checked else "#23262a"
         painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setPen(border_color)
         painter.setBrush(fill_color)
-        painter.drawRoundedRect(option.rect.adjusted(0, 0, -1, -1), 3, 3)
+        painter.drawRoundedRect(indicator_rect.adjusted(0, 0, -1, -1), 3, 3)
         if self._checked:
-            inner = option.rect.adjusted(3, 3, -3, -3)
-            painter.setPen("#ffffff")
+            inner = indicator_rect.adjusted(3, 3, -3, -3)
+            painter.setPen(QColor("#ffffff"))
             painter.drawLine(inner.left(), inner.center().y(), inner.center().x() - 1, inner.bottom())
             painter.drawLine(inner.center().x() - 1, inner.bottom(), inner.right(), inner.top() + 1)
         painter.restore()

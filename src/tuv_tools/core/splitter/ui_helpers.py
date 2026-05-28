@@ -38,8 +38,6 @@ def blocks_batch_split(status: str) -> bool:
 
 def resolve_output_root(docx_path: Path, output_root: str, output_subdir: str = "") -> Path:
     """根据配置解析导出根目录；未配置时回退到原文档所在目录。"""
-    if output_subdir:
-        return Path(output_subdir)
     if output_root:
         return Path(output_root)
     return docx_path.parent

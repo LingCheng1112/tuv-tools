@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -455,6 +456,45 @@ class TestDatabaseManager:
         assert settings.get_database_path() == settings.project_root / ".tuv-tools" / "tuv-tools.db"
         assert settings.get_chapter_batch_root() == settings.project_root / ".tuv-tools" / "chapter-batch"
 
+    def test_app_settings_defaults_splitter_output_root_to_project_doc_output(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        settings = AppSettings(project_root=project_root)
+
+        assert settings.get_default_splitter_output_root() == project_root / "doc_output"
+        assert settings.get_splitter_output_root("") == project_root / "doc_output"
+
+    def test_app_settings_normalizes_splitter_output_root_relative_to_project(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        settings = AppSettings(project_root=project_root)
+
+        assert settings.normalize_splitter_output_path(project_root / "doc_output") == "doc_output"
+        assert settings.normalize_splitter_output_path(project_root / "nested" / "out") == "nested/out"
+
+    def test_app_settings_does_not_persist_bootstrap_for_default_app_data_root(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        settings = AppSettings(project_root=project_root)
+
+        settings.set_app_data_root(project_root / ".tuv-tools")
+
+        assert not (project_root / ".tuv-tools-config.json").exists()
+
+    def test_resolve_resources_dir_prefers_meipass_when_frozen(self, tmp_path):
+        runtime_root = tmp_path / "dist"
+        runtime_root.mkdir(parents=True)
+        bundled_root = tmp_path / "bundle"
+        (bundled_root / "resources").mkdir(parents=True)
+
+        with patch("tuv_tools.config.settings.sys.frozen", True, create=True), \
+             patch("tuv_tools.config.settings.sys.executable", str(runtime_root / "TUV-Tools.exe")), \
+             patch("tuv_tools.config.settings.sys._MEIPASS", str(bundled_root), create=True):
+            from tuv_tools.config import settings as settings_module
+
+            assert settings_module._find_project_root() == runtime_root.resolve()
+            assert settings_module._resolve_resources_dir(runtime_root) == (bundled_root / "resources").resolve()
+
     def test_app_settings_reads_explicit_app_data_root_from_bootstrap_file(self, tmp_path):
         project_root = tmp_path / "repo"
         project_root.mkdir(parents=True)
@@ -482,6 +522,54 @@ class TestDatabaseManager:
         bootstrap = json.loads((project_root / ".tuv-tools-config.json").read_text(encoding="utf-8"))
         assert bootstrap == {"appDataRoot": str(target_root)}
         assert settings.get_app_data_root() == target_root
+
+    def test_app_settings_seeds_packaging_defaults_into_fresh_app_data_root(self, tmp_path):
+        project_root = tmp_path / "repo"
+        defaults_dir = project_root / "resources" / "defaults"
+        defaults_dir.mkdir(parents=True)
+        (defaults_dir / "api_config.json").write_text(
+            json.dumps(
+                {
+                    "base_url": "https://seed.example.com",
+                    "username": "",
+                    "password": "",
+                    "ca_cert_file": "default-ca.pem",
+                    "token_cache_file": ".token_cache",
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        (defaults_dir / "inline_clean_rules.json").write_text(
+            json.dumps(
+                {
+                    "inline_clean_rules": [
+                        {"name": "Rule A", "pattern": "foo", "sort_order": 0},
+                        {"name": "Rule B", "pattern": "bar", "sort_order": 1},
+                    ]
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        (defaults_dir / "rsa_private.key").write_text("KEY123", encoding="utf-8")
+        (defaults_dir / "default-ca.pem").write_text("fake-ca", encoding="utf-8")
+
+        settings = AppSettings(project_root=project_root)
+
+        app_data_root = settings.ensure_app_data_root_ready()
+        loaded = settings.load_api_config()
+        db = DatabaseManager(settings.get_database_path())
+
+        assert app_data_root == project_root / ".tuv-tools"
+        assert loaded is not None
+        assert loaded.base_url == "https://seed.example.com"
+        assert loaded.ca_cert_file == str(app_data_root / "certs" / "default-ca.pem")
+        assert db.load_rsa_private_key() == "KEY123"
+        assert len(db.load_clean_rules()) == 2
+        assert (app_data_root / "certs" / "default-ca.pem").read_text(encoding="utf-8") == "fake-ca"
 
     def test_app_settings_save_api_config_uses_project_database(self, tmp_path):
         project_root = tmp_path / "repo"
@@ -575,3 +663,41 @@ class TestDatabaseManager:
 
         assert migrated is False
         assert old_root.exists()
+
+    def test_pyinstaller_spec_uses_specpath_without_dunder_file(self):
+        spec_path = Path(__file__).resolve().parents[1] / "packaging" / "windows" / "tuv-tools.spec"
+        calls: dict[str, object] = {}
+
+        def fake_analysis(*args, **kwargs):
+            calls["analysis"] = {"args": args, "kwargs": kwargs}
+            return SimpleNamespace(pure="pure", scripts="scripts", binaries="binaries", datas="datas")
+
+        def fake_pyz(*args, **kwargs):
+            calls["pyz"] = {"args": args, "kwargs": kwargs}
+            return "pyz"
+
+        def fake_exe(*args, **kwargs):
+            calls["exe"] = {"args": args, "kwargs": kwargs}
+            return "exe"
+
+        def fake_collect(*args, **kwargs):
+            calls["collect"] = {"args": args, "kwargs": kwargs}
+            return "collect"
+
+        namespace = {
+            "__name__": "__main__",
+            "SPEC": str(spec_path),
+            "SPECPATH": str(spec_path.parent),
+            "Analysis": fake_analysis,
+            "PYZ": fake_pyz,
+            "EXE": fake_exe,
+            "COLLECT": fake_collect,
+        }
+
+        exec(compile(spec_path.read_bytes(), str(spec_path), "exec"), namespace)
+
+        repo_root = spec_path.parents[2]
+        analysis_call = calls["analysis"]
+        assert analysis_call["args"][0] == [str(repo_root / "main.py")]
+        assert analysis_call["kwargs"]["pathex"] == [str(repo_root), str(repo_root / "src")]
+        assert analysis_call["kwargs"]["datas"] == [(str(repo_root / "resources"), "resources")]

@@ -1,4 +1,4 @@
-"""测试条款管理视图的连接态降级。"""
+"""测试条款管理视图的连接态和表格布局。"""
 
 from __future__ import annotations
 
@@ -59,3 +59,39 @@ def test_chapter_view_uses_dark_table_style_contract(qapp):
     assert view._table.verticalHeader().isVisible() is False
     assert "alternate-background-color" in view._table.styleSheet()
     assert "QHeaderView::section" in view._table.styleSheet()
+
+
+def test_chapter_view_operation_column_reserves_button_space(qapp):
+    from PySide6.QtWidgets import QHeaderView
+    from tuv_tools.core.chapter.session import ChapterSessionManager
+    from tuv_tools.ui.views.chapter_view import ChapterView
+
+    view = ChapterView(ChapterSessionManager())
+    header = view._table.horizontalHeader()
+
+    assert header.sectionResizeMode(6) == QHeaderView.ResizeMode.Fixed
+    assert view._table.columnWidth(6) >= 150
+    assert view._table.verticalHeader().defaultSectionSize() >= 42
+
+
+def test_chapter_view_operation_widget_has_enough_height(qapp):
+    from tuv_tools.core.chapter.models import Chapter, ChapterStatus
+    from tuv_tools.core.chapter.session import ChapterSessionManager
+    from tuv_tools.ui.views.chapter_view import ChapterView
+
+    view = ChapterView(ChapterSessionManager())
+    chapter = Chapter(
+        id=1,
+        term="10.1",
+        standard="60335-2-30",
+        version=1,
+        test_content="Heating",
+        status=ChapterStatus.DRAFT,
+        quote_cnt=0,
+    )
+
+    view._populate_table([chapter])
+
+    ops = view._table.cellWidget(0, 6)
+    assert ops is not None
+    assert ops.minimumHeight() >= 34

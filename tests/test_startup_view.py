@@ -37,6 +37,8 @@ def test_startup_view_transition_to_login_shows_form(qapp):
     assert view._login_opacity.opacity() == 1.0
     assert view.transition_progress == 1.0
     assert view.login_slide_progress == 1.0
+    assert view._skip_btn.isHidden() is False
+    assert not hasattr(view, "_settings_btn")
 
 
 def test_startup_view_show_loading_resets_login_state(qapp):
@@ -55,3 +57,36 @@ def test_startup_view_show_loading_resets_login_state(qapp):
     assert view._subtitle_opacity.opacity() == 1.0
     assert view.transition_progress == 0.0
     assert view.login_slide_progress == 0.0
+    assert view._skip_btn.isHidden() is True
+
+
+def test_startup_view_loading_spinner_runs_and_stops(qapp):
+    from tuv_tools.ui.views.startup_view import StartupView
+
+    view = StartupView()
+    view.show_loading()
+
+    assert view._spinner.is_spinning() is True
+
+    view.transition_to_login(None, "")
+    view._finalize_login_state()
+
+    assert view._spinner.is_spinning() is False
+
+
+def test_startup_view_uses_compact_skip_button_and_centered_login_button(qapp):
+    from tuv_tools.ui.views.startup_view import StartupView
+
+    view = StartupView()
+    view.resize(900, 620)
+    view.transition_to_login(None, "")
+    view._finalize_login_state()
+    view.show()
+    qapp.processEvents()
+
+    login_center = view._login_btn.mapTo(view, view._login_btn.rect().center()).x()
+    window_center = view.rect().center().x()
+
+    assert view._skip_btn.text() == "跳过"
+    assert view._login_btn.width() == 180
+    assert abs(login_center - window_center) <= 20

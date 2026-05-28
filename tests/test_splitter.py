@@ -1309,6 +1309,12 @@ class TestSplitterUiHelpers:
 
         assert resolve_output_root(docx_path, str(output_root)) == output_root
 
+    def test_resolve_output_root_does_not_treat_standard_number_as_output_path(self, tmp_path):
+        docx_path = tmp_path / "source.docx"
+        output_root = tmp_path / "doc_output"
+
+        assert resolve_output_root(docx_path, str(output_root), "60335-2-30") == output_root
+
     def test_document_table_filters_word_lock_files(self):
         assert is_importable_docx("sample.docx") is True
         assert is_importable_docx("~$sample.docx") is False

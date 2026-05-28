@@ -274,15 +274,29 @@ class _RunningStatusWidget(QWidget):
 
     def __init__(self, status_text: str, percent: int, parent=None):
         super().__init__(parent)
-        self._ring = _StatusProgressRing(percent, self)
+        self._percent = max(0, min(percent, 100))
         self._label = QLabel(status_text, self)
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setStyleSheet("color: #dcdcdc; font-size: 13px;")
+        self.setMinimumHeight(26)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        ring_rect = QRectF(8, max((self.height() - 18) / 2, 0), 18, 18)
+        track_pen = QPen(QColor("#4a4d50"), 2)
+        painter.setPen(track_pen)
+        painter.drawArc(ring_rect.adjusted(2, 2, -2, -2), 0, 360 * 16)
+
+        progress_pen = QPen(QColor("#4a9eff"), 2)
+        progress_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(progress_pen)
+        span = int(-360 * 16 * (self._percent / 100))
+        painter.drawArc(ring_rect.adjusted(2, 2, -2, -2), 90 * 16, span)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        ring_size = self._ring.sizeHint()
-        self._ring.move(8, max((self.height() - ring_size.height()) // 2, 0))
         self._label.setGeometry(0, 0, self.width(), self.height())
 
 
@@ -437,13 +451,14 @@ class ChapterBatchView(QWidget):
         self._table.setColumnWidth(self.COL_CHECK, 36)
         self._table.setColumnWidth(self.COL_STANDARD, 120)
         self._table.setColumnWidth(self.COL_MODE, 90)
-        self._table.setColumnWidth(self.COL_STATUS, 170)
+        self._table.setColumnWidth(self.COL_STATUS, 182)
         self._table.setColumnWidth(self.COL_SUMMARY, 220)
         self._table.setColumnWidth(self.COL_UPDATED_AT, 145)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
+        self._table.verticalHeader().setDefaultSectionSize(42)
         self._table.setAlternatingRowColors(True)
         self._table.setShowGrid(False)
         self._table.setTextElideMode(Qt.TextElideMode.ElideRight)
@@ -1457,22 +1472,16 @@ class ChapterBatchView(QWidget):
 
     def _build_running_status_widget(self, document) -> QWidget:
         progress_event = self._progress_by_document_id.get(document.id or -1)
-        container = QWidget(self._table)
         tooltip = self._build_status_tooltip(document)
         if progress_event is not None and progress_event.message:
             tooltip = f"{tooltip}\n进度：{progress_event.percent}%\n{progress_event.message}"
-        container.setToolTip(tooltip)
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        layout.addWidget(
-            _RunningStatusWidget(
-                self._display_status_text(document.document_status),
-                progress_event.percent if progress_event is not None else 0,
-                container,
-            )
+        widget = _RunningStatusWidget(
+            self._display_status_text(document.document_status),
+            progress_event.percent if progress_event is not None else 0,
+            self._table,
         )
-        return container
+        widget.setToolTip(tooltip)
+        return widget
 
     def _ensure_documents_have_standard(self, document_ids: list[int]) -> list[int]:
         ready_ids: list[int] = []

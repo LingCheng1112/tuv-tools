@@ -83,8 +83,9 @@ class SettingsDialog(QDialog):
         layout.addRow("本地数据目录:", data_row)
 
         output_path = self._db.get_config("splitter.output_path", "")
-        self._output_edit = QLineEdit(output_path)
-        self._output_edit.setPlaceholderText("默认: 文档同级输出到 clauses_docx / versions_docx")
+        resolved_output_root = self._settings.get_splitter_output_root(output_path)
+        self._output_edit = QLineEdit(str(resolved_output_root))
+        self._output_edit.setPlaceholderText(str(self._settings.get_default_splitter_output_root()))
         output_row = QHBoxLayout()
         output_row.addWidget(self._output_edit)
         output_btn = QPushButton("选择...")
@@ -220,9 +221,13 @@ class SettingsDialog(QDialog):
         self._connection_error_label.setVisible(bool(self._connection_error_label.text()))
 
     def _choose_output_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "选择输出目录")
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "选择输出目录",
+            self._output_edit.text().strip() or str(self._settings.get_default_splitter_output_root()),
+        )
         if path:
-            self._output_edit.setText(path)
+            self._output_edit.setText(str(Path(path).resolve()))
 
     def _choose_app_data_root(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -382,7 +387,10 @@ class SettingsDialog(QDialog):
             self._settings.set_app_data_root(selected_app_data_root)
             self._db = self._get_db()
 
-        self._db.set_config("splitter.output_path", self._output_edit.text().strip())
+        self._db.set_config(
+            "splitter.output_path",
+            self._settings.normalize_splitter_output_path(self._output_edit.text().strip()),
+        )
         self._db.set_config("splitter.auto_open", "true" if self._auto_open_cb.isChecked() else "false")
         self._settings.save_api_config(self._build_api_config())
         self._db.save_clean_rules(rules)

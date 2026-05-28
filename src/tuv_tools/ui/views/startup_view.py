@@ -13,13 +13,12 @@ from PySide6.QtCore import (
     QSequentialAnimationGroup,
     Qt,
     Signal,
+    QTimer,
 )
-from PySide6.QtGui import QPainter, QPixmap, QResizeEvent
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QResizeEvent
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
-    QFormLayout,
     QGraphicsOpacityEffect,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -28,6 +27,50 @@ from PySide6.QtWidgets import (
 )
 
 from tuv_tools.core.chapter.models import ApiConfig
+
+
+class _LoadingSpinner(QWidget):
+    """轻量加载圈，使用定时重绘实现旋转。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._angle = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(80)
+        self._timer.timeout.connect(self._advance)
+        self.setFixedSize(36, 36)
+
+    def _advance(self) -> None:
+        self._angle = (self._angle + 24) % 360
+        self.update()
+
+    def start(self) -> None:
+        if not self._timer.isActive():
+            self._timer.start()
+            self.update()
+
+    def stop(self) -> None:
+        if self._timer.isActive():
+            self._timer.stop()
+        self._angle = 0
+        self.update()
+
+    def is_spinning(self) -> bool:
+        return self._timer.isActive()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = self.rect().adjusted(4, 4, -4, -4)
+
+        track_pen = QPen(QColor("#38414f"), 3)
+        painter.setPen(track_pen)
+        painter.drawArc(rect, 0, 360 * 16)
+
+        progress_pen = QPen(QColor("#4a9eff"), 3)
+        progress_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(progress_pen)
+        painter.drawArc(rect, (90 - self._angle) * 16, -120 * 16)
 
 
 class StartupView(QWidget):
@@ -108,6 +151,13 @@ class StartupView(QWidget):
         self._login_wrap = self._build_login_panel()
         self._login_wrap.hide()
 
+        self._skip_btn = QPushButton("跳过", self)
+        self._skip_btn.setObjectName("SecondaryButton")
+        self._skip_btn.setFixedHeight(30)
+        self._skip_btn.setMinimumWidth(76)
+        self._skip_btn.clicked.connect(self.skip_requested.emit)
+        self._skip_btn.hide()
+
         self._loading_opacity = QGraphicsOpacityEffect(self._loading_wrap)
         self._loading_wrap.setGraphicsEffect(self._loading_opacity)
         self._loading_opacity.setOpacity(1.0)
@@ -162,11 +212,8 @@ class StartupView(QWidget):
         layout.setContentsMargins(0, 20, 0, 0)
         layout.setSpacing(10)
 
-        self._spinner = QLabel("◌")
-        self._spinner.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._spinner.setStyleSheet("font-size: 34px; color: #4a9eff;")
-        layout.addWidget(self._spinner)
-
+        self._spinner = _LoadingSpinner(panel)
+        layout.addWidget(self._spinner, alignment=Qt.AlignmentFlag.AlignHCenter)
         return panel
 
     def _build_login_panel(self) -> QWidget:
@@ -183,39 +230,33 @@ class StartupView(QWidget):
 
         self._error_label = QLabel("")
         self._error_label.setWordWrap(True)
+        self._error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._error_label.setStyleSheet("color: #ff8f8f;")
         self._error_label.hide()
         layout.addWidget(self._error_label)
 
-        form = QFormLayout()
-        form.setSpacing(12)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
         self._url_edit = QLineEdit()
         self._user_edit = QLineEdit()
         self._password_edit = QLineEdit()
         self._password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("URL", self._url_edit)
-        form.addRow("用户名", self._user_edit)
-        form.addRow("密码", self._password_edit)
-        layout.addLayout(form)
 
-        actions = QHBoxLayout()
-        self._settings_btn = QPushButton("设置")
-        self._settings_btn.setObjectName("SecondaryButton")
-        self._settings_btn.clicked.connect(self.settings_requested.emit)
-        actions.addWidget(self._settings_btn)
-        actions.addStretch()
+        for label_text, field in (
+            ("URL", self._url_edit),
+            ("用户名", self._user_edit),
+            ("密码", self._password_edit),
+        ):
+            label = QLabel(label_text)
+            label.setStyleSheet("color: #b8c0cc; font-size: 13px; font-weight: bold;")
+            layout.addWidget(label)
+            layout.addWidget(field)
 
-        self._skip_btn = QPushButton("跳过登录")
-        self._skip_btn.setObjectName("SecondaryButton")
-        self._skip_btn.clicked.connect(self.skip_requested.emit)
-        actions.addWidget(self._skip_btn)
+        layout.addSpacing(8)
 
         self._login_btn = QPushButton("登录")
         self._login_btn.setObjectName("PrimaryButton")
+        self._login_btn.setFixedWidth(180)
         self._login_btn.clicked.connect(self._emit_login_submitted)
-        actions.addWidget(self._login_btn)
-        layout.addLayout(actions)
+        layout.addWidget(self._login_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
         return panel
 
     def _emit_login_submitted(self) -> None:
@@ -273,14 +314,16 @@ class StartupView(QWidget):
 
         brand_size = self._brand_wrap.sizeHint()
         loading_size = self._loading_wrap.sizeHint()
-        login_size = self._login_wrap.sizeHint()
+        login_size_hint = self._login_wrap.sizeHint()
+        login_width = self._login_wrap.minimumWidth() if self._login_wrap.minimumWidth() > 0 else login_size_hint.width()
+        login_height = login_size_hint.height()
 
         loading_brand_top = max(
             (self.height() - (brand_size.height() + self._panel_gap + loading_size.height())) // 2,
             self._top_margin,
         )
         login_brand_top = max(
-            (self.height() - (brand_size.height() + self._panel_gap + login_size.height())) // 2,
+            (self.height() - (brand_size.height() + self._panel_gap + login_height)) // 2,
             self._top_margin,
         )
         brand_top = round(self._lerp(loading_brand_top, login_brand_top, self._transition_progress_value))
@@ -292,29 +335,42 @@ class StartupView(QWidget):
         loading_left = max((self.width() - loading_size.width()) // 2, 0)
         self._loading_wrap.setGeometry(loading_left, panel_top, loading_size.width(), loading_size.height())
 
-        login_left = max((self.width() - login_size.width()) // 2, 0)
+        login_left = max((self.width() - login_width) // 2, 0)
         login_end_top = panel_top
         login_start_top = login_end_top + self._panel_slide_distance
         login_top = round(self._lerp(login_start_top, login_end_top, self._login_slide_progress_value))
-        self._login_wrap.setGeometry(login_left, login_top, login_size.width(), login_size.height())
+        self._login_wrap.setGeometry(login_left, login_top, login_width, login_height)
+
+        self._skip_btn.adjustSize()
+        skip_size = self._skip_btn.sizeHint()
+        self._skip_btn.setGeometry(
+            24,
+            max(self.height() - skip_size.height() - 20, 0),
+            skip_size.width(),
+            skip_size.height(),
+        )
 
     def _finalize_login_state(self) -> None:
         self._transition_group = None
         self._login_state_active = True
+        self._spinner.stop()
         self._update_transition_progress(1.0, force=True)
         self._update_login_slide_progress(1.0, force=True)
         self._loading_wrap.hide()
         self._loading_opacity.setOpacity(0.0)
         self._subtitle_opacity.setOpacity(0.0)
         self._login_opacity.setOpacity(1.0)
+        self._skip_btn.show()
         self._url_edit.setFocus()
 
     def show_loading(self) -> None:
         self._stop_transition()
         self._login_state_active = False
+        self._spinner.start()
         self._subtitle.setText("正在加载")
         self._loading_wrap.show()
         self._login_wrap.hide()
+        self._skip_btn.hide()
         self._loading_opacity.setOpacity(1.0)
         self._subtitle_opacity.setOpacity(1.0)
         self._login_opacity.setOpacity(0.0)
@@ -337,6 +393,8 @@ class StartupView(QWidget):
         self._login_wrap.adjustSize()
 
         if self._login_state_active:
+            self._spinner.stop()
+            self._skip_btn.show()
             self._login_wrap.show()
             self._loading_wrap.hide()
             self._loading_opacity.setOpacity(0.0)
@@ -349,6 +407,7 @@ class StartupView(QWidget):
 
         self._loading_wrap.show()
         self._login_wrap.show()
+        self._skip_btn.show()
         self._loading_opacity.setOpacity(1.0)
         self._subtitle_opacity.setOpacity(1.0)
         self._login_opacity.setOpacity(0.0)
