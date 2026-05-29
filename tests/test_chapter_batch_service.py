@@ -60,6 +60,20 @@ class TestChapterBatchService:
         assert saved.standard == ""
         assert saved.split_mode == SplitMode.SECTION.value
 
+    def test_import_documents_prefers_explicit_standard_overrides(self):
+        service, repo = _new_service()
+
+        docs = service.import_documents(
+            [r"C:\docs\unknown.docx"],
+            split_mode=SplitMode.CLAUSE.value,
+            standard_overrides={r"C:\docs\unknown.docx": "60335-2-35"},
+        )
+
+        saved = repo.get_document(docs[0].id)
+        assert saved is not None
+        assert saved.standard == "60335-2-35"
+        assert saved.split_mode == SplitMode.CLAUSE.value
+
     def test_service_defaults_output_root_to_project_app_data_dir(self, tmp_path):
         from tuv_tools.core.chapter_batch.service import ChapterBatchService
 

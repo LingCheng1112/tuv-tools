@@ -23,3 +23,14 @@ CHECKBOX_STYLE = f"""
         border-color: #aaa;
     }}
 """
+
+FOCUS_STYLE = """
+    QLineEdit:focus, QComboBox:focus {
+        border: 1px solid #4a9eff;
+        outline: none;
+    }
+    QPushButton:focus {
+        border: 1px solid #4a9eff;
+        outline: none;
+    }
+"""

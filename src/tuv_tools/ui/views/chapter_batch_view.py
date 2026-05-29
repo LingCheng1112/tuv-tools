@@ -51,8 +51,9 @@ from tuv_tools.core.chapter_batch.service import (
     find_duplicate_candidate_row,
 )
 from tuv_tools.core.preparing import _win32com_client, prepare_single_doc
-from tuv_tools.ui.widgets import CHECKBOX_STYLE
+from tuv_tools.ui.widgets import CHECKBOX_STYLE, FOCUS_STYLE
 from tuv_tools.ui.widgets.chapter_batch_drawer import ChapterBatchDrawer
+from tuv_tools.ui.widgets.standard_number_prompt_dialog import resolve_standard_number_overrides
 
 
 class ChapterBatchExecutionWorker(QThread):
@@ -332,6 +333,7 @@ class ChapterBatchView(QWidget):
 
     def __init__(self, repo: ChapterBatchRepository | None = None, session_manager: ChapterSessionManager | None = None):
         super().__init__()
+        self.setStyleSheet(FOCUS_STYLE)
         self._session_manager = session_manager
         self._repo = repo or ChapterBatchRepository(DatabaseManager())
         self._service = ChapterBatchService(self._repo)
@@ -671,15 +673,6 @@ class ChapterBatchView(QWidget):
             return None
         return mode
 
-    def _import_selected_paths(self, paths: list[str]) -> None:
-        split_mode = self._choose_import_mode()
-        if split_mode is None:
-            return
-        documents = self._service.import_documents(paths, split_mode=split_mode)
-        self._load_documents()
-        document_ids = [document.id for document in documents if document is not None and document.id is not None]
-        self._start_processing_documents(document_ids)
-
     def _start_processing_documents(self, document_ids: list[int]) -> None:
         if not document_ids:
             return
@@ -958,9 +951,10 @@ class ChapterBatchView(QWidget):
             )
             decision = self._ask_duplicate_decision(document, clause, matched_row)
             if decision == "overwrite":
+                matched_chapter_id = matched_row.get("id")
                 self._repo.update_clause(
                     clause.id,
-                    chapter_id=matched_row.get("id") or clause.chapter_id,
+                    chapter_id=matched_chapter_id if matched_chapter_id is not None else clause.chapter_id,
                     clause_status=ClauseStatus.PENDING_UPLOAD.value,
                     user_decision="overwrite",
                     duplicate_flag=True,
@@ -1513,9 +1507,15 @@ class ChapterBatchView(QWidget):
         split_mode = self._choose_import_mode()
         if split_mode is None:
             return
-        documents = self._service.import_documents(paths, split_mode=split_mode)
+        standard_overrides = resolve_standard_number_overrides(self, paths)
+        if standard_overrides is None:
+            return
+        documents = self._service.import_documents(
+            paths,
+            split_mode=split_mode,
+            standard_overrides=standard_overrides,
+        )
         document_ids = [document.id for document in documents if document is not None and document.id is not None]
-        document_ids = self._ensure_documents_have_standard(document_ids)
         self._load_documents()
         self._start_processing_documents(document_ids)
 

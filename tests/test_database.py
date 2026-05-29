@@ -262,6 +262,16 @@ class TestDatabaseManager:
         doc = db.get_document(doc_id)
         assert doc["standard_number"] == "60335-1"
 
+    def test_add_document_prefers_explicit_standard_number(self):
+        db, _ = self._new_db()
+        file_path = str(Path(tempfile.mkdtemp()) / "unknown.docx")
+
+        doc_id = db.add_document(file_path, standard_number="60335-2-35")
+
+        doc = db.get_document(doc_id)
+        assert doc is not None
+        assert doc["standard_number"] == "60335-2-35"
+
     def test_update_document_standard_number(self):
         db, _ = self._new_db()
         file_path = str(Path(tempfile.mkdtemp()) / "unknown.docx")
@@ -667,10 +677,20 @@ class TestDatabaseManager:
     def test_pyinstaller_spec_uses_specpath_without_dunder_file(self):
         spec_path = Path(__file__).resolve().parents[1] / "packaging" / "windows" / "tuv-tools.spec"
         calls: dict[str, object] = {}
+        collected_packages: list[str] = []
 
         def fake_analysis(*args, **kwargs):
             calls["analysis"] = {"args": args, "kwargs": kwargs}
-            return SimpleNamespace(pure="pure", scripts="scripts", binaries="binaries", datas="datas")
+            return SimpleNamespace(
+                pure="pure",
+                scripts="scripts",
+                binaries=[
+                    ("icuuc.dll", "C:/fake/icuuc.dll", "BINARY"),
+                    ("Qt6Core.dll", "C:/fake/Qt6Core.dll", "BINARY"),
+                    ("icudt73.dll", "C:/fake/icudt73.dll", "BINARY"),
+                ],
+                datas="datas",
+            )
 
         def fake_pyz(*args, **kwargs):
             calls["pyz"] = {"args": args, "kwargs": kwargs}
@@ -684,6 +704,10 @@ class TestDatabaseManager:
             calls["collect"] = {"args": args, "kwargs": kwargs}
             return "collect"
 
+        def fake_collect_dynamic_libs(package: str):
+            collected_packages.append(package)
+            return [(f"C:/fake/{package}.dll", package)]
+
         namespace = {
             "__name__": "__main__",
             "SPEC": str(spec_path),
@@ -692,12 +716,20 @@ class TestDatabaseManager:
             "PYZ": fake_pyz,
             "EXE": fake_exe,
             "COLLECT": fake_collect,
+            "TOC": list,
+            "collect_dynamic_libs": fake_collect_dynamic_libs,
         }
 
         exec(compile(spec_path.read_bytes(), str(spec_path), "exec"), namespace)
 
         repo_root = spec_path.parents[2]
         analysis_call = calls["analysis"]
+        assert collected_packages == ["PySide6", "shiboken6"]
         assert analysis_call["args"][0] == [str(repo_root / "main.py")]
         assert analysis_call["kwargs"]["pathex"] == [str(repo_root), str(repo_root / "src")]
+        assert analysis_call["kwargs"]["binaries"] == [
+            ("C:/fake/PySide6.dll", "PySide6"),
+            ("C:/fake/shiboken6.dll", "shiboken6"),
+        ]
         assert analysis_call["kwargs"]["datas"] == [(str(repo_root / "resources"), "resources")]
+        assert calls["collect"]["args"][1] == [("Qt6Core.dll", "C:/fake/Qt6Core.dll", "BINARY")]

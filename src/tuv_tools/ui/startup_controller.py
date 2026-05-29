@@ -22,7 +22,7 @@ class StartupController(QObject):
         session_manager: ChapterSessionManager | None = None,
         startup_view_factory=StartupView,
         main_window_factory=MainWindow,
-        minimum_loading_ms: int = 3000,
+        minimum_loading_ms: int = 2500,
     ):
         super().__init__()
         self._settings = settings or AppSettings()
@@ -62,6 +62,8 @@ class StartupController(QObject):
     def _try_finish_startup(self) -> None:
         if not self._minimum_elapsed or not self._startup_finished:
             return
+        if self._session_manager.status == ChapterConnectionStatus.LOADING:
+            return
         if self._session_manager.status in {
             ChapterConnectionStatus.CONNECTED,
             ChapterConnectionStatus.DISCONNECTED,
@@ -85,7 +87,7 @@ class StartupController(QObject):
     def _on_login_submitted(self, base_url: str, username: str, password: str) -> None:
         self._startup_finished = False
         self._minimum_elapsed = True
-        self._startup_view.show_loading()
+        self._startup_view.transition_to_loading("正在连接...")
         self._session_manager.login_with_credentials(base_url, username, password)
 
     def _on_skip_requested(self) -> None:
@@ -100,6 +102,9 @@ class StartupController(QObject):
             session_manager=self._session_manager,
         )
         dialog.exec()
+        if self._session_manager.status == ChapterConnectionStatus.LOADING:
+            self._startup_view.transition_to_loading("正在连接...")
+            return
         self._startup_view.transition_to_login(
             self._session_manager.config,
             self._session_manager.last_error,

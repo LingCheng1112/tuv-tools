@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from tuv_tools.config import AppSettings
 from tuv_tools.core.chapter.session import ChapterConnectionStatus, ChapterSessionManager
-from tuv_tools.ui.widgets import CHECKBOX_STYLE
+from tuv_tools.ui.widgets import CHECKBOX_STYLE, FOCUS_STYLE
 from tuv_tools.ui.widgets.chapter_folder_selector import ChapterFolderSelector
 from tuv_tools.core.chapter.api import (
     create_chapter,
@@ -73,6 +73,7 @@ class ChapterView(QWidget):
 
     def __init__(self, session_manager: ChapterSessionManager | None = None):
         super().__init__()
+        self.setStyleSheet(FOCUS_STYLE)
         self._settings = AppSettings()
         self._session_manager = session_manager
         self._workers: list[ChapterWorker] = []

@@ -48,6 +48,7 @@ class SettingsDialog(QDialog):
         self._session_manager = session_manager
         self._db = self._get_db()
         self._original_app_data_root = self._settings.get_app_data_root()
+        self._initial_api_config = self._settings.load_api_config() or ApiConfig()
 
         layout = QVBoxLayout(self)
         self._tabs = QTabWidget()
@@ -104,7 +105,7 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(widget)
         form = QFormLayout()
 
-        api_config = self._settings.load_api_config() or ApiConfig()
+        api_config = self._initial_api_config
         self._api_url_edit = QLineEdit(api_config.base_url or "http://127.0.0.1:8080")
         self._api_user_edit = QLineEdit(api_config.username)
         self._api_pass_edit = QLineEdit(api_config.password)
@@ -150,22 +151,6 @@ class SettingsDialog(QDialog):
         form.addRow("RSA 私钥:", rsa_row)
 
         layout.addLayout(form)
-
-        self._connection_status_label = QLabel(self._status_text())
-        self._connection_status_label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(self._connection_status_label)
-
-        self._connection_error_label = QLabel(self._error_text())
-        self._connection_error_label.setWordWrap(True)
-        self._connection_error_label.setStyleSheet("color: #d9534f;")
-        layout.addWidget(self._connection_error_label)
-
-        action_row = QHBoxLayout()
-        action_row.addStretch()
-        self._login_btn = QPushButton("登录")
-        self._login_btn.clicked.connect(self._on_login_clicked)
-        action_row.addWidget(self._login_btn)
-        layout.addLayout(action_row)
         layout.addStretch()
         return widget
 
@@ -204,21 +189,6 @@ class SettingsDialog(QDialog):
         btn_row.addWidget(export_btn)
         layout.addLayout(btn_row)
         return widget
-
-    def _status_text(self) -> str:
-        if self._session_manager is None:
-            return "连接状态：未接入全局会话"
-        return f"连接状态：{self._session_manager.status_text()}"
-
-    def _error_text(self) -> str:
-        if self._session_manager is None or not self._session_manager.last_error:
-            return ""
-        return f"最近错误：{self._session_manager.last_error}"
-
-    def _refresh_connection_labels(self) -> None:
-        self._connection_status_label.setText(self._status_text())
-        self._connection_error_label.setText(self._error_text())
-        self._connection_error_label.setVisible(bool(self._connection_error_label.text()))
 
     def _choose_output_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -355,9 +325,37 @@ class SettingsDialog(QDialog):
             rules.append({"name": name, "pattern": pattern, "sort_order": sort_order})
         return rules
 
+    def _login_signature(self, config: ApiConfig) -> tuple[str, str, str, str, str]:
+        return (
+            config.base_url.strip(),
+            config.username.strip(),
+            config.password,
+            config.ca_cert_file.strip(),
+            config.rsa_private_key.strip(),
+        )
+
+    def _current_login_signature(self) -> tuple[str, str, str, str, str]:
+        return (
+            self._api_url_edit.text().strip(),
+            self._api_user_edit.text().strip(),
+            self._api_pass_edit.text(),
+            self._ca_cert_path.strip(),
+            self._rsa_edit.text().strip(),
+        )
+
+    def _current_ca_cert_path(self) -> str:
+        ca_cert_path = self._ca_cert_path.strip()
+        if not ca_cert_path:
+            return ""
+        candidate = Path(ca_cert_path)
+        if candidate.is_absolute():
+            return str(candidate)
+        return str(self._settings.get_ca_cert_path(ca_cert_path))
+
     def _build_api_config(self) -> ApiConfig:
         existing = self._settings.load_api_config() or ApiConfig()
-        ca_cert_file = self._settings.copy_ca_cert_to_app_data(self._ca_cert_path) if self._ca_cert_path.strip() else ""
+        ca_cert_source = self._current_ca_cert_path()
+        ca_cert_file = self._settings.copy_ca_cert_to_app_data(ca_cert_source) if ca_cert_source else ""
         return replace(
             existing,
             base_url=self._api_url_edit.text().strip(),
@@ -367,9 +365,15 @@ class SettingsDialog(QDialog):
             ca_cert_file=ca_cert_file,
         )
 
-    def _persist_changes(self) -> tuple[bool, bool]:
+    def _validate_login_config(self, config: ApiConfig) -> None:
+        error = ChapterSessionManager._validate_login_config(config)
+        if error:
+            raise ValueError(error)
+
+    def _persist_changes(self) -> tuple[bool, bool, ApiConfig, bool]:
         rules = self._collect_rules()
         self._validate_rules(rules)
+        login_changed = self._current_login_signature() != self._login_signature(self._initial_api_config)
 
         selected_app_data_root = Path(self._app_data_root_edit.text().strip()).resolve()
         app_data_root_changed = selected_app_data_root != self._original_app_data_root
@@ -392,26 +396,25 @@ class SettingsDialog(QDialog):
             self._settings.normalize_splitter_output_path(self._output_edit.text().strip()),
         )
         self._db.set_config("splitter.auto_open", "true" if self._auto_open_cb.isChecked() else "false")
-        self._settings.save_api_config(self._build_api_config())
+        api_config = self._build_api_config()
+        self._validate_login_config(api_config)
+        self._settings.save_api_config(api_config)
         self._db.save_clean_rules(rules)
-        return app_data_root_changed, copied
-
-    def _on_login_clicked(self) -> None:
-        try:
-            self._persist_changes()
-        except ValueError as exc:
-            self._show_warning("清洗规则错误", str(exc))
-            return
-        if self._session_manager is not None:
-            self._session_manager.refresh_login()
-            self._refresh_connection_labels()
+        return app_data_root_changed, copied, api_config, login_changed
 
     def _save_and_accept(self) -> None:
         try:
-            app_data_root_changed, copied = self._persist_changes()
-        except ValueError as exc:
-            self._show_warning("清洗规则错误", str(exc))
+            app_data_root_changed, copied, _api_config, login_changed = self._persist_changes()
+        except FileNotFoundError as exc:
+            self._show_warning("登录配置错误", str(exc))
             return
+        except ValueError as exc:
+            title = "登录配置错误" if "HTTPS" in str(exc) or "CA" in str(exc) else "清洗规则错误"
+            self._show_warning(title, str(exc))
+            return
+
+        if login_changed and self._session_manager is not None and not app_data_root_changed:
+            self._session_manager.refresh_login()
 
         if app_data_root_changed:
             old_root_has_payload = any(self._original_app_data_root.iterdir()) if self._original_app_data_root.exists() else False

@@ -27,9 +27,10 @@ from tuv_tools.core.splitter.models import CoreProgressEvent, SplitCancelled
 from tuv_tools.core.splitter.ui_helpers import build_split_summary, resolve_output_root
 from tuv_tools.core.splitter.utils import CleanPatterns, safe_name
 from tuv_tools.ui.views.splitter_progress import ProgressThrottler, SplitProgressMapper
-from tuv_tools.ui.widgets import CHECKBOX_STYLE
+from tuv_tools.ui.widgets import CHECKBOX_STYLE, FOCUS_STYLE
 from tuv_tools.ui.widgets.clause_panel import ClauseOverlay
 from tuv_tools.ui.widgets.document_list import DocumentTable
+from tuv_tools.ui.widgets.standard_number_prompt_dialog import resolve_standard_number_overrides
 from tuv_tools.ui.widgets.toast import Toast
 from tuv_tools.core.preparing.worker import PreparingWorker
 
@@ -127,6 +128,7 @@ class SplitterView(QWidget):
 
     def __init__(self):
         super().__init__()
+        self.setStyleSheet(FOCUS_STYLE)
         self._settings = AppSettings()
         self._worker: SplitWorker | None = None
         self._parse_worker: ParseWorker | None = None
@@ -281,17 +283,23 @@ class SplitterView(QWidget):
             self._add_paths(files)
 
     def _add_paths(self, paths: list[str]) -> None:
+        standard_overrides = resolve_standard_number_overrides(self, paths)
+        if standard_overrides is None:
+            return
         db = self._db
         added = 0
         new_items: list[tuple[int, str]] = []
         for fp in paths:
             try:
+                normalized_path = str(Path(fp).resolve())
                 before = len(db.get_documents())
-                doc_id = db.add_document(fp)
+                doc_id = db.add_document(
+                    fp,
+                    standard_number=standard_overrides.get(normalized_path) or standard_overrides.get(fp),
+                )
                 after = len(db.get_documents())
                 if after > before:
                     added += 1
-                    self._ensure_document_standard_number(doc_id)
                     db.update_document_status(doc_id, "preparing")
                     new_items.append((doc_id, fp))
                     self._preparing_pending_ids.add(doc_id)

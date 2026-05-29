@@ -109,19 +109,9 @@ class MainWindow(QMainWindow):
         )
         nav_layout.addWidget(self._settings_btn)
 
-        self._connection_status = QLabel(self._chapter_session.status_text())
+        self._connection_status = QLabel(self._connection_badge_text())
         self._connection_status.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._connection_status.setStyleSheet(
-            """
-            QLabel {
-                background-color: #25282c;
-                color: #c8d0db;
-                border-top: 1px solid #3a3d41;
-                font-size: 13px;
-                padding: 10px 16px;
-            }
-            """
-        )
+        self._connection_status.setStyleSheet(self._connection_badge_style())
         nav_layout.addWidget(self._connection_status)
 
         layout.addWidget(nav_container)
@@ -135,7 +125,31 @@ class MainWindow(QMainWindow):
         self._nav.setCurrentRow(0)
 
     def _refresh_connection_status(self, _status: str) -> None:
-        self._connection_status.setText(self._chapter_session.status_text())
+        self._connection_status.setText(self._connection_badge_text())
+        self._connection_status.setStyleSheet(self._connection_badge_style())
+
+    def _connection_badge_text(self) -> str:
+        return f"● {self._chapter_session.status_text()}"
+
+    def _connection_badge_style(self) -> str:
+        palette = {
+            "connected": ("#1f3a2b", "#4caf50"),
+            "loading": ("#1e3248", "#4a9eff"),
+            "login_required": ("#3b2424", "#ff6b6b"),
+            "disconnected": ("#3b2424", "#ff6b6b"),
+            "error": ("#3b2424", "#ff6b6b"),
+        }
+        bg_color, fg_color = palette.get(self._chapter_session.status.value, ("#25282c", "#c8d0db"))
+        return f"""
+            QLabel {{
+                background-color: {bg_color};
+                color: {fg_color};
+                border-top: 1px solid #3a3d41;
+                font-size: 13px;
+                font-weight: 600;
+                padding: 10px 16px;
+            }}
+        """
 
     def _register_views(self):
         """注册所有功能视图。"""

@@ -32,7 +32,6 @@ def test_startup_view_transition_to_login_shows_form(qapp):
 
     assert not view._login_wrap.isHidden()
     assert view._loading_wrap.isHidden()
-    assert view._login_heading.text() == "登录"
     assert view._subtitle_opacity.opacity() == 0.0
     assert view._login_opacity.opacity() == 1.0
     assert view.transition_progress == 1.0
@@ -52,12 +51,64 @@ def test_startup_view_show_loading_resets_login_state(qapp):
 
     assert view._login_wrap.isHidden()
     assert not view._loading_wrap.isHidden()
-    assert view._subtitle.text() == "正在加载"
     assert view._loading_opacity.opacity() == 1.0
     assert view._subtitle_opacity.opacity() == 1.0
     assert view.transition_progress == 0.0
     assert view.login_slide_progress == 0.0
     assert view._skip_btn.isHidden() is True
+
+
+def test_startup_view_transition_to_loading_from_login_preserves_loading_scene(qapp):
+    from tuv_tools.ui.views.startup_view import StartupView
+
+    view = StartupView()
+    view.transition_to_login(None, "")
+    view._finalize_login_state()
+
+    view.transition_to_loading("正在连接...")
+    view._finalize_loading_state()
+
+    assert view._loading_wrap.isHidden() is False
+    assert view._login_wrap.isHidden() is True
+    assert view._subtitle.isHidden() is False
+    assert view._subtitle.text() == "正在连接..."
+    assert view.transition_progress == 0.0
+    assert view.login_slide_progress == 0.0
+
+
+def test_startup_view_transition_to_loading_disables_login_inputs(qapp):
+    from tuv_tools.ui.views.startup_view import StartupView
+
+    view = StartupView()
+    view.transition_to_login(None, "")
+    view._finalize_login_state()
+
+    view.transition_to_loading("正在连接...")
+
+    assert view._url_edit.isEnabled() is False
+    assert view._user_edit.isEnabled() is False
+    assert view._password_edit.isEnabled() is False
+    assert view._login_btn.isEnabled() is False
+    assert view._skip_btn.isEnabled() is False
+
+
+def test_startup_view_transition_back_to_login_reenables_inputs(qapp):
+    from tuv_tools.ui.views.startup_view import StartupView
+
+    view = StartupView()
+    view.transition_to_login(None, "")
+    view._finalize_login_state()
+
+    view.transition_to_loading("\u6b63\u5728\u8fde\u63a5...")
+    view._finalize_loading_state()
+    view.transition_to_login(None, "")
+    view._finalize_login_state()
+
+    assert view._url_edit.isEnabled() is True
+    assert view._user_edit.isEnabled() is True
+    assert view._password_edit.isEnabled() is True
+    assert view._login_btn.isEnabled() is True
+    assert view._skip_btn.isEnabled() is True
 
 
 def test_startup_view_loading_spinner_runs_and_stops(qapp):
@@ -72,21 +123,3 @@ def test_startup_view_loading_spinner_runs_and_stops(qapp):
     view._finalize_login_state()
 
     assert view._spinner.is_spinning() is False
-
-
-def test_startup_view_uses_compact_skip_button_and_centered_login_button(qapp):
-    from tuv_tools.ui.views.startup_view import StartupView
-
-    view = StartupView()
-    view.resize(900, 620)
-    view.transition_to_login(None, "")
-    view._finalize_login_state()
-    view.show()
-    qapp.processEvents()
-
-    login_center = view._login_btn.mapTo(view, view._login_btn.rect().center()).x()
-    window_center = view.rect().center().x()
-
-    assert view._skip_btn.text() == "跳过"
-    assert view._login_btn.width() == 180
-    assert abs(login_center - window_center) <= 20

@@ -60,7 +60,7 @@ def _load_standard_chapter_titles(standard_family: str) -> dict[str, str]:
 
 
 def _resolve_standard_family(standard: str) -> str:
-    """从标准号中提取标准族，如 60335。"""
+    """从标准号中提取标准族"""
     match = re.match(r"\s*(\d{4,5})", standard or "")
     if match is None:
         return ""
@@ -146,13 +146,25 @@ class ChapterBatchService:
     def _to_stored_clause_docx_path(self, output_path: Path) -> str:
         return normalize_clause_source_docx_path(str(output_path), self.get_output_root())
 
-    def import_documents(self, paths: list[str], split_mode: str) -> list[BatchImportDocument]:
+    def import_documents(
+        self,
+        paths: list[str],
+        split_mode: str,
+        standard_overrides: dict[str, str] | None = None,
+    ) -> list[BatchImportDocument]:
         created: list[BatchImportDocument] = []
+        standard_overrides = standard_overrides or {}
         for raw_path in paths:
             path = Path(raw_path)
-            file_path = str(path.resolve()) if path.is_absolute() else str(path)
+            resolved_path = str(path.resolve())
+            file_path = resolved_path if path.is_absolute() else str(path)
             file_name = path.name
-            standard = _extract_standard_number(file_name) or ""
+            override = (
+                standard_overrides.get(resolved_path)
+                or standard_overrides.get(file_path)
+                or standard_overrides.get(raw_path)
+            )
+            standard = override.strip() if override is not None else (_extract_standard_number(file_name) or "")
             fingerprint = sha1(file_path.encode("utf-8")).hexdigest()
             document = BatchImportDocument(
                 file_path=file_path,

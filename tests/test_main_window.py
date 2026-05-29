@@ -45,7 +45,38 @@ def test_main_window_has_display_only_connection_status_block(qapp):
     window = MainWindow()
 
     assert hasattr(window, "_connection_status")
-    assert window._connection_status.text() == "未连接"
+    assert window._connection_status.text().startswith("\u25cf ")
+
+
+def test_main_window_connection_status_badge_uses_status_specific_text_and_style(
+    qapp,
+    monkeypatch,
+):
+    from tuv_tools.core.chapter.session import ChapterConnectionStatus
+    from tuv_tools.ui.main_window import MainWindow
+
+    monkeypatch.setattr(MainWindow, "_register_views", lambda self: None)
+
+    window = MainWindow()
+    seen_styles = {}
+
+    for status_name, status_fragment, expected_color in (
+        ("LOADING", "\u8fde\u63a5\u4e2d", "#4a9eff"),
+        ("CONNECTED", "\u5df2\u8fde\u63a5", "#4caf50"),
+        ("ERROR", "\u8fde\u63a5\u5931\u8d25", "#ff6b6b"),
+    ):
+        window._chapter_session._status = getattr(ChapterConnectionStatus, status_name)
+        window._refresh_connection_status(window._chapter_session.status.value)
+
+        text = window._connection_status.text()
+        style = window._connection_status.styleSheet()
+
+        assert text.startswith("\u25cf ")
+        assert status_fragment in text
+        assert f"color: {expected_color}" in style
+        seen_styles[status_name] = style
+
+    assert len(set(seen_styles.values())) == 3
 
 
 def test_main_window_opens_settings_with_shared_dependencies(qapp, monkeypatch):

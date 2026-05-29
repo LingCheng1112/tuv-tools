@@ -59,11 +59,15 @@ class _FakeStartupView(QWidget):
     def __init__(self):
         super().__init__()
         self.loading_calls = 0
+        self.transition_to_loading_calls: list[str] = []
         self.login_transition_calls: list[tuple[object, str]] = []
         self.closed = False
 
     def show_loading(self) -> None:
         self.loading_calls += 1
+
+    def transition_to_loading(self, subtitle: str = "正在连接...") -> None:
+        self.transition_to_loading_calls.append(subtitle)
 
     def transition_to_login(self, config, error_message: str = "") -> None:
         self.login_transition_calls.append((config, error_message))
@@ -71,6 +75,19 @@ class _FakeStartupView(QWidget):
     def close(self) -> None:
         self.closed = True
         super().close()
+
+
+def test_controller_default_minimum_loading_ms_is_2500(qapp):
+    from tuv_tools.core.chapter.session import ChapterConnectionStatus
+    from tuv_tools.ui.startup_controller import StartupController
+
+    controller = StartupController(
+        session_manager=_FakeSessionManager(ChapterConnectionStatus.LOGIN_REQUIRED),
+        startup_view_factory=_FakeStartupView,
+        main_window_factory=lambda **kwargs: _FakeMainWindow(**kwargs),
+    )
+
+    assert controller._minimum_loading_ms == 2500
 
 
 class _FakeMainWindow:
@@ -93,7 +110,7 @@ def test_controller_waits_for_minimum_loading_before_showing_main(qapp):
         session_manager=session,
         startup_view_factory=_FakeStartupView,
         main_window_factory=lambda **kwargs: created.setdefault("window", _FakeMainWindow(**kwargs)),
-        minimum_loading_ms=3000,
+        minimum_loading_ms=2500,
     )
 
     controller.start()
@@ -116,7 +133,7 @@ def test_controller_switches_to_login_view_after_loading_on_login_required(qapp)
         session_manager=session,
         startup_view_factory=_FakeStartupView,
         main_window_factory=lambda **kwargs: _FakeMainWindow(**kwargs),
-        minimum_loading_ms=3000,
+        minimum_loading_ms=2500,
     )
 
     controller.start()
@@ -124,6 +141,74 @@ def test_controller_switches_to_login_view_after_loading_on_login_required(qapp)
 
     assert controller._startup_view.login_transition_calls == [(None, "")]
     assert controller._main_window is None
+
+
+def test_controller_login_submit_uses_transition_to_loading_not_hard_reset(qapp):
+    from tuv_tools.core.chapter.session import ChapterConnectionStatus
+    from tuv_tools.ui.startup_controller import StartupController
+
+    session = _FakeSessionManager(ChapterConnectionStatus.LOGIN_REQUIRED)
+    controller = StartupController(
+        session_manager=session,
+        startup_view_factory=_FakeStartupView,
+        main_window_factory=lambda **kwargs: _FakeMainWindow(**kwargs),
+        minimum_loading_ms=2500,
+    )
+
+    controller._startup_view.login_submitted.emit("http://127.0.0.1:8080", "admin", "secret")
+
+    assert controller._startup_view.transition_to_loading_calls == ["正在连接..."]
+    assert controller._startup_view.loading_calls == 0
+    assert session.login_calls == [("http://127.0.0.1:8080", "admin", "secret")]
+
+
+def test_controller_keeps_loading_view_while_session_is_loading(qapp):
+    from tuv_tools.core.chapter.session import ChapterConnectionStatus
+    from tuv_tools.ui.startup_controller import StartupController
+
+    session = _FakeSessionManager(ChapterConnectionStatus.LOADING)
+    created = {}
+    controller = StartupController(
+        session_manager=session,
+        startup_view_factory=_FakeStartupView,
+        main_window_factory=lambda **kwargs: created.setdefault("window", _FakeMainWindow(**kwargs)),
+        minimum_loading_ms=2500,
+    )
+
+    controller.start()
+    controller._on_minimum_loading_elapsed()
+
+    assert controller._startup_view.login_transition_calls == []
+    assert "window" not in created
+    assert controller._main_window is None
+
+
+def test_controller_reopens_loading_state_after_settings_starts_refresh(qapp, monkeypatch):
+    from tuv_tools.core.chapter.session import ChapterConnectionStatus
+    from tuv_tools.ui.startup_controller import StartupController
+
+    session = _FakeSessionManager(ChapterConnectionStatus.LOGIN_REQUIRED)
+    controller = StartupController(
+        session_manager=session,
+        startup_view_factory=_FakeStartupView,
+        main_window_factory=lambda **kwargs: _FakeMainWindow(**kwargs),
+        minimum_loading_ms=2500,
+    )
+
+    class DummyDialog:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            session.status = ChapterConnectionStatus.LOADING
+            return 0
+
+    monkeypatch.setattr("tuv_tools.ui.views.settings_dialog.SettingsDialog", DummyDialog)
+
+    controller._open_settings()
+
+    assert controller._startup_view.transition_to_loading_calls == ["正在连接..."]
+    assert controller._startup_view.login_transition_calls == []
 
 
 def test_controller_skip_login_enters_main_window_offline(qapp):
@@ -136,7 +221,7 @@ def test_controller_skip_login_enters_main_window_offline(qapp):
         session_manager=session,
         startup_view_factory=_FakeStartupView,
         main_window_factory=lambda **kwargs: created.setdefault("window", _FakeMainWindow(**kwargs)),
-        minimum_loading_ms=3000,
+        minimum_loading_ms=2500,
     )
 
     controller.start()

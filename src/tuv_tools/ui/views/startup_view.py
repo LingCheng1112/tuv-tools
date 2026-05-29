@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from tuv_tools.core.chapter.models import ApiConfig
+from tuv_tools.ui.widgets import FOCUS_STYLE
 
 
 class _LoadingSpinner(QWidget):
@@ -114,13 +115,17 @@ class StartupView(QWidget):
                 border: 1px solid #4e5663;
             }
             """
+            + FOCUS_STYLE
         )
 
         self._loading_logo_size = 210
-        self._login_logo_size = 150
+        self._login_logo_size = 128
+        self._login_panel_max_width = 420
         self._panel_gap = 24
         self._panel_slide_distance = 18
-        self._top_margin = 40
+        self._top_margin = 28
+        self._bottom_margin = 24
+        self._side_margin = 40
         self._logo_source = self._build_logo_pixmap(logo_path) if logo_path is not None and logo_path.exists() else None
         self._transition_group: QParallelAnimationGroup | None = None
         self._login_state_active = False
@@ -130,21 +135,19 @@ class StartupView(QWidget):
         self._brand_wrap = QWidget(self)
         self._brand_layout = QVBoxLayout(self._brand_wrap)
         self._brand_layout.setContentsMargins(0, 0, 0, 0)
-        self._brand_layout.setSpacing(12)
+        self._brand_layout.setSpacing(10)
 
         self._logo_label = QLabel()
         self._logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self._title = QLabel("TUV Tools")
-        self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._title.setStyleSheet("font-size: 32px; font-weight: bold;")
+        self._title.hide()
 
         self._subtitle = QLabel("正在加载")
         self._subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._subtitle.setStyleSheet("color: #b8c0cc; font-size: 15px;")
 
         self._brand_layout.addWidget(self._logo_label, alignment=Qt.AlignmentFlag.AlignHCenter)
-        self._brand_layout.addWidget(self._title)
         self._brand_layout.addWidget(self._subtitle)
 
         self._loading_wrap = self._build_loading_panel()
@@ -153,8 +156,8 @@ class StartupView(QWidget):
 
         self._skip_btn = QPushButton("跳过", self)
         self._skip_btn.setObjectName("SecondaryButton")
-        self._skip_btn.setFixedHeight(30)
-        self._skip_btn.setMinimumWidth(76)
+        self._skip_btn.setMinimumWidth(96)
+        self._skip_btn.setMinimumHeight(34)
         self._skip_btn.clicked.connect(self.skip_requested.emit)
         self._skip_btn.hide()
 
@@ -218,15 +221,12 @@ class StartupView(QWidget):
 
     def _build_login_panel(self) -> QWidget:
         panel = QWidget(self)
-        panel.setFixedWidth(420)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 24, 0, 0)
-        layout.setSpacing(16)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(14)
 
         self._login_heading = QLabel("登录")
-        self._login_heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._login_heading.setStyleSheet("font-size: 22px; font-weight: bold;")
-        layout.addWidget(self._login_heading)
+        self._login_heading.hide()
 
         self._error_label = QLabel("")
         self._error_label.setWordWrap(True)
@@ -250,7 +250,7 @@ class StartupView(QWidget):
             layout.addWidget(label)
             layout.addWidget(field)
 
-        layout.addSpacing(8)
+        layout.addSpacing(4)
 
         self._login_btn = QPushButton("登录")
         self._login_btn.setObjectName("PrimaryButton")
@@ -265,6 +265,13 @@ class StartupView(QWidget):
             self._user_edit.text().strip(),
             self._password_edit.text(),
         )
+
+    def _set_login_controls_enabled(self, enabled: bool) -> None:
+        self._url_edit.setEnabled(enabled)
+        self._user_edit.setEnabled(enabled)
+        self._password_edit.setEnabled(enabled)
+        self._login_btn.setEnabled(enabled)
+        self._skip_btn.setEnabled(enabled)
 
     def _stop_transition(self) -> None:
         if self._transition_group is not None:
@@ -308,6 +315,7 @@ class StartupView(QWidget):
     login_slide_progress = Property(float, _get_login_slide_progress, _set_login_slide_progress)
 
     def _reposition_scene(self) -> None:
+        self._login_wrap.setFixedWidth(min(self._login_panel_max_width, max(self.width() - self._side_margin * 2, 320)))
         self._brand_wrap.adjustSize()
         self._loading_wrap.adjustSize()
         self._login_wrap.adjustSize()
@@ -315,45 +323,56 @@ class StartupView(QWidget):
         brand_size = self._brand_wrap.sizeHint()
         loading_size = self._loading_wrap.sizeHint()
         login_size_hint = self._login_wrap.sizeHint()
-        login_width = self._login_wrap.minimumWidth() if self._login_wrap.minimumWidth() > 0 else login_size_hint.width()
+        login_width = self._login_wrap.width()
         login_height = login_size_hint.height()
+        loading_gap = self._panel_gap
+        login_gap = max(
+            12,
+            min(
+                self._panel_gap,
+                max(self.height() - self._top_margin - self._bottom_margin - brand_size.height() - login_height, 12),
+            ),
+        )
 
         loading_brand_top = max(
-            (self.height() - (brand_size.height() + self._panel_gap + loading_size.height())) // 2,
+            (self.height() - (brand_size.height() + loading_gap + loading_size.height())) // 2,
             self._top_margin,
         )
         login_brand_top = max(
-            (self.height() - (brand_size.height() + self._panel_gap + login_height)) // 2,
+            (self.height() - (brand_size.height() + login_gap + login_height)) // 2,
             self._top_margin,
         )
         brand_top = round(self._lerp(loading_brand_top, login_brand_top, self._transition_progress_value))
         brand_left = max((self.width() - brand_size.width()) // 2, 0)
         self._brand_wrap.setGeometry(brand_left, brand_top, brand_size.width(), brand_size.height())
 
-        panel_top = brand_top + brand_size.height() + self._panel_gap
+        panel_gap = round(self._lerp(loading_gap, login_gap, self._transition_progress_value))
+        panel_top = brand_top + brand_size.height() + panel_gap
 
         loading_left = max((self.width() - loading_size.width()) // 2, 0)
         self._loading_wrap.setGeometry(loading_left, panel_top, loading_size.width(), loading_size.height())
 
         login_left = max((self.width() - login_width) // 2, 0)
-        login_end_top = panel_top
+        login_end_top = min(panel_top, max(self.height() - self._bottom_margin - login_height, self._top_margin))
         login_start_top = login_end_top + self._panel_slide_distance
         login_top = round(self._lerp(login_start_top, login_end_top, self._login_slide_progress_value))
         self._login_wrap.setGeometry(login_left, login_top, login_width, login_height)
 
         self._skip_btn.adjustSize()
-        skip_size = self._skip_btn.sizeHint()
+        skip_width = max(self._skip_btn.sizeHint().width() + 12, self._skip_btn.minimumWidth())
+        skip_height = max(self._skip_btn.sizeHint().height(), self._skip_btn.minimumHeight())
         self._skip_btn.setGeometry(
-            24,
-            max(self.height() - skip_size.height() - 20, 0),
-            skip_size.width(),
-            skip_size.height(),
+            max(self.width() - skip_width - 24, 0),
+            max(self.height() - skip_height - 20, 0),
+            skip_width,
+            skip_height,
         )
 
     def _finalize_login_state(self) -> None:
         self._transition_group = None
         self._login_state_active = True
         self._spinner.stop()
+        self._subtitle.hide()
         self._update_transition_progress(1.0, force=True)
         self._update_login_slide_progress(1.0, force=True)
         self._loading_wrap.hide()
@@ -361,13 +380,32 @@ class StartupView(QWidget):
         self._subtitle_opacity.setOpacity(0.0)
         self._login_opacity.setOpacity(1.0)
         self._skip_btn.show()
+        self._set_login_controls_enabled(True)
         self._url_edit.setFocus()
+
+    def _finalize_loading_state(self) -> None:
+        self._transition_group = None
+        self._login_state_active = False
+        self._spinner.start()
+        self._subtitle.show()
+        self._update_transition_progress(0.0, force=True)
+        self._update_login_slide_progress(0.0, force=True)
+        self._loading_wrap.show()
+        self._login_wrap.hide()
+        self._skip_btn.hide()
+        self._loading_opacity.setOpacity(1.0)
+        self._subtitle_opacity.setOpacity(1.0)
+        self._login_opacity.setOpacity(0.0)
+        self._set_login_controls_enabled(False)
 
     def show_loading(self) -> None:
         self._stop_transition()
         self._login_state_active = False
         self._spinner.start()
         self._subtitle.setText("正在加载")
+        self._subtitle.show()
+        self._error_label.hide()
+        self._error_label.clear()
         self._loading_wrap.show()
         self._login_wrap.hide()
         self._skip_btn.hide()
@@ -376,6 +414,7 @@ class StartupView(QWidget):
         self._login_opacity.setOpacity(0.0)
         self._update_transition_progress(0.0, force=True)
         self._update_login_slide_progress(0.0, force=True)
+        self._set_login_controls_enabled(True)
 
     def transition_to_login(self, config: ApiConfig | None, error_message: str = "") -> None:
         self._stop_transition()
@@ -391,9 +430,11 @@ class StartupView(QWidget):
             self._error_label.clear()
 
         self._login_wrap.adjustSize()
+        self._set_login_controls_enabled(True)
 
         if self._login_state_active:
             self._spinner.stop()
+            self._subtitle.hide()
             self._skip_btn.show()
             self._login_wrap.show()
             self._loading_wrap.hide()
@@ -460,6 +501,77 @@ class StartupView(QWidget):
         group.addAnimation(login_fade_group)
 
         group.finished.connect(self._finalize_login_state)
+        self._transition_group = group
+        group.start()
+
+    def transition_to_loading(self, subtitle: str = "正在连接...") -> None:
+        self._stop_transition()
+        self._subtitle.setText(subtitle)
+        self._subtitle.show()
+        self._error_label.hide()
+        self._error_label.clear()
+        self._spinner.start()
+        self._set_login_controls_enabled(False)
+
+        if not self._login_state_active:
+            self._finalize_loading_state()
+            return
+
+        self._loading_wrap.show()
+        self._login_wrap.show()
+        self._skip_btn.show()
+        self._loading_opacity.setOpacity(0.0)
+        self._subtitle_opacity.setOpacity(0.0)
+        self._login_opacity.setOpacity(1.0)
+        self._update_transition_progress(1.0, force=True)
+        self._update_login_slide_progress(1.0, force=True)
+
+        group = QParallelAnimationGroup(self)
+
+        brand_animation = QPropertyAnimation(self, b"transition_progress", self)
+        brand_animation.setDuration(260)
+        brand_animation.setStartValue(1.0)
+        brand_animation.setEndValue(0.0)
+        brand_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        group.addAnimation(brand_animation)
+
+        login_slide = QPropertyAnimation(self, b"login_slide_progress", self)
+        login_slide.setDuration(160)
+        login_slide.setStartValue(1.0)
+        login_slide.setEndValue(0.0)
+        login_slide.setEasingCurve(QEasingCurve.Type.OutCubic)
+        group.addAnimation(login_slide)
+
+        login_fade = QPropertyAnimation(self._login_opacity, b"opacity", self)
+        login_fade.setDuration(160)
+        login_fade.setStartValue(1.0)
+        login_fade.setEndValue(0.0)
+        login_fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+        group.addAnimation(login_fade)
+
+        subtitle_fade = QPropertyAnimation(self._subtitle_opacity, b"opacity", self)
+        subtitle_fade.setDuration(150)
+        subtitle_fade.setStartValue(0.0)
+        subtitle_fade.setEndValue(1.0)
+        subtitle_fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        subtitle_fade_group = QSequentialAnimationGroup(self)
+        subtitle_fade_group.addAnimation(QPauseAnimation(100))
+        subtitle_fade_group.addAnimation(subtitle_fade)
+        group.addAnimation(subtitle_fade_group)
+
+        loading_fade = QPropertyAnimation(self._loading_opacity, b"opacity", self)
+        loading_fade.setDuration(150)
+        loading_fade.setStartValue(0.0)
+        loading_fade.setEndValue(1.0)
+        loading_fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        loading_fade_group = QSequentialAnimationGroup(self)
+        loading_fade_group.addAnimation(QPauseAnimation(100))
+        loading_fade_group.addAnimation(loading_fade)
+        group.addAnimation(loading_fade_group)
+
+        group.finished.connect(self._finalize_loading_state)
         self._transition_group = group
         group.start()
 

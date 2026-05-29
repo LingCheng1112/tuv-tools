@@ -131,9 +131,13 @@ def test_import_selected_paths_imports_then_starts_background_processing(qapp, m
     view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     calls = []
     monkeypatch.setattr(view, "_choose_import_mode", lambda: SplitMode.CLAUSE.value)
+    monkeypatch.setattr(
+        "tuv_tools.ui.views.chapter_batch_view.resolve_standard_number_overrides",
+        lambda *args, **kwargs: {"C:/docs/a.docx": "60335-2-9"},
+    )
 
-    def fake_import_documents(paths, split_mode):
-        calls.append((paths, split_mode))
+    def fake_import_documents(paths, split_mode, standard_overrides=None):
+        calls.append((paths, split_mode, standard_overrides))
         doc_id = repo.create_document(
             BatchImportDocument(
                 file_path=paths[0],
@@ -151,7 +155,7 @@ def test_import_selected_paths_imports_then_starts_background_processing(qapp, m
 
     view._import_selected_paths(["C:/docs/a.docx"])
 
-    assert calls == [(["C:/docs/a.docx"], SplitMode.CLAUSE.value)]
+    assert calls == [(["C:/docs/a.docx"], SplitMode.CLAUSE.value, {"C:/docs/a.docx": "60335-2-9"})]
     assert started == [[repo.list_documents()[0].id]]
 
 
@@ -173,8 +177,12 @@ def test_import_selected_paths_shows_processing_document_immediately(qapp, monke
 
     repo = _new_repo()
     view = ChapterBatchView(repo=repo, session_manager=_connected_session())
+    monkeypatch.setattr(
+        "tuv_tools.ui.views.chapter_batch_view.resolve_standard_number_overrides",
+        lambda *args, **kwargs: {"C:/docs/a.docx": "60335-2-9"},
+    )
 
-    def fake_import_documents(paths, split_mode):
+    def fake_import_documents(paths, split_mode, standard_overrides=None):
         doc_id = repo.create_document(
             BatchImportDocument(
                 file_path=paths[0],
@@ -206,8 +214,12 @@ def test_import_selected_paths_creates_records_before_background_processing(qapp
     started = []
 
     monkeypatch.setattr(view, "_choose_import_mode", lambda: SplitMode.CLAUSE.value)
+    monkeypatch.setattr(
+        "tuv_tools.ui.views.chapter_batch_view.resolve_standard_number_overrides",
+        lambda *args, **kwargs: {"C:/docs/b.docx": "60335-2-9"},
+    )
 
-    def fake_import_documents(paths, split_mode):
+    def fake_import_documents(paths, split_mode, standard_overrides=None):
         doc_id = repo.create_document(
             BatchImportDocument(
                 file_path=paths[0],
@@ -237,8 +249,12 @@ def test_import_selected_paths_loads_rows_before_starting_processing(qapp, monke
     started = []
 
     monkeypatch.setattr(view, "_choose_import_mode", lambda: SplitMode.CLAUSE.value)
+    monkeypatch.setattr(
+        "tuv_tools.ui.views.chapter_batch_view.resolve_standard_number_overrides",
+        lambda *args, **kwargs: {"C:/docs/visible-first.docx": "60335-2-9"},
+    )
 
-    def fake_import_documents(paths, split_mode):
+    def fake_import_documents(paths, split_mode, standard_overrides=None):
         doc_id = repo.create_document(
             BatchImportDocument(
                 file_path=paths[0],
@@ -263,7 +279,7 @@ def test_import_selected_paths_loads_rows_before_starting_processing(qapp, monke
     assert started == [[repo.list_documents()[0].id]]
 
 
-def test_import_selected_paths_prompts_for_missing_standard_before_processing(qapp, monkeypatch):
+def test_import_selected_paths_passes_preflight_standard_overrides_to_service(qapp, monkeypatch):
     from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus, SplitMode
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
@@ -271,31 +287,35 @@ def test_import_selected_paths_prompts_for_missing_standard_before_processing(qa
     view = ChapterBatchView(repo=repo, session_manager=_connected_session())
     monkeypatch.setattr(view, "_choose_import_mode", lambda: SplitMode.CLAUSE.value)
     monkeypatch.setattr(
-        "PySide6.QtWidgets.QInputDialog.getText",
-        lambda *args, **kwargs: ("60335-2-35", True),
+        "tuv_tools.ui.views.chapter_batch_view.resolve_standard_number_overrides",
+        lambda *args, **kwargs: {"C:/docs/unknown.docx": "60335-2-35"},
+        raising=False,
     )
+    captured = {}
 
-    def fake_import_documents(paths, split_mode):
+    def fake_import_documents(paths, split_mode, standard_overrides=None):
+        captured["paths"] = paths
+        captured["split_mode"] = split_mode
+        captured["standard_overrides"] = standard_overrides
         doc_id = repo.create_document(
             BatchImportDocument(
                 file_path=paths[0],
                 file_name="unknown.docx",
                 document_status=DocumentStatus.PREPARING.value,
                 split_mode=split_mode,
-                standard="",
+                standard=(standard_overrides or {}).get(paths[0], ""),
             )
         )
         return [repo.get_document(doc_id)]
 
-    started = []
     monkeypatch.setattr(view._service, "import_documents", fake_import_documents)
-    monkeypatch.setattr(view, "_start_processing_documents", lambda document_ids: started.append(document_ids))
+    monkeypatch.setattr(view, "_start_processing_documents", lambda document_ids: None)
 
     view._import_selected_paths(["C:/docs/unknown.docx"])
 
     saved = repo.list_documents()[0]
+    assert captured["standard_overrides"] == {"C:/docs/unknown.docx": "60335-2-35"}
     assert saved.standard == "60335-2-35"
-    assert started == [[saved.id]]
 
 
 def test_checkboxes_update_selected_document_ids_in_list_order(qapp):
@@ -616,6 +636,49 @@ def test_duplicate_skip_restores_original_success_clause_state(qapp, monkeypatch
     assert clause.chapter_id == 123
     assert saved is not None
     assert saved.document_status == DocumentStatus.COMPLETED.value
+
+
+def test_duplicate_overwrite_binds_remote_chapter_id(qapp, monkeypatch):
+    from tuv_tools.core.chapter_batch.models import BatchImportClause, BatchImportDocument, ClauseStatus, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
+    doc_id = repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/dup-overwrite.docx",
+            file_name="dup-overwrite.docx",
+            document_status=DocumentStatus.PENDING_UPLOAD.value,
+            folder_id=7,
+            folder_name="60335-2-9",
+        )
+    )
+    repo.replace_clauses(
+        doc_id,
+        [
+            BatchImportClause(
+                sort_index=0,
+                term="10.1",
+                test_content="Heating",
+                clause_status=ClauseStatus.PENDING_UPLOAD.value,
+                source_docx_path="C:/out/10_1.docx",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        view,
+        "_existing_rows_for_duplicate_check",
+        lambda _document_id, _clause=None: [{"id": 99, "folder_id": 7, "term": "10.1", "test_content": "Heating", "specific_product": ""}],
+    )
+    monkeypatch.setattr(view, "_ask_duplicate_decision", lambda document, clause, matched_row: "overwrite")
+
+    ok = view._resolve_upload_duplicates(doc_id, [repo.get_clauses(doc_id)[0].id])
+
+    clause = repo.get_clauses(doc_id)[0]
+    assert ok is True
+    assert clause.chapter_id == 99
+    assert clause.clause_status == ClauseStatus.PENDING_UPLOAD.value
+    assert clause.user_decision == "overwrite"
 
 
 def test_pending_clause_with_existing_chapter_id_skips_duplicate_lookup(qapp, monkeypatch):

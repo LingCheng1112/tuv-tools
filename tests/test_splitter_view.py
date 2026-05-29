@@ -43,12 +43,13 @@ class TestSplitterView:
 
         assert captured == [["a.docx", "b.docx"]]
 
-    def test_add_paths_prompts_for_missing_standard_number(self, qapp, monkeypatch, tmp_path):
+    def test_add_paths_uses_preflight_standard_overrides_before_insert(self, qapp, monkeypatch, tmp_path):
         self._use_temp_db(monkeypatch, tmp_path)
         monkeypatch.setattr(SplitterView, "_resume_preparing_if_needed", lambda self: None)
         monkeypatch.setattr(
-            "PySide6.QtWidgets.QInputDialog.getText",
-            lambda *args, **kwargs: ("60335-2-35", True),
+            "tuv_tools.ui.views.splitter_view.resolve_standard_number_overrides",
+            lambda *args, **kwargs: {str((tmp_path / "unknown.docx").resolve()): "60335-2-35"},
+            raising=False,
         )
 
         path = tmp_path / "unknown.docx"
@@ -71,6 +72,23 @@ class TestSplitterView:
         doc = view._db.get_documents()[0]
         assert doc["standard_number"] == "60335-2-35"
         assert queued == [(doc["id"], str(path))]
+
+    def test_add_paths_cancelled_standard_prompt_aborts_import(self, qapp, monkeypatch, tmp_path):
+        self._use_temp_db(monkeypatch, tmp_path)
+        monkeypatch.setattr(SplitterView, "_resume_preparing_if_needed", lambda self: None)
+        monkeypatch.setattr(
+            "tuv_tools.ui.views.splitter_view.resolve_standard_number_overrides",
+            lambda *args, **kwargs: None,
+            raising=False,
+        )
+
+        path = tmp_path / "unknown.docx"
+        path.write_text("x", encoding="utf-8")
+
+        view = SplitterView()
+        view._add_paths([str(path)])
+
+        assert view._db.get_documents() == []
 
     def test_save_document_standard_updates_database(self, qapp, monkeypatch, tmp_path):
         self._use_temp_db(monkeypatch, tmp_path)

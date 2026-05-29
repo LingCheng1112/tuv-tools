@@ -406,7 +406,7 @@ class DatabaseManager:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def add_document(self, file_path: str) -> int:
+    def add_document(self, file_path: str, standard_number: str | None = None) -> int:
         """添加文档记录，已存在则跳过。返回记录 ID（已存在时返回已有 ID）"""
         from datetime import datetime
         file_path = str(Path(file_path).resolve())
@@ -417,7 +417,10 @@ class DatabaseManager:
             return existing["id"]
 
         file_name = Path(file_path).name
-        standard_number = _extract_standard_number(file_name)
+        if standard_number is None:
+            standard_number = _extract_standard_number(file_name)
+        else:
+            standard_number = standard_number.strip() or None
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cur = self._conn.execute(
             """INSERT INTO imported_documents
