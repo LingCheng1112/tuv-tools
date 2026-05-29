@@ -71,6 +71,7 @@ RSA_KEY_FILE = PROJECT_ROOT / "rsa_private.key"
 APP_DATA_DIR_NAME = ".tuv-tools"
 APP_DATA_BOOTSTRAP_FILE = ".tuv-tools-config.json"
 APP_DATA_BOOTSTRAP_KEY = "appDataRoot"
+SPLITTER_OUTPUT_BOOTSTRAP_KEY = "splitterOutputRoot"
 DEFAULT_TOKEN_CACHE_FILE = ".token_cache"
 DEFAULT_DB_FILE = "tuv-tools.db"
 DEFAULT_SPLITTER_OUTPUT_DIR_NAME = "doc_output"
@@ -102,7 +103,7 @@ def load_bootstrap_config(project_root: Path | None = None) -> dict:
     if not config_path.exists():
         return {}
     try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
+        data = json.loads(config_path.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -124,6 +125,10 @@ def resolve_app_data_root(project_root: Path | None = None) -> Path:
 
 def resolve_default_splitter_output_root(project_root: Path | None = None) -> Path:
     root = _normalize_path(project_root or PROJECT_ROOT)
+    bootstrap = load_bootstrap_config(project_root)
+    configured = str(bootstrap.get(SPLITTER_OUTPUT_BOOTSTRAP_KEY, "")).strip()
+    if configured:
+        return _resolve_from_root(configured, root)
     return root / DEFAULT_SPLITTER_OUTPUT_DIR_NAME
 
 
@@ -197,16 +202,20 @@ def resolve_ca_cert_path(ca_cert_file: str, project_root: Path | None = None) ->
 def store_bootstrap_config(data_root: Path, project_root: Path | None = None) -> None:
     root = _normalize_path(project_root or PROJECT_ROOT)
     config_path = get_bootstrap_config_path(root)
-    if _normalize_path(data_root) == resolve_default_app_data_root(root):
+    bootstrap = load_bootstrap_config(root)
+    normalized_data_root = _normalize_path(data_root)
+    if normalized_data_root == resolve_default_app_data_root(root):
+        bootstrap.pop(APP_DATA_BOOTSTRAP_KEY, None)
+    else:
+        bootstrap[APP_DATA_BOOTSTRAP_KEY] = _path_text_for_storage(normalized_data_root, root)
+
+    if not bootstrap:
         if config_path.exists():
             config_path.unlink()
         return
+
     config_path.write_text(
-        json.dumps(
-            {APP_DATA_BOOTSTRAP_KEY: _path_text_for_storage(_normalize_path(data_root), root)},
-            ensure_ascii=False,
-            indent=2,
-        ),
+        json.dumps(bootstrap, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 

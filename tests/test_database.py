@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import codecs
 import os
 import shutil
 import sys
@@ -545,6 +546,36 @@ class TestDatabaseManager:
         assert settings.get_database_path() == data_root / "tuv-tools.db"
         assert settings.get_chapter_batch_root() == data_root / "chapter-batch"
 
+    def test_app_settings_reads_explicit_splitter_output_root_from_bootstrap_file(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        bootstrap_path = project_root / ".tuv-tools-config.json"
+        output_root = tmp_path / "custom-output"
+        bootstrap_path.write_text(
+            json.dumps({"splitterOutputRoot": str(output_root)}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        settings = AppSettings(project_root=project_root)
+
+        assert settings.get_default_splitter_output_root() == output_root
+
+    def test_app_settings_reads_utf8_bom_bootstrap_file(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        bootstrap_path = project_root / ".tuv-tools-config.json"
+        output_root = tmp_path / "custom-output"
+        bootstrap_path.write_bytes(
+            codecs.BOM_UTF8 + json.dumps(
+                {"splitterOutputRoot": str(output_root)},
+                ensure_ascii=False,
+            ).encode("utf-8")
+        )
+
+        settings = AppSettings(project_root=project_root)
+
+        assert settings.get_default_splitter_output_root() == output_root
+
     def test_app_settings_persists_explicit_app_data_root_to_bootstrap_file(self, tmp_path):
         project_root = tmp_path / "repo"
         project_root.mkdir(parents=True)
@@ -556,6 +587,33 @@ class TestDatabaseManager:
         bootstrap = json.loads((project_root / ".tuv-tools-config.json").read_text(encoding="utf-8"))
         assert bootstrap == {"appDataRoot": str(target_root)}
         assert settings.get_app_data_root() == target_root
+
+    def test_app_settings_preserves_splitter_output_root_when_app_data_root_changes(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        bootstrap_path = project_root / ".tuv-tools-config.json"
+        output_root = tmp_path / "custom-output"
+        bootstrap_path.write_text(
+            json.dumps(
+                {
+                    "appDataRoot": str(tmp_path / "initial-data"),
+                    "splitterOutputRoot": str(output_root),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        settings = AppSettings(project_root=project_root)
+
+        target_root = tmp_path / "workspace-data"
+        settings.set_app_data_root(target_root)
+
+        bootstrap = json.loads(bootstrap_path.read_text(encoding="utf-8"))
+        assert bootstrap == {
+            "appDataRoot": str(target_root),
+            "splitterOutputRoot": str(output_root),
+        }
+        assert settings.get_default_splitter_output_root() == output_root
 
     def test_app_settings_seeds_packaging_defaults_into_fresh_app_data_root(self, tmp_path):
         project_root = tmp_path / "repo"
