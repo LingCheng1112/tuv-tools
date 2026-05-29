@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+import sys
 
 if "collect_dynamic_libs" not in globals():
     from PyInstaller.utils.hooks import collect_dynamic_libs
@@ -20,6 +21,21 @@ src_dir = repo_root / "src"
 icon_path = resources_dir / "favicon.ico"
 pyside_binaries = collect_dynamic_libs("PySide6") + collect_dynamic_libs("shiboken6")
 excluded_runtime_binaries = {"icuuc.dll", "icudt73.dll"}
+preferred_runtime_binary_names = ("libssl-3-x64.dll", "libcrypto-3-x64.dll")
+
+if "_collect_preferred_runtime_binaries" not in globals():
+    def _collect_preferred_runtime_binaries():
+        # `_ssl.pyd` 必须和当前解释器环境里的 OpenSSL DLL 成对打包，避免混入 base 环境版本。
+        runtime_root = Path(sys.executable).resolve().parent
+        preferred = {}
+        for name in preferred_runtime_binary_names:
+            candidate = runtime_root / "Library" / "bin" / name
+            if candidate.exists():
+                preferred[name.lower()] = (name, str(candidate), "BINARY")
+        return preferred
+
+
+preferred_runtime_binaries = _collect_preferred_runtime_binaries()
 
 
 a = Analysis(
@@ -40,9 +56,15 @@ a = Analysis(
     noarchive=False,
 )
 a.binaries = TOC(
-    entry
-    for entry in a.binaries
-    if Path(entry[0]).name.lower() not in excluded_runtime_binaries
+    [
+        *(
+            entry
+            for entry in a.binaries
+            if Path(entry[0]).name.lower() not in excluded_runtime_binaries
+            and Path(entry[0]).name.lower() not in preferred_runtime_binaries
+        ),
+        *preferred_runtime_binaries.values(),
+    ]
 )
 pyz = PYZ(a.pure)
 

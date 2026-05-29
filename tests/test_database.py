@@ -678,6 +678,18 @@ class TestDatabaseManager:
         spec_path = Path(__file__).resolve().parents[1] / "packaging" / "windows" / "tuv-tools.spec"
         calls: dict[str, object] = {}
         collected_packages: list[str] = []
+        preferred_runtime_binaries = {
+            "libssl-3-x64.dll": (
+                "libssl-3-x64.dll",
+                "C:/fake/build_env/Library/bin/libssl-3-x64.dll",
+                "BINARY",
+            ),
+            "libcrypto-3-x64.dll": (
+                "libcrypto-3-x64.dll",
+                "C:/fake/build_env/Library/bin/libcrypto-3-x64.dll",
+                "BINARY",
+            ),
+        }
 
         def fake_analysis(*args, **kwargs):
             calls["analysis"] = {"args": args, "kwargs": kwargs}
@@ -688,6 +700,8 @@ class TestDatabaseManager:
                     ("icuuc.dll", "C:/fake/icuuc.dll", "BINARY"),
                     ("Qt6Core.dll", "C:/fake/Qt6Core.dll", "BINARY"),
                     ("icudt73.dll", "C:/fake/icudt73.dll", "BINARY"),
+                    ("libssl-3-x64.dll", "C:/fake/base/libssl-3-x64.dll", "BINARY"),
+                    ("libcrypto-3-x64.dll", "C:/fake/base/libcrypto-3-x64.dll", "BINARY"),
                 ],
                 datas="datas",
             )
@@ -718,6 +732,7 @@ class TestDatabaseManager:
             "COLLECT": fake_collect,
             "TOC": list,
             "collect_dynamic_libs": fake_collect_dynamic_libs,
+            "_collect_preferred_runtime_binaries": lambda: preferred_runtime_binaries,
         }
 
         exec(compile(spec_path.read_bytes(), str(spec_path), "exec"), namespace)
@@ -734,4 +749,8 @@ class TestDatabaseManager:
         assert analysis_call["kwargs"]["datas"] == [(str(repo_root / "resources"), "resources")]
         assert calls["exe"]["kwargs"]["name"] == "TUV项目文档工具"
         assert calls["collect"]["kwargs"]["name"] == "TUV-Project-Document-Tool"
-        assert calls["collect"]["args"][1] == [("Qt6Core.dll", "C:/fake/Qt6Core.dll", "BINARY")]
+        assert calls["collect"]["args"][1] == [
+            ("Qt6Core.dll", "C:/fake/Qt6Core.dll", "BINARY"),
+            preferred_runtime_binaries["libssl-3-x64.dll"],
+            preferred_runtime_binaries["libcrypto-3-x64.dll"],
+        ]
