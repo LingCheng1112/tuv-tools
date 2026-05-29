@@ -196,7 +196,7 @@ def _build_document_xml(
     *,
     filter_revision_history: bool = False,
 ) -> bytes:
-    document = ET.Element(W + "document", {"xmlns:w": NS["w"]})
+    document = ET.Element(W + "document")
     body = ET.SubElement(document, W + "body")
 
     for block in _build_document_blocks(

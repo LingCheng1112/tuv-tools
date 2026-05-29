@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QAction
 from tuv_tools.core.splitter.ui_helpers import (
     STATUS_LABELS,
@@ -124,6 +124,7 @@ class DocumentTable(QTableWidget):
             checkbox = self._row_checkbox(row)
             if isinstance(checkbox, QCheckBox):
                 checkbox.setStyleSheet(checkbox_style())
+        self._schedule_checkbox_geometry_sync()
 
     # ---- 数据加载 ----
 
@@ -137,6 +138,7 @@ class DocumentTable(QTableWidget):
             self._build_row(row, doc)
         self._suppress_item_changed = False
         self.checked_changed.emit()
+        self._schedule_checkbox_geometry_sync()
 
     @staticmethod
     def _make_item(text: str, tooltip: str = "") -> QTableWidgetItem:
@@ -189,13 +191,30 @@ class DocumentTable(QTableWidget):
         checkbox_size = checkbox.sizeHint()
         checkbox.setFixedSize(checkbox_size)
         container = QWidget()
-        container.setFixedHeight(max(self.verticalHeader().defaultSectionSize(), checkbox_size.height()))
+        container.setMinimumHeight(max(self.verticalHeader().defaultSectionSize(), checkbox_size.height()))
         container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignCenter)
         return container
+
+    def _sync_checkbox_geometries(self) -> None:
+        if self.rowCount() == 0:
+            return
+        model = self.model()
+        if model is None:
+            return
+        for row in range(self.rowCount()):
+            container = self.cellWidget(row, self.COL_CHECK)
+            if container is None or self.isRowHidden(row):
+                continue
+            rect = self.visualRect(model.index(row, self.COL_CHECK))
+            if rect.isValid() and container.geometry() != rect:
+                container.setGeometry(rect)
+
+    def _schedule_checkbox_geometry_sync(self) -> None:
+        QTimer.singleShot(0, self._sync_checkbox_geometries)
 
     def _row_checkbox(self, row: int) -> QCheckBox | None:
         container = self.cellWidget(row, self.COL_CHECK)
@@ -242,6 +261,19 @@ class DocumentTable(QTableWidget):
         else:
             self._checked.discard(doc_id)
         self.checked_changed.emit()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._schedule_checkbox_geometry_sync()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._schedule_checkbox_geometry_sync()
+
+    def scrollContentsBy(self, dx: int, dy: int) -> None:  # noqa: N802
+        super().scrollContentsBy(dx, dy)
+        if dx or dy:
+            self._schedule_checkbox_geometry_sync()
 
     def _delete_doc(self, doc_id: int) -> None:
         reply = QMessageBox.question(

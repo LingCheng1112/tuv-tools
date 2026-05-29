@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import itertools
+import re
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -15,11 +16,37 @@ _STOP = object()  # 哨兵：停止信号
 
 _WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _WORD14_NS = "http://schemas.microsoft.com/office/word/2010/wordml"
+_MARKUP_COMPATIBILITY_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 _W = f"{{{_WORD_NS}}}"
 _W14 = f"{{{_WORD14_NS}}}"
 _NS = {"w": _WORD_NS, "w14": _WORD14_NS}
 _CHECKBOX_CHARS = {"☐": False, "☒": True}
+_XMLNS_DECL_RE = re.compile(
+    rb"""\sxmlns:(?P<prefix>[A-Za-z_][\w.\-]*)\s*=\s*(?P<quote>["'])(?P<uri>.*?)(?P=quote)""",
+    re.DOTALL,
+)
+_IGNORABLE_RE = re.compile(
+    rb"""\s(?:[A-Za-z_][\w.\-]*:)?Ignorable\s*=\s*(?P<quote>["'])(?P<value>.*?)(?P=quote)""",
+    re.DOTALL,
+)
+_ROOT_START_TAG_RE = re.compile(
+    rb"""<(?P<tag>(?:[A-Za-z_][\w.\-]*:)?[A-Za-z_][\w.\-]*)(?P<attrs>[^>]*)/?>""",
+    re.DOTALL,
+)
+_KNOWN_NAMESPACE_HINTS = {
+    "mc": _MARKUP_COMPATIBILITY_NS,
+    "w14": _WORD14_NS,
+    "wp14": "http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing",
+    "w15": "http://schemas.microsoft.com/office/word/2012/wordml",
+    "w16se": "http://schemas.microsoft.com/office/word/2015/wordml/symex",
+    "w16cid": "http://schemas.microsoft.com/office/word/2016/wordml/cid",
+    "w16": "http://schemas.microsoft.com/office/word/2018/wordml",
+    "w16cex": "http://schemas.microsoft.com/office/word/2018/wordml/cex",
+    "w16sdtdh": "http://schemas.microsoft.com/office/word/2020/wordml/sdtdatahash",
+    "w16sdtfl": "http://schemas.microsoft.com/office/word/2024/wordml/sdtformatlock",
+    "w16du": "http://schemas.microsoft.com/office/word/2023/wordml/word16du",
+}
 
 
 def _local_name(tag: str) -> str:
@@ -56,6 +83,7 @@ def prepare_single_doc(doc, app) -> None:
 def prepare_docx_file(docx_path: str | Path, app) -> None:
     """对单个 DOCX 执行 Word 预处理，并在保存后做 XML 兜底修复。"""
     path = Path(docx_path).expanduser().resolve()
+    repair_docx_markup_compatibility(path)
     doc = None
     try:
         doc = app.Documents.Open(str(path))
@@ -134,6 +162,101 @@ def _normalize_checkbox_font(cc) -> None:
     cc.Range.Font.Bold = False
 
 
+def _collect_namespace_hints(payloads: list[bytes]) -> dict[str, str]:
+    hints = dict(_KNOWN_NAMESPACE_HINTS)
+    for payload in payloads:
+        if b"<" not in payload:
+            continue
+        match = _ROOT_START_TAG_RE.search(payload)
+        if match is None:
+            continue
+        attrs = match.group("attrs")
+        for decl in _XMLNS_DECL_RE.finditer(attrs):
+            prefix = decl.group("prefix").decode("ascii", errors="ignore")
+            uri = decl.group("uri").decode("utf-8", errors="ignore")
+            if prefix and uri:
+                hints[prefix] = uri
+    return hints
+
+
+def _repair_markup_compatibility_payload(payload: bytes, namespace_hints: dict[str, str]) -> bytes | None:
+    match = _ROOT_START_TAG_RE.search(payload)
+    if match is None:
+        return None
+
+    attrs = match.group("attrs")
+    ignorable = _IGNORABLE_RE.search(attrs)
+    if ignorable is None:
+        return None
+
+    required_prefixes = [
+        prefix
+        for prefix in ignorable.group("value").decode("utf-8", errors="ignore").split()
+        if prefix and prefix != "xml"
+    ]
+    if not required_prefixes:
+        return None
+
+    declared_prefixes = {
+        decl.group("prefix").decode("ascii", errors="ignore")
+        for decl in _XMLNS_DECL_RE.finditer(attrs)
+    }
+    additions: list[bytes] = []
+    for prefix in required_prefixes:
+        if prefix in declared_prefixes:
+            continue
+        uri = namespace_hints.get(prefix)
+        if not uri:
+            continue
+        additions.append(f' xmlns:{prefix}="{uri}"'.encode("utf-8"))
+        declared_prefixes.add(prefix)
+
+    if not additions:
+        return None
+
+    insert_at = match.end(0) - 1
+    if payload[insert_at - 1:insert_at + 1] == b"/>":
+        insert_at -= 1
+    return payload[:insert_at] + b"".join(additions) + payload[insert_at:]
+
+
+def repair_docx_markup_compatibility(docx_path: str | Path) -> int:
+    """补回 mc:Ignorable 依赖但被旧逻辑丢失的 Office namespace 声明。"""
+    path = Path(docx_path).expanduser().resolve()
+    if not path.exists():
+        return 0
+
+    with zipfile.ZipFile(path, "r") as src:
+        entries = {item.filename: src.read(item.filename) for item in src.infolist()}
+
+    namespace_hints = _collect_namespace_hints(
+        [
+            payload
+            for filename, payload in entries.items()
+            if filename.startswith("word/") and filename.endswith(".xml")
+        ]
+    )
+    changed = False
+
+    for filename, payload in list(entries.items()):
+        if not filename.startswith("word/") or not filename.endswith(".xml"):
+            continue
+        repaired_payload = _repair_markup_compatibility_payload(payload, namespace_hints)
+        if repaired_payload is None or repaired_payload == payload:
+            continue
+        entries[filename] = repaired_payload
+        changed = True
+
+    if not changed:
+        return 0
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as dst:
+        for filename, payload in entries.items():
+            dst.writestr(filename, payload)
+
+    return 1
+
+
 def normalize_plain_checkbox_controls(docx_path: str | Path) -> int:
     """把 DOCX 中仍然是普通字符的 ☐/☒ 转回真正的复选框内容控件。"""
     path = Path(docx_path).expanduser().resolve()
@@ -142,9 +265,17 @@ def normalize_plain_checkbox_controls(docx_path: str | Path) -> int:
 
     ET.register_namespace("w", _WORD_NS)
     ET.register_namespace("w14", _WORD14_NS)
+    ET.register_namespace("mc", _MARKUP_COMPATIBILITY_NS)
 
     with zipfile.ZipFile(path, "r") as src:
         entries = {item.filename: src.read(item.filename) for item in src.infolist()}
+    namespace_hints = _collect_namespace_hints(
+        [
+            payload
+            for filename, payload in entries.items()
+            if filename.startswith("word/") and filename.endswith(".xml")
+        ]
+    )
 
     max_checkbox_id = 0
     for payload in entries.values():
@@ -167,12 +298,18 @@ def normalize_plain_checkbox_controls(docx_path: str | Path) -> int:
     for filename, payload in list(entries.items()):
         if not filename.startswith("word/") or not filename.endswith(".xml"):
             continue
+        current_payload = payload
         try:
             root = ET.fromstring(payload)
         except ET.ParseError:
-            continue
-        if _normalize_plain_checkbox_xml(root, checkbox_ids):
-            entries[filename] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+            root = None
+        if root is not None and _normalize_plain_checkbox_xml(root, checkbox_ids):
+            current_payload = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+        repaired_payload = _repair_markup_compatibility_payload(current_payload, namespace_hints)
+        if repaired_payload is not None:
+            current_payload = repaired_payload
+        if current_payload != payload:
+            entries[filename] = current_payload
             changed = True
 
     if not changed:

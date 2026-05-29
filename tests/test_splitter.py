@@ -1280,6 +1280,7 @@ class TestExportIntegration:
         for docx_file in clause_dir.glob("*.docx"):
             with zipfile.ZipFile(docx_file) as z:
                 assert "word/document.xml" in z.namelist()
+                ET.fromstring(z.read("word/document.xml"))
 
     def test_export_emits_clause_and_version_progress(self, tmp_path):
         events = []

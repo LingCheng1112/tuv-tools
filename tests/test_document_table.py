@@ -87,6 +87,27 @@ class TestDocumentTable:
         assert container is not None
         assert container.height() >= table.rowHeight(0) - 1
 
+    def test_checkbox_wrapper_geometry_matches_cell_rect(self, qapp, tmp_path):
+        path = tmp_path / "sample.docx"
+        path.write_text("x", encoding="utf-8")
+
+        table = DocumentTable()
+        table.resize(640, 240)
+        table.load_documents([_doc(1, path, "pending")])
+        table.show()
+        qapp.processEvents()
+
+        container = table.cellWidget(0, table.COL_CHECK)
+        checkbox = table._row_checkbox(0)
+        assert container is not None
+        assert checkbox is not None
+
+        cell_rect = table.visualRect(table.model().index(0, table.COL_CHECK))
+        assert container.geometry().x() == cell_rect.x()
+        assert container.geometry().y() == cell_rect.y()
+        assert container.geometry().width() == cell_rect.width()
+        assert container.geometry().height() == cell_rect.height()
+
     def test_double_click_standard_column_starts_inline_edit(self, qapp, tmp_path, monkeypatch):
         path = tmp_path / "sample.docx"
         path.write_text("x", encoding="utf-8")
