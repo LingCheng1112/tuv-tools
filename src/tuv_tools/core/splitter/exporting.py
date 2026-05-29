@@ -21,7 +21,14 @@ from .models import (
     SplitCancelled,
     TableSlice,
 )
-from .utils import CleanPatterns, clean_text, extract_standard_number, safe_name, slugify
+from .utils import (
+    CleanPatterns,
+    clean_text,
+    extract_standard_number,
+    paragraph_has_visible_text,
+    safe_name,
+    slugify,
+)
 
 _REVISION_HISTORY_PARA_RE = re.compile(r"^History\s+of\s+Revision\s*:?\s*$", re.IGNORECASE)
 
@@ -70,28 +77,51 @@ def _is_revision_history_table(table_slice: TableSlice) -> bool:
     return "date" in lowered and "brief" in lowered and "briefing" not in lowered
 
 
-def _build_document_blocks(
-    sections: list[Section],
+def _render_paragraph_block(paragraph: str, element: ET.Element | None) -> ET.Element | None:
+    if element is not None:
+        if not paragraph_has_visible_text(element):
+            return None
+        return copy.deepcopy(element)
+    if not clean_text(paragraph):
+        return None
+    return clone_paragraph(paragraph)
+
+
+def _build_section_blocks(
+    section: Section,
     inline_clean_patterns: CleanPatterns,
     *,
     filter_revision_history: bool = False,
 ) -> list[ET.Element]:
-    blocks: list[ET.Element] = []
+    table_entries: dict[int, list[tuple[TableSlice, ET.Element | None]]] = defaultdict(list)
+    for table_slice in section.table_slices:
+        table_entries[table_slice.table_block_index].append(
+            (table_slice, clean_table_xml(table_slice.xml, inline_clean_patterns))
+        )
 
-    for section in sections:
+    paragraph_entries = [
+        (
+            paragraph,
+            _render_paragraph_block(
+                paragraph,
+                section.paragraph_elements[idx] if idx < len(section.paragraph_elements) else None,
+            ),
+        )
+        for idx, paragraph in enumerate(section.paragraphs)
+    ]
+
+    if not section.block_indexes:
         section_blocks: list[ET.Element] = []
         awaiting_revision_history_table = False
 
-        for para_idx, paragraph in enumerate(section.paragraphs):
-            if not clean_text(paragraph):
+        for paragraph, paragraph_block in paragraph_entries:
+            if paragraph_block is None:
                 continue
             if filter_revision_history and _is_revision_history_paragraph(paragraph):
                 awaiting_revision_history_table = True
                 continue
-            if para_idx < len(section.paragraph_elements):
-                section_blocks.append(copy.deepcopy(section.paragraph_elements[para_idx]))
-            else:
-                section_blocks.append(clone_paragraph(paragraph))
+            section_blocks.append(paragraph_block)
+
         for table_slice in section.table_slices:
             filtered_table = clean_table_xml(table_slice.xml, inline_clean_patterns)
             if filtered_table is None:
@@ -101,6 +131,57 @@ def _build_document_blocks(
                     awaiting_revision_history_table = False
                     continue
             section_blocks.append(filtered_table)
+
+        return section_blocks
+
+    section_blocks: list[ET.Element] = []
+    paragraph_cursor = 0
+    table_offsets: Counter[int] = Counter()
+    awaiting_revision_history_table = False
+
+    for block_index in section.block_indexes:
+        entries_for_block = table_entries.get(block_index, [])
+        if entries_for_block and table_offsets[block_index] < len(entries_for_block):
+            while table_offsets[block_index] < len(entries_for_block):
+                table_slice, filtered_table = entries_for_block[table_offsets[block_index]]
+                table_offsets[block_index] += 1
+                if filtered_table is None:
+                    continue
+                if filter_revision_history and awaiting_revision_history_table:
+                    if _is_revision_history_table(table_slice):
+                        awaiting_revision_history_table = False
+                        continue
+                section_blocks.append(filtered_table)
+            continue
+
+        if paragraph_cursor >= len(paragraph_entries):
+            continue
+        paragraph, paragraph_block = paragraph_entries[paragraph_cursor]
+        paragraph_cursor += 1
+        if paragraph_block is None:
+            continue
+        if filter_revision_history and _is_revision_history_paragraph(paragraph):
+            awaiting_revision_history_table = True
+            continue
+        section_blocks.append(paragraph_block)
+
+    return section_blocks
+
+
+def _build_document_blocks(
+    sections: list[Section],
+    inline_clean_patterns: CleanPatterns,
+    *,
+    filter_revision_history: bool = False,
+) -> list[ET.Element]:
+    blocks: list[ET.Element] = []
+
+    for section in sections:
+        section_blocks = _build_section_blocks(
+            section,
+            inline_clean_patterns,
+            filter_revision_history=filter_revision_history,
+        )
         if not section_blocks:
             continue
         if blocks:

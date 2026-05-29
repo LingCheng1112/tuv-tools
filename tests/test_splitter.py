@@ -928,6 +928,74 @@ class TestBuildDocumentBlocks:
         assert len(blocks) == 2
         assert blocks[1].tag.endswith("tbl")
 
+    def test_preserves_original_block_order_when_paragraph_follows_table(self):
+        section = Section(
+            clause_id="10.1",
+            major_version="10",
+            source_file="test.docx",
+            title="10.1 Title",
+            block_indexes=[2, 5],
+            paragraphs=["Trailing note"],
+        )
+        section.table_slices.append(
+            TableSlice(
+                table_block_index=2,
+                table_index=1,
+                row_start=0,
+                row_end=1,
+                title="table",
+                rows=[["Cell"]],
+                xml=(
+                    '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                    "<w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr>"
+                    "</w:tbl>"
+                ),
+            )
+        )
+
+        blocks = _build_document_blocks([section], [], filter_revision_history=False)
+
+        assert len(blocks) == 2
+        assert blocks[0].tag.endswith("tbl")
+        assert paragraph_text(blocks[1]) == "Trailing note"
+
+    def test_skips_page_break_only_paragraph_when_replaying_section(self):
+        section = Section(
+            clause_id="8.1.4&22.42",
+            major_version="8",
+            source_file="test.docx",
+            title="8.1.4&22.42",
+            block_indexes=[10, 13],
+            paragraphs=["|"],
+            paragraph_elements=[
+                ET.fromstring(
+                    '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                    '<w:r><w:br w:type="page" /></w:r>'
+                    "</w:p>"
+                )
+            ],
+        )
+        section.table_slices.append(
+            TableSlice(
+                table_block_index=10,
+                table_index=1,
+                row_start=0,
+                row_end=1,
+                title="table",
+                rows=[["8.1.4&22.42", "Test for protective impedance"]],
+                xml=(
+                    '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                    "<w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr>"
+                    "</w:tbl>"
+                ),
+            )
+        )
+
+        blocks = _build_document_blocks([section], [], filter_revision_history=False)
+
+        assert len(blocks) == 1
+        assert blocks[0].tag.endswith("tbl")
+
     def test_skips_revision_history_paragraph_and_table(self):
         section = Section(
             clause_id="Annex_A",

@@ -72,6 +72,14 @@ def paragraph_text(paragraph: ET.Element) -> str:
     return clean_text("".join(parts))
 
 
+def paragraph_has_visible_text(paragraph: ET.Element) -> bool:
+    """判断段落是否包含可见文本，纯分页/换行段落视为无正文"""
+    for node in paragraph.iter():
+        if node.tag == W + "t" and clean_text(node.text or ""):
+            return True
+    return False
+
+
 def cell_text(cell: ET.Element) -> str:
     """提取单元格的纯文本（多段落用 | 分隔）"""
     values = []

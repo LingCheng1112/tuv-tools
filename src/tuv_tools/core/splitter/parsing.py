@@ -27,6 +27,7 @@ from .utils import (
     get_major_version,
     has_title_text,
     normalize_clause_leading_text,
+    paragraph_has_visible_text,
     paragraph_text,
 )
 
@@ -514,7 +515,7 @@ def build_sections(
                 )
                 current.add_paragraph(block.index, block.text, block.element)
                 sections.append(current)
-            elif current and block.text:
+            elif current and paragraph_has_visible_text(block.element):
                 current.add_paragraph(block.index, block.text, block.element)
             continue
 

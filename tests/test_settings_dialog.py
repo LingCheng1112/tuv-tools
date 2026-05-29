@@ -189,6 +189,26 @@ def test_settings_dialog_theme_combo_popup_uses_current_theme_colors(qapp, tmp_p
         manager.mode = previous_mode
 
 
+def test_settings_dialog_theme_combo_keeps_compact_width(qapp, tmp_path):
+    from tuv_tools.config import AppSettings
+    from tuv_tools.ui.views.settings_dialog import SettingsDialog
+
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True)
+    dialog = SettingsDialog(settings=AppSettings(project_root=project_root))
+    dialog.resize(960, 520)
+    dialog.show()
+    qapp.processEvents()
+
+    assert dialog._theme_combo.sizeAdjustPolicy() == dialog._theme_combo.SizeAdjustPolicy.AdjustToContents
+    assert (
+        dialog._theme_combo.sizePolicy().horizontalPolicy()
+        == dialog._theme_combo.sizePolicy().Policy.Maximum
+    )
+    assert dialog._theme_combo.width() < dialog._output_edit.width()
+    assert dialog._theme_combo.width() <= dialog._theme_combo.sizeHint().width() + 24
+
+
 class _DummySession:
     def __init__(self, calls: list[str]):
         self._calls = calls

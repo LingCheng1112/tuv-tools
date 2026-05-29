@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -92,6 +93,11 @@ class SettingsDialog(QDialog):
             [ThemeMode.DARK.value, ThemeMode.LIGHT.value, ThemeMode.SYSTEM.value].index(
                 current_mode.value
             )
+        )
+        self._theme_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._theme_combo.setSizePolicy(
+            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Fixed,
         )
         layout.addRow("主题:", self._theme_combo)
 
