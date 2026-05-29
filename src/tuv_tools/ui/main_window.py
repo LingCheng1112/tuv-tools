@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tuv_tools import APP_NAME
 from tuv_tools.config import AppSettings
 from tuv_tools.core.chapter.session import ChapterSessionManager
 
@@ -45,7 +46,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._settings = settings or AppSettings()
         self._chapter_session = session_manager or ChapterSessionManager(self._settings, self)
-        self.setWindowTitle("TUV Tools")
+        self.setWindowTitle(APP_NAME)
         self.setMinimumSize(1000, 650)
         self.resize(1200, 750)
 

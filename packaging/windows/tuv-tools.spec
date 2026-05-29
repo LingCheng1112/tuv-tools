@@ -13,6 +13,8 @@ if "TOC" not in globals():
 
 
 repo_root = Path(SPECPATH).resolve().parents[1]
+app_dist_dir_name = "TUV-Project-Document-Tool"
+app_exe_stem = "TUV项目文档工具"
 resources_dir = repo_root / "resources"
 src_dir = repo_root / "src"
 icon_path = resources_dir / "favicon.ico"
@@ -49,7 +51,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="TUV-Tools",
+    name=app_exe_stem,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -70,5 +72,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="TUV-Tools",
+    name=app_dist_dir_name,
 )

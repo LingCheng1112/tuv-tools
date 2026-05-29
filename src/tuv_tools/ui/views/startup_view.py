@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tuv_tools import APP_NAME
 from tuv_tools.core.chapter.models import ApiConfig
 from tuv_tools.ui.widgets import FOCUS_STYLE
 
@@ -83,7 +84,7 @@ class StartupView(QWidget):
 
     def __init__(self, logo_path: Path | None = None):
         super().__init__()
-        self.setWindowTitle("TUV Tools")
+        self.setWindowTitle(APP_NAME)
         self.setMinimumSize(720, 520)
         self.resize(900, 620)
         self.setStyleSheet(
@@ -140,7 +141,7 @@ class StartupView(QWidget):
         self._logo_label = QLabel()
         self._logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._title = QLabel("TUV Tools")
+        self._title = QLabel(APP_NAME)
         self._title.hide()
 
         self._subtitle = QLabel("正在加载")

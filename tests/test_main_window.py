@@ -40,10 +40,12 @@ def test_main_window_does_not_auto_initialize_session(qapp, monkeypatch):
 
 
 def test_main_window_has_display_only_connection_status_block(qapp):
+    from tuv_tools import APP_NAME
     from tuv_tools.ui.main_window import MainWindow
 
     window = MainWindow()
 
+    assert window.windowTitle() == APP_NAME
     assert hasattr(window, "_connection_status")
     assert window._connection_status.text().startswith("\u25cf ")
 

@@ -20,7 +20,7 @@ DEFAULT_TOKEN_CACHE_FILE = ".token_cache"
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Prepare packaging defaults for TUV Tools.")
+    parser = argparse.ArgumentParser(description="Prepare packaging defaults for TUV项目文档工具.")
     parser.add_argument(
         "--base-url",
         default="",

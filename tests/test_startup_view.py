@@ -24,9 +24,12 @@ def qapp():
 
 
 def test_startup_view_transition_to_login_shows_form(qapp):
+    from tuv_tools import APP_NAME
     from tuv_tools.ui.views.startup_view import StartupView
 
     view = StartupView()
+
+    assert view.windowTitle() == APP_NAME
     view.transition_to_login(None, "")
     view._finalize_login_state()
 

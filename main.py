@@ -1,4 +1,4 @@
-"""TUV Tools 启动入口"""
+"""TUV项目文档工具启动入口。"""
 
 import sys
 from pathlib import Path

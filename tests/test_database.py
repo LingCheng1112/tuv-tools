@@ -498,7 +498,7 @@ class TestDatabaseManager:
         (bundled_root / "resources").mkdir(parents=True)
 
         with patch("tuv_tools.config.settings.sys.frozen", True, create=True), \
-             patch("tuv_tools.config.settings.sys.executable", str(runtime_root / "TUV-Tools.exe")), \
+             patch("tuv_tools.config.settings.sys.executable", str(runtime_root / "TUV项目文档工具.exe")), \
              patch("tuv_tools.config.settings.sys._MEIPASS", str(bundled_root), create=True):
             from tuv_tools.config import settings as settings_module
 
@@ -732,4 +732,6 @@ class TestDatabaseManager:
             ("C:/fake/shiboken6.dll", "shiboken6"),
         ]
         assert analysis_call["kwargs"]["datas"] == [(str(repo_root / "resources"), "resources")]
+        assert calls["exe"]["kwargs"]["name"] == "TUV项目文档工具"
+        assert calls["collect"]["kwargs"]["name"] == "TUV-Project-Document-Tool"
         assert calls["collect"]["args"][1] == [("Qt6Core.dll", "C:/fake/Qt6Core.dll", "BINARY")]
