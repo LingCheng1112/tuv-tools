@@ -41,3 +41,6 @@ CLAUDE.md
 /resources/defaults
 /.tmp-pytest
 *.pem
+/.pytest_tmp
+/.reasonix
+packaging/windows/build.ps1
