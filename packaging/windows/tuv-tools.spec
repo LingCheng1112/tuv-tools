@@ -20,7 +20,8 @@ resources_dir = repo_root / "resources"
 src_dir = repo_root / "src"
 icon_path = resources_dir / "favicon.ico"
 pyside_binaries = collect_dynamic_libs("PySide6") + collect_dynamic_libs("shiboken6")
-excluded_runtime_binaries = {"icuuc.dll", "icudt73.dll"}
+# icuuc.dll 是未带版本号的基础环境 ICU，与 conda 环境的 icuuc73.dll 冲突，需排除
+excluded_runtime_binaries = {"icuuc.dll"}
 preferred_runtime_binary_names = ("libssl-3-x64.dll", "libcrypto-3-x64.dll")
 
 if "_collect_preferred_runtime_binaries" not in globals():

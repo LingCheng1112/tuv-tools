@@ -161,8 +161,8 @@ class ChapterSessionManager(QObject):
 
     @staticmethod
     def _validate_login_config(config: ApiConfig) -> str:
-        if config.base_url.strip().lower().startswith("https://") and not config.ca_cert_file.strip():
-            return "HTTPS 地址需要先在设置中配置 CA 证书。"
+        # CA 证书仅在连接使用自签证书的服务器时需要手动配置；
+        # 公网可信证书由 requests 通过系统 CA bundle 验证，无需额外配置。
         return ""
 
     def _on_login_finished(self, client: TuvClient, success: bool) -> None:
