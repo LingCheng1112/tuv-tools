@@ -16,6 +16,13 @@ def main():
     app.setApplicationDisplayName(APP_NAME)
     app.setStyle("Fusion")
     app.setWindowIcon(QIcon(str(RESOURCES_DIR / "favicon.ico")))
+
+    from .config.database import DatabaseManager
+    from .ui.theme import ThemeManager
+
+    ThemeManager.init(DatabaseManager())
+    ThemeManager.instance().start_system_watch()
+
     controller = StartupController()
     controller.start()
     sys.exit(app.exec())

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
-from . import _STOP, _win32com_client, prepare_single_doc
+from . import _STOP, _win32com_client, create_isolated_word_application, prepare_single_doc
 
 
 class PreparingWorker(QThread):
@@ -58,7 +58,7 @@ class PreparingWorker(QThread):
         client = _win32com_client()
         app = None
         try:
-            app = client.Dispatch("Word.Application")
+            app = create_isolated_word_application(client)
             app.Visible = False
             app.ScreenUpdating = False
 

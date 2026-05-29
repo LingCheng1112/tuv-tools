@@ -114,6 +114,18 @@ class TestSplitterView:
 
         assert hasattr(view, "_resume_preparing_if_needed")
 
+    def test_global_checkbox_style_matches_batch_drawer_checkbox_style(self, qapp):
+        from tuv_tools.ui.theme import ThemeManager
+        from tuv_tools.ui.widgets import checkbox_style
+        from tuv_tools.ui.widgets.chapter_batch_clause_table import chapter_batch_checkbox_style
+
+        assert checkbox_style() == chapter_batch_checkbox_style()
+        style = checkbox_style()
+        assert f"color: {ThemeManager.instance().colors.text_primary};" in style
+        assert "width: 18px;" in style
+        assert "height: 18px;" in style
+        assert "checkmark.png" in style
+
     def test_prepare_paused_can_be_batch_selected_for_delete(self, qapp, monkeypatch, tmp_path):
         path = tmp_path / "paused.docx"
         path.write_text("x", encoding="utf-8")

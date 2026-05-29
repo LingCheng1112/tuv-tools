@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from tuv_tools.core.splitter.ui_helpers import extract_clause_test_content
+from tuv_tools.ui.theme import ThemeManager
+from tuv_tools.ui.widgets import scrollbar_style
 
 
 class ClauseOverlay(QWidget):
@@ -30,18 +32,11 @@ class ClauseOverlay(QWidget):
 
         # 半透明遮罩
         self._backdrop = QWidget(self)
-        self._backdrop.setStyleSheet("background-color: rgba(0, 0, 0, 80);")
         self._backdrop.installEventFilter(self)
 
         # 条款面板本体
         self._panel = QWidget(self)
         self._panel.setObjectName("clausePanel")
-        self._panel.setStyleSheet("""
-            #clausePanel {
-                background-color: #2b2d30;
-                border-left: 1px solid #555;
-            }
-        """)
         panel_layout = QVBoxLayout(self._panel)
         panel_layout.setContentsMargins(0, 0, 0, 0)
         panel_layout.setSpacing(0)
@@ -50,38 +45,67 @@ class ClauseOverlay(QWidget):
         header = QHBoxLayout()
         header.setContentsMargins(12, 10, 8, 10)
         self._title_label = QLabel("条款列表")
-        self._title_label.setStyleSheet("color: #dcdcdc; font-size: 14px; font-weight: bold;")
         header.addWidget(self._title_label)
         header.addStretch()
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(26, 26)
-        close_btn.setStyleSheet(
-            "QPushButton { background: transparent; color: #aaa; border: none; }"
-            "QPushButton:hover { color: #fff; }"
-        )
-        close_btn.clicked.connect(self.collapse)
-        header.addWidget(close_btn)
+        self._close_btn = QPushButton("✕")
+        self._close_btn.setFixedSize(26, 26)
+        self._close_btn.clicked.connect(self.collapse)
+        header.addWidget(self._close_btn)
         panel_layout.addLayout(header)
 
         # 条款列表
         self._list = QListWidget()
-        self._list.setStyleSheet("""
-            QListWidget {
-                background-color: #2b2d30; color: #dcdcdc;
-                border: none; border-top: 1px solid #444; font-size: 13px;
-            }
-            QListWidget::item { padding: 8px 12px; border-bottom: 1px solid #3c3f41; }
-            QListWidget::item:hover { background-color: #333537; }
-        """)
         panel_layout.addWidget(self._list)
 
         self._empty_label = QLabel("无条款数据")
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_label.setStyleSheet("color: #888; padding: 20px;")
         self._empty_label.setVisible(False)
         panel_layout.addWidget(self._empty_label)
 
         self._panel_x = 0
+        self._apply_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
+
+    def _apply_theme(self) -> None:
+        c = ThemeManager.instance().colors
+        self._backdrop.setStyleSheet(f"background-color: {c.bg_overlay};")
+        self._panel.setStyleSheet(
+            f"""
+            #clausePanel {{
+                background-color: {c.bg_primary};
+                border-left: 1px solid {c.border_secondary};
+            }}
+            """
+        )
+        self._title_label.setStyleSheet(
+            f"color: {c.text_primary}; font-size: 14px; font-weight: bold;"
+        )
+        self._close_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background: transparent;
+                color: {c.text_secondary};
+                border: none;
+                border-radius: 13px;
+            }}
+            QPushButton:hover {{
+                background-color: {c.bg_hover};
+                color: {c.text_primary};
+            }}
+            """
+        )
+        self._list.setStyleSheet(
+            f"""
+            QListWidget {{
+                background-color: {c.bg_primary}; color: {c.text_primary};
+                border: none; border-top: 1px solid {c.border_subtle}; font-size: 13px;
+            }}
+            QListWidget::item {{ padding: 8px 12px; border-bottom: 1px solid {c.border_subtle}; }}
+            QListWidget::item:hover {{ background-color: {c.bg_hover}; }}
+            """
+            + scrollbar_style()
+        )
+        self._empty_label.setStyleSheet(f"color: {c.text_muted}; padding: 20px;")
 
     def set_x(self, x: int) -> None:
         self._panel_x = x
@@ -94,9 +118,7 @@ class ClauseOverlay(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._backdrop.setGeometry(0, 0,
-                                   self.width() - self.PANEL_WIDTH,
-                                   self.height())
+        self._backdrop.setGeometry(0, 0, self.width(), self.height())
         self._panel.setGeometry(self._panel_x, 0, self.PANEL_WIDTH, self.height())
 
     def _animate_x(self, target: int) -> None:

@@ -161,8 +161,9 @@ class ChapterSessionManager(QObject):
 
     @staticmethod
     def _validate_login_config(config: ApiConfig) -> str:
-        # CA 证书仅在连接使用自签证书的服务器时需要手动配置；
-        # 公网可信证书由 requests 通过系统 CA bundle 验证，无需额外配置。
+        # HTTPS 连接必须显式配置 CA 证书，设置页保存和自动登录共用同一校验规则。
+        if config.base_url.strip().lower().startswith("https://") and not config.ca_cert_file.strip():
+            return "HTTPS connections require a configured CA certificate."
         return ""
 
     def _on_login_finished(self, client: TuvClient, success: bool) -> None:

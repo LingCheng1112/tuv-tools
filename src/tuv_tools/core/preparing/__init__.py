@@ -15,6 +15,14 @@ def _win32com_client():
     return win32com.client
 
 
+def create_isolated_word_application(client):
+    """创建隔离的 Word 实例，避免绑定并关闭用户已打开的窗口。"""
+    dispatch_ex = getattr(client, "DispatchEx", None)
+    if callable(dispatch_ex):
+        return dispatch_ex("Word.Application")
+    return client.Dispatch("Word.Application")
+
+
 def prepare_single_doc(doc, app) -> None:
     """对已打开的文档执行复选框替换（不管理 Word 生命周期）"""
     if doc.ProtectionType != -1:

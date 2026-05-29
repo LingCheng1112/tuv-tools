@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from tuv_tools import APP_NAME
 from tuv_tools.core.chapter.models import ApiConfig
+from tuv_tools.ui.theme import ThemeManager, ThemeColors, ACCENT_ERROR, ACCENT_PRIMARY
 from tuv_tools.ui.widgets import FOCUS_STYLE
 
 
@@ -65,11 +66,12 @@ class _LoadingSpinner(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = self.rect().adjusted(4, 4, -4, -4)
 
-        track_pen = QPen(QColor("#38414f"), 3)
+        c = ThemeManager.instance().colors
+        track_pen = QPen(QColor(c.spinner_track), 3)
         painter.setPen(track_pen)
         painter.drawArc(rect, 0, 360 * 16)
 
-        progress_pen = QPen(QColor("#4a9eff"), 3)
+        progress_pen = QPen(QColor(ACCENT_PRIMARY), 3)
         progress_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(progress_pen)
         painter.drawArc(rect, (90 - self._angle) * 16, -120 * 16)
@@ -87,37 +89,6 @@ class StartupView(QWidget):
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(720, 520)
         self.resize(900, 620)
-        self.setStyleSheet(
-            """
-            QWidget {
-                background-color: #1f2329;
-                color: #f4f5f7;
-                font-size: 14px;
-            }
-            QLineEdit {
-                background-color: #181c22;
-                border: 1px solid #495466;
-                border-radius: 8px;
-                padding: 10px 12px;
-                min-height: 18px;
-            }
-            QPushButton {
-                border-radius: 8px;
-                padding: 10px 18px;
-                font-weight: bold;
-            }
-            QPushButton#PrimaryButton {
-                background-color: #4a9eff;
-                color: white;
-            }
-            QPushButton#SecondaryButton {
-                background-color: transparent;
-                color: #c8d0db;
-                border: 1px solid #4e5663;
-            }
-            """
-            + FOCUS_STYLE
-        )
 
         self._loading_logo_size = 210
         self._login_logo_size = 128
@@ -174,9 +145,64 @@ class StartupView(QWidget):
         self._login_wrap.setGraphicsEffect(self._login_opacity)
         self._login_opacity.setOpacity(0.0)
 
+        self._apply_base_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_base_theme)
         self._apply_logo_size(self._loading_logo_size)
         self._update_transition_progress(0.0, force=True)
         self._update_login_slide_progress(0.0, force=True)
+
+    def _apply_base_theme(self) -> None:
+        c = ThemeManager.instance().colors
+        self.setStyleSheet(
+            f"""
+            QWidget {{
+                background-color: {c.bg_secondary};
+                color: {c.text_heading};
+                font-size: 14px;
+            }}
+            QLineEdit {{
+                background-color: {c.bg_input};
+                border: 1px solid {c.border_primary};
+                border-radius: 8px;
+                padding: 10px 12px;
+                min-height: 18px;
+            }}
+            QPushButton {{
+                border-radius: 8px;
+                padding: 10px 18px;
+                font-weight: bold;
+            }}
+            QPushButton#PrimaryButton {{
+                background-color: {ACCENT_PRIMARY};
+                color: white;
+            }}
+            QPushButton#SecondaryButton {{
+                background-color: transparent;
+                color: {c.text_secondary};
+                border: 1px solid {c.border_secondary};
+            }}
+            """
+            + FOCUS_STYLE
+        )
+        subtitle = getattr(self, "_subtitle", None)
+        if subtitle is not None:
+            subtitle.setStyleSheet(f"color: {c.text_secondary}; font-size: 15px;")
+        if hasattr(self, "_login_heading"):
+            self._login_heading.setStyleSheet(
+                f"color: {c.text_heading}; font-size: 16px; font-weight: bold;"
+            )
+        if hasattr(self, "_error_label"):
+            self._error_label.setStyleSheet(f"color: {ACCENT_ERROR};")
+        for label in getattr(self, "_login_form_labels", []):
+            label.setStyleSheet(
+                f"color: {c.text_secondary}; font-size: 13px; font-weight: bold;"
+            )
+        for field in (getattr(self, "_url_edit", None), getattr(self, "_user_edit", None), getattr(self, "_password_edit", None)):
+            if field is not None:
+                field.setStyleSheet(
+                    f"background-color: {c.bg_input}; border: 1px solid {c.border_primary};"
+                    "border-radius: 8px; padding: 10px 12px; min-height: 18px;"
+                )
 
     def _build_logo_pixmap(self, logo_path: Path) -> QPixmap | None:
         if logo_path.suffix.lower() == ".svg":
@@ -240,6 +266,7 @@ class StartupView(QWidget):
         self._user_edit = QLineEdit()
         self._password_edit = QLineEdit()
         self._password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._login_form_labels: list[QLabel] = []
 
         for label_text, field in (
             ("URL", self._url_edit),
@@ -247,7 +274,7 @@ class StartupView(QWidget):
             ("密码", self._password_edit),
         ):
             label = QLabel(label_text)
-            label.setStyleSheet("color: #b8c0cc; font-size: 13px; font-weight: bold;")
+            self._login_form_labels.append(label)
             layout.addWidget(label)
             layout.addWidget(field)
 

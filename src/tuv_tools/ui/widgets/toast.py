@@ -5,6 +5,8 @@ from __future__ import annotations
 from PySide6.QtCore import QPropertyAnimation, QTimer, Property
 from PySide6.QtWidgets import QLabel, QWidget
 
+from tuv_tools.ui.theme import ThemeManager
+
 
 class Toast(QWidget):
     """右下角 toast 通知，作为父控件的子控件显示，定时后淡出销毁"""
@@ -12,17 +14,20 @@ class Toast(QWidget):
     def __init__(self, parent: QWidget, message: str, duration_ms: int = 2000):
         super().__init__(parent)
 
+        c = ThemeManager.instance().colors
         label = QLabel(message, self)
-        label.setStyleSheet("""
-            QLabel {
-                background-color: #3c3f41;
-                color: #dcdcdc;
+        label.setStyleSheet(
+            f"""
+            QLabel {{
+                background-color: {c.bg_selected};
+                color: {c.text_primary};
                 padding: 10px 20px;
-                border: 1px solid #555;
+                border: 1px solid {c.border_secondary};
                 border-radius: 6px;
                 font-size: 13px;
-            }
-        """)
+            }}
+            """
+        )
         label.adjustSize()
         self.resize(label.size())
 

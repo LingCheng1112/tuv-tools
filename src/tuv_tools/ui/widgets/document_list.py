@@ -13,16 +13,20 @@ from tuv_tools.core.splitter.ui_helpers import (
     is_importable_docx,
     is_selectable_document_status,
 )
-from . import CHECKBOX_STYLE
+from tuv_tools.ui.theme import ThemeManager, ACCENT_PRIMARY
+from . import checkbox_style, scrollbar_style
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
+    QHBoxLayout,
     QHeaderView,
     QMenu,
     QMessageBox,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
+    QWidget,
 )
 
 class DocumentTable(QTableWidget):
@@ -56,7 +60,7 @@ class DocumentTable(QTableWidget):
             "", "文件名", "标准号", "状态", "条款数", "拆分时间"
         ])
         self.horizontalHeader().setSectionResizeMode(self.COL_FILE, QHeaderView.Stretch)
-        self.setColumnWidth(self.COL_CHECK, 36)
+        self.setColumnWidth(self.COL_CHECK, 44)
         self.setColumnWidth(self.COL_STANDARD, 120)
         self.setColumnWidth(self.COL_STATUS, 130)
         self.setColumnWidth(self.COL_COUNT, 55)
@@ -73,40 +77,53 @@ class DocumentTable(QTableWidget):
         self.customContextMenuRequested.connect(self._show_context_menu)
         self.cellDoubleClicked.connect(self._on_double_click)
         self.itemChanged.connect(self._on_item_changed)
-        self._base_style = """
-            QTableWidget {
-                background-color: #2b2d30;
-                alternate-background-color: #303336;
-                color: #dcdcdc;
-                border: none;
-                font-size: 13px;
-                outline: none;
-            }
-            QTableWidget::item {
-                padding: 8px 10px;
-                border: none;
-            }
-            QTableWidget::item:selected {
-                background-color: #3c3f41;
-                color: #ffffff;
-            }
-            QHeaderView::section {
-                background-color: #2b2d30;
-                color: #999;
-                border: none;
-                border-bottom: 2px solid #4a4d50;
-                padding: 8px 10px;
-                font-size: 12px;
-                font-weight: bold;
-            }
-        """
-        self.setStyleSheet(self._base_style)
+        self._base_style = ""
+        self._apply_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
 
         # 拖拽支持
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
         self._drag_files: list[str] = []
         self._suppress_item_changed = False
+
+    def _build_base_style(self) -> str:
+        c = ThemeManager.instance().colors
+        return f"""
+            QTableWidget {{
+                background-color: {c.bg_primary};
+                alternate-background-color: {c.bg_tertiary};
+                color: {c.text_primary};
+                border: none;
+                font-size: 13px;
+                outline: none;
+            }}
+            QTableWidget::item {{
+                padding: 8px 10px;
+                border: none;
+            }}
+            QTableWidget::item:selected {{
+                background-color: {c.bg_selected};
+                color: {c.text_inverse};
+            }}
+            QHeaderView::section {{
+                background-color: {c.bg_primary};
+                color: {c.text_muted};
+                border: none;
+                border-bottom: 2px solid {c.border_primary};
+                padding: 8px 10px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+        """ + scrollbar_style()
+
+    def _apply_theme(self) -> None:
+        self._base_style = self._build_base_style()
+        self.setStyleSheet(self._base_style)
+        for row in range(self.rowCount()):
+            checkbox = self._row_checkbox(row)
+            if isinstance(checkbox, QCheckBox):
+                checkbox.setStyleSheet(checkbox_style())
 
     # ---- 数据加载 ----
 
@@ -133,12 +150,12 @@ class DocumentTable(QTableWidget):
     def _build_row(self, row: int, doc: dict) -> None:
         # 勾选框
         cb = QCheckBox()
-        cb.setStyleSheet(CHECKBOX_STYLE)
+        cb.setStyleSheet(checkbox_style())
         cb.setChecked(doc["id"] in self._checked)
         cb.toggled.connect(lambda checked, d=doc: self._on_toggle(d["id"], checked))
         can_select = is_selectable_document_status(doc["status"])
         cb.setEnabled(can_select)
-        self.setCellWidget(row, self.COL_CHECK, cb)
+        self.setCellWidget(row, self.COL_CHECK, self._wrap_checkbox(cb))
 
         # 文件名
         file_name = doc["file_name"]
@@ -167,6 +184,27 @@ class DocumentTable(QTableWidget):
         display_time = split_at[:16] if len(split_at) > 16 else split_at
         self.setItem(row, self.COL_SPLIT_AT,
                      self._make_item(display_time, split_at if split_at != "-" else ""))
+
+    @staticmethod
+    def _wrap_checkbox(checkbox: QCheckBox) -> QWidget:
+        checkbox_size = checkbox.sizeHint()
+        checkbox.setFixedSize(checkbox_size)
+        container = QWidget()
+        container.setFixedSize(checkbox_size)
+        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addStretch()
+        layout.addWidget(checkbox)
+        layout.addStretch()
+        return container
+
+    def _row_checkbox(self, row: int) -> QCheckBox | None:
+        container = self.cellWidget(row, self.COL_CHECK)
+        if container is None:
+            return None
+        return container.findChild(QCheckBox)
 
     def _on_double_click(self, row: int, col: int) -> None:
         if 0 <= row < len(self._data):
@@ -342,7 +380,7 @@ class DocumentTable(QTableWidget):
                 existing_count = doc.get("last_section_count")
                 count_text = str(existing_count) if existing_count else "-"
                 self.setItem(row, self.COL_COUNT, self._make_item(count_text))
-                cb = self.cellWidget(row, self.COL_CHECK)
+                cb = self._row_checkbox(row)
                 selection_changed = False
                 if isinstance(cb, QCheckBox):
                     if not is_selectable_document_status(status) and doc_id in self._checked:
@@ -358,7 +396,7 @@ class DocumentTable(QTableWidget):
 
     def _rebuild_checkboxes(self) -> None:
         for row, doc in enumerate(self._data):
-            cb = self.cellWidget(row, self.COL_CHECK)
+            cb = self._row_checkbox(row)
             if isinstance(cb, QCheckBox):
                 cb.setChecked(doc["id"] in self._checked)
 
@@ -368,7 +406,7 @@ class DocumentTable(QTableWidget):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
             self.setStyleSheet(self._base_style + """
-                QTableWidget { border: 2px dashed #4a9eff; }
+                QTableWidget { border: 2px dashed """ + ACCENT_PRIMARY + """; }
             """)
 
     def dragLeaveEvent(self, event) -> None:

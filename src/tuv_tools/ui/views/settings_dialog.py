@@ -6,8 +6,10 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -28,7 +30,8 @@ from PySide6.QtWidgets import (
 from tuv_tools.config import AppSettings
 from tuv_tools.core.chapter.models import ApiConfig
 from tuv_tools.core.chapter.session import ChapterSessionManager
-from tuv_tools.ui.widgets import CHECKBOX_STYLE
+from tuv_tools.ui.theme import ACCENT_SUCCESS, ThemeManager, ThemeMode
+from tuv_tools.ui.widgets import checkbox_style, FOCUS_STYLE, scrollbar_style
 
 
 class SettingsDialog(QDialog):
@@ -41,6 +44,8 @@ class SettingsDialog(QDialog):
         session_manager: ChapterSessionManager | None = None,
     ):
         super().__init__(parent)
+        self.setObjectName("settingsDialog")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setWindowTitle("设置")
         self.setMinimumSize(560, 460)
         self.resize(620, 520)
@@ -63,7 +68,10 @@ class SettingsDialog(QDialog):
         )
         buttons.accepted.connect(self._save_and_accept)
         buttons.rejected.connect(self.reject)
+        self._button_box = buttons
         layout.addWidget(buttons)
+        self._apply_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
 
     def _get_db(self):
         from tuv_tools.config.database import DatabaseManager
@@ -73,6 +81,19 @@ class SettingsDialog(QDialog):
     def _build_splitter_tab(self) -> QWidget:
         widget = QWidget()
         layout = QFormLayout(widget)
+
+        # 主题选择
+        self._theme_combo = QComboBox()
+        self._theme_combo.addItem("暗色", ThemeMode.DARK.value)
+        self._theme_combo.addItem("亮色", ThemeMode.LIGHT.value)
+        self._theme_combo.addItem("跟随系统", ThemeMode.SYSTEM.value)
+        current_mode = ThemeManager.instance().mode
+        self._theme_combo.setCurrentIndex(
+            [ThemeMode.DARK.value, ThemeMode.LIGHT.value, ThemeMode.SYSTEM.value].index(
+                current_mode.value
+            )
+        )
+        layout.addRow("主题:", self._theme_combo)
 
         self._app_data_root_edit = QLineEdit(str(self._original_app_data_root))
         self._app_data_root_edit.setReadOnly(True)
@@ -95,7 +116,7 @@ class SettingsDialog(QDialog):
         layout.addRow("默认输出路径:", output_row)
 
         self._auto_open_cb = QCheckBox("拆分完成后自动打开输出目录")
-        self._auto_open_cb.setStyleSheet(CHECKBOX_STYLE)
+        self._auto_open_cb.setStyleSheet(checkbox_style())
         self._auto_open_cb.setChecked(self._db.get_config("splitter.auto_open", "false") == "true")
         layout.addRow(self._auto_open_cb)
         return widget
@@ -190,6 +211,136 @@ class SettingsDialog(QDialog):
         layout.addLayout(btn_row)
         return widget
 
+    def _apply_theme(self) -> None:
+        c = ThemeManager.instance().colors
+        combo_popup_style = (
+            f"""
+            QListView, QAbstractItemView, QFrame {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                outline: none;
+            }}
+            QListView::item, QAbstractItemView::item {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                padding: 8px 10px;
+                min-height: 24px;
+            }}
+            QListView::item:selected, QAbstractItemView::item:selected {{
+                background-color: {c.bg_selected};
+                color: {c.text_inverse};
+            }}
+            QListView::item:hover, QAbstractItemView::item:hover {{
+                background-color: {c.bg_hover};
+                color: {c.text_primary};
+            }}
+            """
+            + scrollbar_style()
+        )
+        self.setStyleSheet(
+            FOCUS_STYLE
+            + f"""
+            #settingsDialog {{
+                background-color: {c.bg_secondary};
+            }}
+            #settingsDialog QLabel {{
+                color: {c.text_primary};
+            }}
+            #settingsDialog QTabWidget::pane {{
+                border: 1px solid {c.border_primary};
+                background-color: {c.bg_primary};
+                top: -1px;
+            }}
+            #settingsDialog QTabBar::tab {{
+                background-color: {c.bg_tertiary};
+                color: {c.text_secondary};
+                border: 1px solid {c.border_primary};
+                border-bottom: none;
+                padding: 8px 16px;
+                min-width: 88px;
+            }}
+            #settingsDialog QTabBar::tab:selected {{
+                background-color: {c.bg_primary};
+                color: {c.text_heading};
+            }}
+            #settingsDialog QLineEdit,
+            #settingsDialog QComboBox {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 7px 10px;
+            }}
+            #settingsDialog QComboBox::drop-down {{
+                border: none;
+                width: 22px;
+            }}
+            #settingsDialog QComboBox QAbstractItemView {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                selection-background-color: {c.bg_selected};
+                selection-color: {c.text_inverse};
+            }}
+            #settingsDialog QTableWidget {{
+                background-color: {c.bg_primary};
+                alternate-background-color: {c.bg_tertiary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 8px;
+                gridline-color: {c.border_subtle};
+            }}
+            #settingsDialog QHeaderView {{
+                background-color: {c.bg_primary};
+            }}
+            #settingsDialog QHeaderView::section {{
+                background-color: {c.bg_primary};
+                color: {c.text_muted};
+                border: none;
+                border-bottom: 1px solid {c.border_secondary};
+                padding: 8px 10px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+            #settingsDialog QHeaderView::section:vertical {{
+                background-color: {c.bg_primary};
+                color: {c.text_muted};
+                border: none;
+                border-right: 1px solid {c.border_secondary};
+                border-bottom: 1px solid {c.border_secondary};
+                padding: 0px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            #settingsDialog QTableCornerButton::section {{
+                background-color: {c.bg_primary};
+                border: none;
+                border-right: 1px solid {c.border_secondary};
+                border-bottom: 1px solid {c.border_secondary};
+            }}
+            #settingsDialog QPushButton {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 6px 14px;
+            }}
+            #settingsDialog QPushButton:hover {{
+                background-color: {c.bg_hover};
+            }}
+            """
+            + scrollbar_style()
+        )
+        if hasattr(self, "_theme_combo"):
+            for combo in self.findChildren(QComboBox):
+                combo.view().setStyleSheet(combo_popup_style)
+                combo.view().window().setStyleSheet(combo_popup_style)
+                combo.view().window().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._auto_open_cb.setStyleSheet(checkbox_style())
+        self._update_ca_cert_status()
+        self._update_rsa_status()
+
     def _choose_output_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(
             self,
@@ -227,7 +378,7 @@ class SettingsDialog(QDialog):
         has_cert = bool(self._ca_cert_path.strip())
         self._ca_cert_status.setText("已配置" if has_cert else "未配置")
         self._ca_cert_status.setStyleSheet(
-            "color: #4caf50; font-weight: bold;" if has_cert else "color: #888;"
+            self._status_label_style(has_cert)
         )
         if hasattr(self, "_ca_clear_btn"):
             self._ca_clear_btn.setVisible(has_cert)
@@ -236,9 +387,18 @@ class SettingsDialog(QDialog):
         has_key = bool(self._rsa_edit.text().strip())
         self._rsa_status.setText("已配置" if has_key else "未配置")
         self._rsa_status.setStyleSheet(
-            "color: #4caf50; font-weight: bold;" if has_key else "color: #888;"
+            self._status_label_style(has_key)
         )
         self._rsa_clear_btn.setVisible(has_key)
+
+    @staticmethod
+    def _status_label_style(has_value: bool) -> str:
+        c = ThemeManager.instance().colors
+        return (
+            f"color: {ACCENT_SUCCESS}; font-weight: bold;"
+            if has_value
+            else f"color: {c.text_muted};"
+        )
 
     def _load_rsa_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -396,6 +556,10 @@ class SettingsDialog(QDialog):
             self._settings.normalize_splitter_output_path(self._output_edit.text().strip()),
         )
         self._db.set_config("splitter.auto_open", "true" if self._auto_open_cb.isChecked() else "false")
+
+        theme_value = self._theme_combo.currentData()
+        ThemeManager.instance().mode = ThemeMode(theme_value)
+
         api_config = self._build_api_config()
         self._validate_login_config(api_config)
         self._settings.save_api_config(api_config)

@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from tuv_tools.core.preparing import prepare_single_doc, _STOP
+from tuv_tools.core.preparing import prepare_single_doc, create_isolated_word_application, _STOP
 
 
 def _make_doc():
@@ -47,3 +47,26 @@ class TestStopSentinel:
 
     def test_stop_is_unique_object(self):
         assert _STOP != "stop"  # compare by value, not identity with literal
+
+
+class TestCreateIsolatedWordApplication:
+    def test_prefers_dispatch_ex_when_available(self):
+        client = MagicMock()
+        app = MagicMock()
+        client.DispatchEx.return_value = app
+
+        result = create_isolated_word_application(client)
+
+        assert result is app
+        client.DispatchEx.assert_called_once_with("Word.Application")
+        client.Dispatch.assert_not_called()
+
+    def test_falls_back_to_dispatch_when_dispatch_ex_missing(self):
+        app = MagicMock()
+        dispatch = MagicMock(return_value=app)
+        client = type("Client", (), {"Dispatch": dispatch})()
+
+        result = create_isolated_word_application(client)
+
+        assert result is app
+        dispatch.assert_called_once_with("Word.Application")

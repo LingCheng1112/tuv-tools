@@ -21,13 +21,14 @@ from PySide6.QtWidgets import (
 )
 
 from tuv_tools.config import AppSettings
+from tuv_tools.ui.theme import ThemeManager, ACCENT_DANGER, ACCENT_PRIMARY
 from tuv_tools.core.splitter import build_sections, export_docx_outputs
 from tuv_tools.core.splitter.exporting import get_output_base_dir_name
 from tuv_tools.core.splitter.models import CoreProgressEvent, SplitCancelled
 from tuv_tools.core.splitter.ui_helpers import build_split_summary, resolve_output_root
 from tuv_tools.core.splitter.utils import CleanPatterns, safe_name
 from tuv_tools.ui.views.splitter_progress import ProgressThrottler, SplitProgressMapper
-from tuv_tools.ui.widgets import CHECKBOX_STYLE, FOCUS_STYLE
+from tuv_tools.ui.widgets import checkbox_style, FOCUS_STYLE, scrollbar_style
 from tuv_tools.ui.widgets.clause_panel import ClauseOverlay
 from tuv_tools.ui.widgets.document_list import DocumentTable
 from tuv_tools.ui.widgets.standard_number_prompt_dialog import resolve_standard_number_overrides
@@ -128,6 +129,8 @@ class SplitterView(QWidget):
 
     def __init__(self):
         super().__init__()
+        self.setObjectName("splitterView")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(FOCUS_STYLE)
         self._settings = AppSettings()
         self._worker: SplitWorker | None = None
@@ -150,19 +153,19 @@ class SplitterView(QWidget):
         layout.setSpacing(10)
 
         title_row = QHBoxLayout()
-        title = QLabel("文档拆分")
-        title.setStyleSheet("font-size: 18px; font-weight: bold;")
-        title_row.addWidget(title)
+        self._title_label = QLabel("文档拆分")
+        self._title_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+        title_row.addWidget(self._title_label)
         title_row.addStretch()
         layout.addLayout(title_row)
 
         toolbar = QHBoxLayout()
-        import_file_btn = QPushButton("导入文件")
-        import_file_btn.clicked.connect(self._import_files)
-        toolbar.addWidget(import_file_btn)
-        import_dir_btn = QPushButton("导入文件夹")
-        import_dir_btn.clicked.connect(self._import_dir)
-        toolbar.addWidget(import_dir_btn)
+        self._import_file_btn = QPushButton("导入文件")
+        self._import_file_btn.clicked.connect(self._import_files)
+        toolbar.addWidget(self._import_file_btn)
+        self._import_dir_btn = QPushButton("导入文件夹")
+        self._import_dir_btn.clicked.connect(self._import_dir)
+        toolbar.addWidget(self._import_dir_btn)
         toolbar.addSpacing(16)
 
         self._search_edit = QLineEdit()
@@ -186,7 +189,7 @@ class SplitterView(QWidget):
 
         bottom = QHBoxLayout()
         self._select_all_cb = QCheckBox("全选")
-        self._select_all_cb.setStyleSheet(CHECKBOX_STYLE)
+        self._select_all_cb.setStyleSheet(checkbox_style())
         self._select_all_cb.toggled.connect(self._table.set_all_checked)
         bottom.addWidget(self._select_all_cb)
         self._selected_label = QLabel("已选 0/0 项")
@@ -194,12 +197,10 @@ class SplitterView(QWidget):
         bottom.addWidget(self._selected_label)
         bottom.addStretch()
         self._delete_btn = QPushButton("删除选中")
-        self._delete_btn.setStyleSheet(self._action_btn_style("#d9534f"))
         self._delete_btn.setEnabled(False)
         self._delete_btn.clicked.connect(self._delete_selected)
         bottom.addWidget(self._delete_btn)
         self._split_btn = QPushButton("开始拆分选中")
-        self._split_btn.setStyleSheet(self._action_btn_style("#4a9eff"))
         self._split_btn.clicked.connect(self._start_batch_split)
         bottom.addWidget(self._split_btn)
         layout.addLayout(bottom)
@@ -211,57 +212,123 @@ class SplitterView(QWidget):
         self._progress_title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._progress_detail = QLabel("")
         self._progress_detail.setVisible(False)
-        self._progress_detail.setStyleSheet("color: #999; font-size: 12px;")
         layout.addWidget(self._progress_title)
         layout.addWidget(self._progress_detail)
 
         self._progress = QProgressBar()
         self._progress.setVisible(False)
         self._progress.setFixedHeight(22)
-        self._progress.setStyleSheet("""
-            QProgressBar {
-                background-color: #2b2d30;
-                border: 1px solid #555;
-                border-radius: 4px;
-                text-align: center;
-                color: #dcdcdc;
-                font-size: 12px;
-            }
-            QProgressBar::chunk {
-                background-color: #4a9eff;
-                border-radius: 3px;
-            }
-        """)
         self._cancel_btn = QPushButton("取消")
         self._cancel_btn.setVisible(False)
         self._cancel_btn.setFixedWidth(90)
-        self._cancel_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #555; color: #dcdcdc;
-                border: none; border-radius: 4px; padding: 4px 12px;
-            }
-            QPushButton:hover { background-color: #666; }
-        """)
         self._cancel_btn.clicked.connect(self._cancel_split)
         progress_row = QHBoxLayout()
         progress_row.addWidget(self._progress, stretch=1)
         progress_row.addWidget(self._cancel_btn)
         layout.addLayout(progress_row)
 
-    @staticmethod
-    def _action_btn_style(color: str) -> str:
-        return f"""
+        self._apply_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
+
+    def _apply_action_btn_theme(self) -> None:
+        c = ThemeManager.instance().colors
+        style = lambda accent: (
+            f"""
             QPushButton {{
-                background-color: {color};
+                background-color: {accent};
                 color: white;
                 font-weight: bold;
                 border: none;
                 border-radius: 4px;
                 padding: 6px 16px;
             }}
-            QPushButton:hover {{ background-color: {color}; opacity: 0.9; }}
-            QPushButton:disabled {{ background-color: #666666; }}
-        """
+            QPushButton:hover {{ background-color: {accent}; opacity: 0.9; }}
+            QPushButton:disabled {{ background-color: {c.disabled_bg}; }}
+            """
+        )
+        self._delete_btn.setStyleSheet(style(ACCENT_DANGER))
+        self._split_btn.setStyleSheet(style(ACCENT_PRIMARY))
+
+    def _apply_theme(self) -> None:
+        c = ThemeManager.instance().colors
+        self.setStyleSheet(
+            FOCUS_STYLE
+            + f"""
+            #splitterView {{
+                background-color: {c.bg_secondary};
+            }}
+            #splitterView QLabel {{
+                color: {c.text_primary};
+            }}
+            #splitterView QLineEdit {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 7px 10px;
+            }}
+            #splitterView QLineEdit:disabled {{
+                background-color: {c.bg_tertiary};
+                color: {c.text_muted};
+            }}
+            #splitterView QPushButton {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 6px 14px;
+            }}
+            #splitterView QPushButton:hover {{
+                background-color: {c.bg_hover};
+            }}
+            """
+            + scrollbar_style()
+        )
+        self._title_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {c.text_heading};")
+        self._selected_label.setStyleSheet(f"color: {c.text_secondary};")
+        self._select_all_cb.setStyleSheet(checkbox_style())
+        self._search_edit.setStyleSheet(
+            f"""
+            QLineEdit {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 7px 10px;
+            }}
+            """
+        )
+        self._progress_title.setStyleSheet(f"color: {c.text_secondary}; font-size: 12px; font-weight: 600;")
+        self._progress_detail.setStyleSheet(f"color: {c.text_muted}; font-size: 12px;")
+        self._progress.setStyleSheet(
+            f"""
+            QProgressBar {{
+                background-color: {c.bg_primary};
+                border: 1px solid {c.border_secondary};
+                border-radius: 4px;
+                text-align: center;
+                color: {c.text_primary};
+                font-size: 12px;
+            }}
+            QProgressBar::chunk {{
+                background-color: {ACCENT_PRIMARY};
+                border-radius: 3px;
+            }}
+            """
+        )
+        self._cancel_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: {c.border_secondary};
+                color: {c.text_primary};
+                border: none;
+                border-radius: 4px;
+                padding: 4px 12px;
+            }}
+            QPushButton:hover {{ background-color: {c.bg_hover}; }}
+            """
+        )
+        self._apply_action_btn_theme()
 
     def _import_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(

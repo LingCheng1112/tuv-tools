@@ -16,29 +16,16 @@ from PySide6.QtWidgets import (
 )
 
 from tuv_tools.core.chapter_batch.models import ClauseStatus
+from tuv_tools.ui.theme import ThemeManager
+from tuv_tools.ui.widgets import checkbox_style, scrollbar_style
 
 
-CHAPTER_BATCH_CHECKBOX_STYLE = """
-    QCheckBox {
-        spacing: 0px;
-        margin: 0px;
-        padding: 0px;
-    }
-    QCheckBox::indicator {
-        width: 14px;
-        height: 14px;
-        border: 1px solid #7a818a;
-        border-radius: 3px;
-        background-color: #23262a;
-    }
-    QCheckBox::indicator:checked {
-        background-color: #6f7782;
-        border-color: #8d96a1;
-    }
-    QCheckBox::indicator:hover {
-        border-color: #a2acb7;
-    }
-"""
+def chapter_batch_checkbox_style() -> str:
+    """返回当前主题下批量上传条款表格的复选框样式。"""
+    return checkbox_style()
+
+# 旧常量兼容
+CHAPTER_BATCH_CHECKBOX_STYLE = chapter_batch_checkbox_style()
 
 
 VIEW_ONLY_ACTIONS = {"打开本地 docx", "打开后端 chapter 记录"}
@@ -68,36 +55,6 @@ class ChapterBatchClauseTable(QTableWidget):
         self.setAlternatingRowColors(True)
         self.setShowGrid(False)
         self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.setStyleSheet(
-            """
-            QTableWidget {
-                background-color: #25272b;
-                alternate-background-color: #2b2e33;
-                color: #d7dce2;
-                border: 1px solid #3b3e43;
-                border-radius: 8px;
-                font-size: 13px;
-                gridline-color: transparent;
-            }
-            QTableWidget::item {
-                padding: 8px 10px;
-                border: none;
-            }
-            QTableWidget::item:selected {
-                background-color: #3b4a5c;
-                color: #ffffff;
-            }
-            QHeaderView::section {
-                background-color: #25272b;
-                color: #99a2ad;
-                border: none;
-                border-bottom: 1px solid #3b3e43;
-                padding: 8px 10px;
-                font-size: 12px;
-                font-weight: bold;
-            }
-            """
-        )
         header = self.horizontalHeader()
         self.setColumnWidth(self.COL_CHECK, 44)
         self.setColumnWidth(self.COL_TERM, 136)
@@ -108,6 +65,47 @@ class ChapterBatchClauseTable(QTableWidget):
         header.setSectionResizeMode(self.COL_CHAPTER_ID, QHeaderView.ResizeMode.ResizeToContents)
         self.verticalHeader().setDefaultSectionSize(38)
         self.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self._apply_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
+
+    def _apply_theme(self) -> None:
+        c = ThemeManager.instance().colors
+        self.setStyleSheet(
+            f"""
+            QTableWidget {{
+                background-color: {c.bg_primary};
+                alternate-background-color: {c.bg_tertiary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_secondary};
+                border-radius: 8px;
+                font-size: 13px;
+                gridline-color: transparent;
+            }}
+            QTableWidget::item {{
+                padding: 8px 10px;
+                border: none;
+            }}
+            QTableWidget::item:selected {{
+                background-color: {c.bg_selected};
+                color: {c.text_inverse};
+            }}
+            QHeaderView::section {{
+                background-color: {c.bg_primary};
+                color: {c.text_muted};
+                border: none;
+                border-bottom: 1px solid {c.border_secondary};
+                padding: 8px 10px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+            """
+            + scrollbar_style()
+        )
+        for row in range(self.rowCount()):
+            checkbox = self._row_checkbox(row)
+            if isinstance(checkbox, QCheckBox):
+                checkbox.setStyleSheet(chapter_batch_checkbox_style())
+        self._header.viewport().update()
 
     def load_clauses(self, clauses: list[dict]) -> None:
         self.setRowCount(len(clauses))
@@ -117,7 +115,7 @@ class ChapterBatchClauseTable(QTableWidget):
             clause_id = clause.get("id")
 
             checkbox = QCheckBox()
-            checkbox.setStyleSheet(CHAPTER_BATCH_CHECKBOX_STYLE)
+            checkbox.setStyleSheet(chapter_batch_checkbox_style())
             checkbox.setChecked(bool(clause.get("checked", True)))
             checkbox.toggled.connect(self._sync_header_state)
             self.setCellWidget(row, self.COL_CHECK, self._wrap_checkbox(checkbox))
@@ -306,14 +304,15 @@ class _ClauseCheckHeader(QHeaderView):
         super().paintSection(painter, rect, logical_index)
         if logical_index != ChapterBatchClauseTable.COL_CHECK:
             return
+        c = ThemeManager.instance().colors
         indicator_rect = QRect(
             rect.x() + (rect.width() - 14) // 2,
             rect.y() + (rect.height() - 14) // 2,
             14,
             14,
         )
-        border_color = "#8d96a1" if self._checked else "#7a818a"
-        fill_color = "#6f7782" if self._checked else "#23262a"
+        border_color = c.checkbox_bg if self._checked else c.checkbox_border
+        fill_color = c.checkbox_bg if self._checked else c.bg_input
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setPen(border_color)
@@ -321,7 +320,7 @@ class _ClauseCheckHeader(QHeaderView):
         painter.drawRoundedRect(indicator_rect.adjusted(0, 0, -1, -1), 3, 3)
         if self._checked:
             inner = indicator_rect.adjusted(3, 3, -3, -3)
-            painter.setPen(QColor("#ffffff"))
+            painter.setPen(QColor(c.text_inverse))
             painter.drawLine(inner.left(), inner.center().y(), inner.center().x() - 1, inner.bottom())
             painter.drawLine(inner.center().x() - 1, inner.bottom(), inner.right(), inner.top() + 1)
         painter.restore()

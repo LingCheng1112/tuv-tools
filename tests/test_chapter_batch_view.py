@@ -335,8 +335,8 @@ def test_checkboxes_update_selected_document_ids_in_list_order(qapp):
         )
 
     view._load_documents()
-    first = view._table.cellWidget(0, 0)
-    third = view._table.cellWidget(2, 0)
+    first = view._row_checkbox(0)
+    third = view._row_checkbox(2)
     assert isinstance(first, QCheckBox)
     assert isinstance(third, QCheckBox)
 
@@ -345,6 +345,28 @@ def test_checkboxes_update_selected_document_ids_in_list_order(qapp):
 
     ordered_ids = [view._documents[0].id, view._documents[2].id]
     assert view._selected_document_ids == ordered_ids
+
+
+def test_document_table_wraps_checkbox_column_widgets(qapp):
+    from PySide6.QtWidgets import QCheckBox
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
+    repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/one.docx",
+            file_name="one.docx",
+            document_status=DocumentStatus.PENDING_CONFIRM.value,
+        )
+    )
+
+    view._load_documents()
+
+    assert view._table.columnWidth(view.COL_CHECK) == 44
+    assert not isinstance(view._table.cellWidget(0, view.COL_CHECK), QCheckBox)
+    assert isinstance(view._row_checkbox(0), QCheckBox)
 
 
 def test_double_click_document_opens_drawer(qapp):
@@ -879,6 +901,16 @@ def test_ask_duplicate_decision_uses_business_buttons(qapp, monkeypatch):
 
     assert clicked["texts"] == ["覆盖", "跳过当前条款", "后续重复全部跳过"]
     assert decision == "skip"
+
+
+def test_summary_widget_is_centered_and_transparent(qapp):
+    from PySide6.QtCore import Qt
+    from tuv_tools.ui.views.chapter_batch_view import _SummaryTextWidget
+
+    widget = _SummaryTextWidget("成功 8 / 失败 0")
+
+    assert widget.styleSheet() == "background: transparent;"
+    assert widget._label.alignment() == Qt.AlignmentFlag.AlignCenter
 
 
 def test_duplicate_lookup_queries_backend_by_clause_term_and_test_content(qapp, monkeypatch):

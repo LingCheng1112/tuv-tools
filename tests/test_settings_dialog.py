@@ -169,6 +169,26 @@ def test_settings_dialog_can_clear_ca_certificate_status(qapp, tmp_path):
     assert dialog._ca_cert_status.text() == "未配置"
 
 
+def test_settings_dialog_theme_combo_popup_uses_current_theme_colors(qapp, tmp_path):
+    from tuv_tools.config import AppSettings
+    from tuv_tools.ui.theme import ThemeManager, ThemeMode
+    from tuv_tools.ui.views.settings_dialog import SettingsDialog
+
+    project_root = tmp_path / "repo"
+    project_root.mkdir(parents=True)
+    manager = ThemeManager.instance()
+    previous_mode = manager.mode
+    try:
+        manager.mode = ThemeMode.LIGHT
+        dialog = SettingsDialog(settings=AppSettings(project_root=project_root))
+        popup_style = dialog._theme_combo.view().styleSheet()
+
+        assert f"background-color: {manager.colors.bg_primary}" in popup_style
+        assert manager.colors.bg_selected in popup_style
+    finally:
+        manager.mode = previous_mode
+
+
 class _DummySession:
     def __init__(self, calls: list[str]):
         self._calls = calls

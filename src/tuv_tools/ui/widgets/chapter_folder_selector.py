@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from tuv_tools.core.chapter.api import get_folders
 from tuv_tools.core.chapter.client import TuvClient
 from tuv_tools.core.chapter.session import ChapterSessionManager
+from tuv_tools.ui.theme import ThemeManager
 
 
 CHAPTER_ROOT_FOLDER_ID = 2
@@ -137,15 +138,20 @@ class ChapterFolderSelector(QWidget):
         layout.setSpacing(8)
 
         self._display = QLabel("")
-        self._display.setStyleSheet("padding: 4px 6px; border: 1px solid #666;")
         layout.addWidget(self._display, stretch=1)
 
         self._button = QPushButton("选择")
         self._button.clicked.connect(self._open_dialog)
         layout.addWidget(self._button)
         self.set_connection_enabled(self._session_manager is None or self._session_manager.is_connected())
+        self._apply_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
         if self._session_manager is not None:
             self._session_manager.status_changed.connect(self._on_session_status_changed)
+
+    def _apply_theme(self) -> None:
+        c = ThemeManager.instance().colors
+        self._display.setStyleSheet(f"padding: 4px 6px; border: 1px solid {c.border_secondary};")
 
     def set_connection_enabled(self, enabled: bool) -> None:
         self._button.setEnabled(enabled)

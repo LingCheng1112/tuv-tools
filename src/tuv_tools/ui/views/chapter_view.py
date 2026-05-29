@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from tuv_tools.config import AppSettings
 from tuv_tools.core.chapter.session import ChapterConnectionStatus, ChapterSessionManager
-from tuv_tools.ui.widgets import CHECKBOX_STYLE, FOCUS_STYLE
+from tuv_tools.ui.widgets import checkbox_style, FOCUS_STYLE, scrollbar_style
 from tuv_tools.ui.widgets.chapter_folder_selector import ChapterFolderSelector
 from tuv_tools.core.chapter.api import (
     create_chapter,
@@ -44,6 +44,7 @@ from tuv_tools.core.chapter.models import (
     PageResult,
     STATUS_LABELS,
 )
+from tuv_tools.ui.theme import ThemeManager, ACCENT_DANGER, ACCENT_SUCCESS
 
 
 CHAPTER_ROOT_FOLDER_ID = 2
@@ -73,6 +74,8 @@ class ChapterView(QWidget):
 
     def __init__(self, session_manager: ChapterSessionManager | None = None):
         super().__init__()
+        self.setObjectName("chapterView")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(FOCUS_STYLE)
         self._settings = AppSettings()
         self._session_manager = session_manager
@@ -86,6 +89,8 @@ class ChapterView(QWidget):
         self._search_timer.setInterval(300)
         self._search_timer.timeout.connect(self._do_folder_search)
         self._setup_ui()
+        self._apply_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
         if self._session_manager is not None:
             self._session_manager.status_changed.connect(self._on_session_status_changed)
             self._apply_connection_state()
@@ -112,12 +117,13 @@ class ChapterView(QWidget):
         layout.setSpacing(8)
 
         self._offline_hint = QLabel("当前未连接后端，请先在设置中登录后再使用条款管理。")
-        self._offline_hint.setStyleSheet("color: #d9534f; font-size: 13px; padding: 4px 0;")
         self._offline_hint.setVisible(False)
         layout.addWidget(self._offline_hint)
 
         # 主体：左侧目录树 + 右侧内容
         self._content_root = QWidget(self)
+        self._content_root.setObjectName("chapterViewContent")
+        self._content_root.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         content_layout = QVBoxLayout(self._content_root)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
@@ -125,6 +131,8 @@ class ChapterView(QWidget):
 
         # 左侧目录树
         tree_container = QWidget()
+        tree_container.setObjectName("chapterViewTree")
+        tree_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         tree_layout = QVBoxLayout(tree_container)
         tree_layout.setContentsMargins(0, 0, 0, 0)
         tree_layout.setSpacing(4)
@@ -141,6 +149,8 @@ class ChapterView(QWidget):
 
         # 右侧内容区
         right_container = QWidget()
+        right_container.setObjectName("chapterViewRight")
+        right_container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         right_layout = QVBoxLayout(right_container)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(8)
@@ -170,10 +180,6 @@ class ChapterView(QWidget):
         toolbar.addWidget(self._clear_btn)
         toolbar.addStretch()
         self._add_btn = QPushButton("+ 新增")
-        self._add_btn.setStyleSheet(
-            "background-color:#4caf50;color:white;font-weight:bold;"
-            "border:none;border-radius:4px;padding:6px 16px;"
-        )
         self._add_btn.clicked.connect(self._show_create_dialog)
         toolbar.addWidget(self._add_btn)
         right_layout.addLayout(toolbar)
@@ -243,7 +249,6 @@ class ChapterView(QWidget):
         page_row.addWidget(self._next_btn)
         page_row.addStretch()
         self._info_label = QLabel("")
-        self._info_label.setStyleSheet("color: #888; font-size: 12px;")
         page_row.addWidget(self._info_label)
         right_layout.addLayout(page_row)
 
@@ -256,6 +261,202 @@ class ChapterView(QWidget):
         content_layout.addWidget(splitter, stretch=1)
         layout.addWidget(self._content_root, stretch=1)
 
+
+    def _action_btn_style(self, accent: str) -> str:
+        c = ThemeManager.instance().colors
+        return f"""
+            QPushButton {{
+                background-color: {accent};
+                color: white;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 16px;
+            }}
+            QPushButton:hover {{ background-color: {accent}; opacity: 0.9; }}
+            QPushButton:disabled {{ background-color: {c.disabled_bg}; }}
+        """
+
+    def _delete_btn_style(self) -> str:
+        return self._action_btn_style(ACCENT_DANGER)
+
+    def _apply_theme(self) -> None:
+        c = ThemeManager.instance().colors
+        combo_popup_style = (
+            f"background-color: {c.bg_primary};"
+            f"color: {c.text_primary};"
+            f"border: 1px solid {c.border_primary};"
+            f"selection-background-color: {c.bg_selected};"
+            f"selection-color: {c.text_inverse};"
+        )
+        self.setStyleSheet(
+            FOCUS_STYLE
+            + f"""
+            #chapterView {{
+                background-color: {c.bg_secondary};
+            }}
+            #chapterView QLabel {{
+                color: {c.text_primary};
+            }}
+            #chapterViewContent {{
+                background-color: {c.bg_secondary};
+            }}
+            #chapterViewTree {{
+                background-color: {c.bg_primary};
+                border-right: 1px solid {c.border_primary};
+            }}
+            #chapterViewRight {{
+                background-color: {c.bg_secondary};
+            }}
+            #chapterView QLineEdit,
+            #chapterView QComboBox {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 7px 10px;
+            }}
+            #chapterView QComboBox::drop-down {{
+                border: none;
+                width: 22px;
+            }}
+            #chapterView QComboBox QAbstractItemView {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                selection-background-color: {c.bg_selected};
+                selection-color: {c.text_inverse};
+            }}
+            #chapterView QPushButton {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 6px 14px;
+            }}
+            #chapterView QPushButton:hover {{
+                background-color: {c.bg_hover};
+            }}
+            #chapterView QTreeWidget {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: none;
+                outline: none;
+            }}
+            #chapterView QHeaderView::section {{
+                background-color: {c.bg_primary};
+                color: {c.text_muted};
+                border: none;
+                border-bottom: 1px solid {c.border_secondary};
+                padding: 8px 10px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+            #chapterView QTreeWidget::item:selected {{
+                background-color: {c.bg_selected};
+                color: {c.text_inverse};
+            }}
+            #chapterView QTreeWidget::item:hover {{
+                background-color: {c.bg_hover};
+            }}
+            """
+            + scrollbar_style()
+        )
+        self._status_combo.view().setStyleSheet(combo_popup_style)
+        self._offline_hint.setStyleSheet(f"color: {ACCENT_DANGER}; font-size: 13px; padding: 4px 0;")
+        self._query_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 6px 14px;
+            }}
+            QPushButton:hover {{
+                background-color: {c.bg_hover};
+            }}
+            """
+        )
+        self._clear_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 6px 14px;
+            }}
+            QPushButton:hover {{
+                background-color: {c.bg_hover};
+            }}
+            """
+        )
+        self._add_btn.setStyleSheet(self._action_btn_style(ACCENT_SUCCESS))
+        self._prev_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 6px 14px;
+            }}
+            QPushButton:hover {{
+                background-color: {c.bg_hover};
+            }}
+            """
+        )
+        self._next_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 6px 14px;
+            }}
+            QPushButton:hover {{
+                background-color: {c.bg_hover};
+            }}
+            """
+        )
+        self._page_label.setStyleSheet(f"color: {c.text_secondary};")
+        self._info_label.setStyleSheet(f"color: {c.text_muted}; font-size: 12px;")
+        self._table.setStyleSheet(
+            f"""
+            QTableWidget {{
+                background-color: {c.bg_primary};
+                alternate-background-color: {c.bg_tertiary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 8px;
+                font-size: 13px;
+                outline: none;
+            }}
+            QTableWidget::item {{
+                padding: 8px 10px;
+                border: none;
+            }}
+            QTableWidget::item:selected {{
+                background-color: {c.bg_selected};
+                color: {c.text_inverse};
+            }}
+            QHeaderView::section {{
+                background-color: {c.bg_primary};
+                color: {c.text_muted};
+                border: none;
+                border-bottom: 2px solid {c.border_primary};
+                padding: 8px 10px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+            """
+            + scrollbar_style()
+        )
+        self._table.viewport().update()
+        for btn in self.findChildren(QPushButton, "DeleteButton"):
+            btn.setStyleSheet(self._delete_btn_style())
 
     def _load_folder_tree(self):
         """加载目录树根节点"""
@@ -376,8 +577,9 @@ class ChapterView(QWidget):
             ops_layout.addWidget(edit_btn)
             if ch.status == ChapterStatus.DRAFT and ch.quote_cnt == 0:
                 del_btn = QPushButton("删除")
+                del_btn.setObjectName("DeleteButton")
                 del_btn.setFixedHeight(28)
-                del_btn.setStyleSheet("color: #f44336;")
+                del_btn.setStyleSheet(self._delete_btn_style())
                 del_btn.clicked.connect(lambda _, c=ch: self._confirm_delete(c))
                 ops_layout.addWidget(del_btn)
             ops.setMinimumWidth(148)
@@ -505,7 +707,7 @@ class ChapterDialog(QDialog):
 
         if not self._editing:
             self._batch_cb = QCheckBox("批量模式（条款号和测试内容用逗号分隔）")
-            self._batch_cb.setStyleSheet(CHECKBOX_STYLE)
+            self._batch_cb.setStyleSheet(checkbox_style())
             layout.addRow(self._batch_cb)
 
         default_folder_id = chapter.folder_id if chapter and chapter.folder_id else folder_id

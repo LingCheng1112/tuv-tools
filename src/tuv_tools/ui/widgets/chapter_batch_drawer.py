@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QEvent, QEasingCurve, QPropertyAnimation, Property, Qt, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QMessageBox,
     QHBoxLayout,
     QLabel,
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
 
 from tuv_tools.core.chapter.session import ChapterSessionManager
 from tuv_tools.core.chapter_batch.models import BatchImportDocument, display_document_status
+from tuv_tools.ui.theme import ThemeManager
 from .chapter_batch_clause_table import ChapterBatchClauseTable
 from .chapter_batch_document_form import ChapterBatchDocumentForm
 
@@ -25,6 +27,7 @@ class ChapterBatchDrawer(QWidget):
     PREFERRED_WIDTH = 640
     MAX_WIDTH = 760
     WIDTH_RATIO = 0.46
+    ANIM_DURATION = 220
 
     document_selected = Signal(int)
     save_requested = Signal(int)
@@ -40,20 +43,12 @@ class ChapterBatchDrawer(QWidget):
         self._document: BatchImportDocument | None = None
         self._active_document_id: int | None = None
         self._drawer_width = self.PREFERRED_WIDTH
+        self._panel_x = 0
+        self._expanded = False
+        self._anim: QPropertyAnimation | None = None
         self.setWindowFlags(Qt.Widget)
         self.setObjectName("chapterBatchDrawer")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(
-            """
-            #chapterBatchDrawer {
-                background-color: rgba(19, 21, 24, 48);
-            }
-            #drawerPanel {
-                background-color: #2b2d30;
-                border-left: 1px solid #4a4d50;
-            }
-            """
-        )
         self.setVisible(False)
 
         self._dismiss_zone = QWidget(self)
@@ -68,34 +63,16 @@ class ChapterBatchDrawer(QWidget):
 
         header = QHBoxLayout()
         self._title = QLabel("文档详情")
-        self._title.setStyleSheet("font-size: 16px; font-weight: bold; color: #f1f3f5;")
         header.addWidget(self._title)
         header.addStretch()
         self._close_btn = QPushButton("×")
         self._close_btn.setFixedSize(28, 28)
-        self._close_btn.setStyleSheet(
-            """
-            QPushButton {
-                background-color: transparent;
-                color: #c7ccd1;
-                border: none;
-                border-radius: 14px;
-                font-size: 18px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #3a3d41;
-                color: #ffffff;
-            }
-            """
-        )
-        self._close_btn.clicked.connect(self.hide)
+        self._close_btn.clicked.connect(self.collapse)
         header.addWidget(self._close_btn)
         layout.addLayout(header)
 
         self._summary = QLabel("")
         self._summary.setWordWrap(True)
-        self._summary.setStyleSheet("color: #b8bec6;")
         layout.addWidget(self._summary)
 
         self._document_form = ChapterBatchDocumentForm(self, session_manager=session_manager)
@@ -115,6 +92,50 @@ class ChapterBatchDrawer(QWidget):
         button_row.addStretch()
         layout.addLayout(button_row)
 
+        self._apply_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
+
+    def _apply_theme(self) -> None:
+        c = ThemeManager.instance().colors
+        self.setStyleSheet(
+            f"""
+            #chapterBatchDrawer {{
+                background-color: {c.bg_overlay};
+            }}
+            #drawerPanel {{
+                background-color: {c.bg_primary};
+                border-left: 1px solid {c.border_primary};
+            }}
+            """
+        )
+        self._title.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {c.text_heading};")
+        self._close_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {c.text_secondary};
+                border: none;
+                border-radius: 14px;
+                font-size: 18px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {c.bg_hover};
+                color: {c.text_primary};
+            }}
+            """
+        )
+        self._summary.setStyleSheet(f"color: {c.text_secondary};")
+
+    def set_x(self, x: int) -> None:
+        self._panel_x = x
+        self._panel.setGeometry(x, 0, self._drawer_width, self.height())
+
+    def _get_x(self) -> int:
+        return self._panel_x
+
+    _x_prop = Property(int, _get_x, set_x)
+
     def preferred_width(self, available_width: int | None = None) -> int:
         if available_width is None and self.parentWidget() is not None:
             available_width = self.parentWidget().width()
@@ -131,7 +152,13 @@ class ChapterBatchDrawer(QWidget):
         dismiss_width = max(0, available_width - self._drawer_width)
         self.setGeometry(0, 0, available_width, available_height)
         self._dismiss_zone.setGeometry(0, 0, dismiss_width, available_height)
-        self._panel.setGeometry(dismiss_width, 0, self._drawer_width, available_height)
+        if self._anim is not None and self._anim.state() == QPropertyAnimation.State.Running:
+            self._panel.setGeometry(self._panel_x, 0, self._drawer_width, available_height)
+            return
+        if self._expanded:
+            self.set_x(dismiss_width)
+            return
+        self.set_x(available_width)
 
     def set_documents(self, documents: list[BatchImportDocument]) -> None:
         if self._active_document_id is not None:
@@ -296,6 +323,50 @@ class ChapterBatchDrawer(QWidget):
 
     def eventFilter(self, watched, event) -> bool:
         if watched is self._dismiss_zone and event.type() == QEvent.Type.MouseButtonPress:
-            self.hide()
+            self.collapse()
             return True
         return super().eventFilter(watched, event)
+
+    def _animate_x(self, target: int) -> None:
+        if self._anim is not None and self._anim.state() == QPropertyAnimation.State.Running:
+            self._anim.stop()
+        self._anim = QPropertyAnimation(self, b"_x_prop")
+        app = QApplication.instance()
+        duration = 0 if app is not None and app.platformName() == "offscreen" else self.ANIM_DURATION
+        self._anim.setDuration(duration)
+        self._anim.setStartValue(self._panel_x)
+        self._anim.setEndValue(target)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.finished.connect(self._on_anim_done)
+        self._anim.start()
+
+    def _on_anim_done(self) -> None:
+        if not self._expanded:
+            self.setVisible(False)
+
+    def expand(self) -> None:
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        available_width = parent.width()
+        available_height = parent.height()
+        self._drawer_width = self.preferred_width(available_width)
+        target_x = max(0, available_width - self._drawer_width)
+        self.setGeometry(0, 0, available_width, available_height)
+        self._dismiss_zone.setGeometry(0, 0, target_x, available_height)
+        self.setVisible(True)
+        self.raise_()
+        self.set_x(available_width)
+        self._expanded = True
+        self._animate_x(target_x)
+
+    def collapse(self) -> None:
+        if not self.isVisible():
+            return
+        self._expanded = False
+        self._animate_x(self.width())
+
+    def hideEvent(self, event) -> None:
+        self._expanded = False
+        self._panel_x = self.width()
+        super().hideEvent(event)

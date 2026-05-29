@@ -25,6 +25,7 @@ def _make_client_mock(mock_wc, mock_psd):
     app = MagicMock()
     doc = MagicMock()
     app.Documents.Open.return_value = doc
+    client.DispatchEx.return_value = app
     client.Dispatch.return_value = app
     mock_wc.return_value = client
     return client, app, doc
@@ -65,7 +66,8 @@ class TestPreparingWorker:
         worker = PreparingWorker()
         worker.add_items([(1, "a.docx"), (2, "b.docx"), (3, "c.docx")])
         worker.run()
-        client.Dispatch.assert_called_once_with("Word.Application")
+        client.DispatchEx.assert_called_once_with("Word.Application")
+        client.Dispatch.assert_not_called()
         app.Quit.assert_called_once()
 
     @patch("tuv_tools.core.preparing.worker.prepare_single_doc")

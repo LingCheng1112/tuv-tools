@@ -62,6 +62,17 @@ class FakeDropEvent:
 
 
 class TestDocumentTable:
+    def test_checkbox_column_uses_wrapped_centered_checkbox(self, qapp, tmp_path):
+        path = tmp_path / "sample.docx"
+        path.write_text("x", encoding="utf-8")
+
+        table = DocumentTable()
+        table.load_documents([_doc(1, path, "pending")])
+
+        assert table.columnWidth(table.COL_CHECK) == 44
+        assert not isinstance(table.cellWidget(0, table.COL_CHECK), QCheckBox)
+        assert isinstance(table._row_checkbox(0), QCheckBox)
+
     def test_double_click_standard_column_starts_inline_edit(self, qapp, tmp_path, monkeypatch):
         path = tmp_path / "sample.docx"
         path.write_text("x", encoding="utf-8")
@@ -120,7 +131,7 @@ class TestDocumentTable:
         table.load_documents([_doc(1, path, "pending")])
         table.set_single_checked(1)
 
-        checkbox = table.cellWidget(0, table.COL_CHECK)
+        checkbox = table._row_checkbox(0)
         assert isinstance(checkbox, QCheckBox)
         assert checkbox.isEnabled() is True
         assert table.checked_ids() == [1]
@@ -163,7 +174,7 @@ class TestDocumentTable:
         table.load_documents([_doc(1, path, "prepare_paused")])
         table.set_all_checked(True)
 
-        checkbox = table.cellWidget(0, table.COL_CHECK)
+        checkbox = table._row_checkbox(0)
         assert isinstance(checkbox, QCheckBox)
         assert checkbox.isEnabled() is True
         assert table.checked_ids() == [1]
@@ -194,7 +205,7 @@ class TestDocumentTable:
         table.load_documents([_doc(9, path, "prepare_failed")])
         table.set_all_checked(True)
 
-        checkbox = table.cellWidget(0, table.COL_CHECK)
+        checkbox = table._row_checkbox(0)
         assert isinstance(checkbox, QCheckBox)
         assert checkbox.isEnabled() is True
         assert table.checked_ids() == [9]

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -50,8 +51,9 @@ from tuv_tools.core.chapter_batch.service import (
     check_duplicate_candidates,
     find_duplicate_candidate_row,
 )
-from tuv_tools.core.preparing import _win32com_client, prepare_single_doc
-from tuv_tools.ui.widgets import CHECKBOX_STYLE, FOCUS_STYLE
+from tuv_tools.core.preparing import _win32com_client, create_isolated_word_application, prepare_single_doc
+from tuv_tools.ui.theme import ThemeManager, ACCENT_PRIMARY, ACCENT_DANGER
+from tuv_tools.ui.widgets import checkbox_style, FOCUS_STYLE, scrollbar_style
 from tuv_tools.ui.widgets.chapter_batch_drawer import ChapterBatchDrawer
 from tuv_tools.ui.widgets.standard_number_prompt_dialog import resolve_standard_number_overrides
 
@@ -148,7 +150,7 @@ class ChapterBatchProcessingWorker(QThread):
         app = None
         try:
             client = _win32com_client()
-            app = client.Dispatch("Word.Application")
+            app = create_isolated_word_application(client)
             app.Visible = False
             app.ScreenUpdating = False
             service = ChapterBatchService(self._repo, output_root=self._output_root)
@@ -260,11 +262,12 @@ class _StatusProgressRing(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = QRectF(2, 2, 14, 14)
 
-        track_pen = QPen(QColor("#4a4d50"), 2)
+        c = ThemeManager.instance().colors
+        track_pen = QPen(QColor(c.border_primary), 2)
         painter.setPen(track_pen)
         painter.drawArc(rect, 0, 360 * 16)
 
-        progress_pen = QPen(QColor("#4a9eff"), 2)
+        progress_pen = QPen(QColor(ACCENT_PRIMARY), 2)
         painter.setPen(progress_pen)
         span = int(-360 * 16 * (self._percent / 100))
         painter.drawArc(rect, 90 * 16, span)
@@ -278,7 +281,8 @@ class _RunningStatusWidget(QWidget):
         self._percent = max(0, min(percent, 100))
         self._label = QLabel(status_text, self)
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._label.setStyleSheet("color: #dcdcdc; font-size: 13px;")
+        c = ThemeManager.instance().colors
+        self._label.setStyleSheet(f"color: {c.text_primary}; font-size: 13px;")
         self.setMinimumHeight(26)
 
     def paintEvent(self, _event) -> None:  # noqa: N802
@@ -286,11 +290,12 @@ class _RunningStatusWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
         ring_rect = QRectF(8, max((self.height() - 18) / 2, 0), 18, 18)
-        track_pen = QPen(QColor("#4a4d50"), 2)
+        c = ThemeManager.instance().colors
+        track_pen = QPen(QColor(c.border_primary), 2)
         painter.setPen(track_pen)
         painter.drawArc(ring_rect.adjusted(2, 2, -2, -2), 0, 360 * 16)
 
-        progress_pen = QPen(QColor("#4a9eff"), 2)
+        progress_pen = QPen(QColor(ACCENT_PRIMARY), 2)
         progress_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(progress_pen)
         span = int(-360 * 16 * (self._percent / 100))
@@ -306,16 +311,27 @@ class _SummaryTextWidget(QWidget):
 
     def __init__(self, text: str, tooltip: str = "", parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        label = QLabel(text, self)
-        label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-        label.setStyleSheet("color: #dcdcdc; font-size: 13px; padding: 0 10px;")
-        layout.addWidget(label)
+        layout.addStretch()
+        self._label = QLabel(text, self)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._label, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addStretch()
+        self._apply_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
         if tooltip:
             self.setToolTip(tooltip)
-            label.setToolTip(tooltip)
+            self._label.setToolTip(tooltip)
+
+    def _apply_theme(self) -> None:
+        c = ThemeManager.instance().colors
+        self.setStyleSheet("background: transparent;")
+        self._label.setStyleSheet(
+            f"color: {c.text_primary}; font-size: 13px; padding: 0 10px; qproperty-alignment: 'AlignCenter';"
+        )
 
 
 class ChapterBatchView(QWidget):
@@ -333,6 +349,8 @@ class ChapterBatchView(QWidget):
 
     def __init__(self, repo: ChapterBatchRepository | None = None, session_manager: ChapterSessionManager | None = None):
         super().__init__()
+        self.setObjectName("chapterBatchView")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(FOCUS_STYLE)
         self._session_manager = session_manager
         self._repo = repo or ChapterBatchRepository(DatabaseManager())
@@ -357,7 +375,7 @@ class ChapterBatchView(QWidget):
 
         self._backend_hint = QLabel("当前未连接后端。文档导入与本地核对仍可使用，上传与目录相关操作请先到设置中登录。")
         self._backend_hint.setWordWrap(True)
-        self._backend_hint.setStyleSheet("color: #d9534f; font-size: 13px;")
+        self._backend_hint.setStyleSheet(f"color: {ACCENT_DANGER}; font-size: 13px;")
         layout.addWidget(self._backend_hint)
 
         toolbar = QHBoxLayout()
@@ -406,7 +424,7 @@ class ChapterBatchView(QWidget):
 
         bottom = QHBoxLayout()
         self._select_all_cb = QCheckBox("全选")
-        self._select_all_cb.setStyleSheet(CHECKBOX_STYLE)
+        self._select_all_cb.setStyleSheet(checkbox_style())
         self._select_all_cb.toggled.connect(self._on_select_all_toggled)
         bottom.addWidget(self._select_all_cb)
 
@@ -415,12 +433,12 @@ class ChapterBatchView(QWidget):
         bottom.addStretch()
 
         self._upload_btn = QPushButton("批量上传")
-        self._upload_btn.setStyleSheet(self._action_btn_style("#4a9eff"))
+        self._upload_btn.setStyleSheet(self._action_btn_style(ACCENT_PRIMARY))
         self._upload_btn.setEnabled(False)
         bottom.addWidget(self._upload_btn)
 
         self._delete_btn = QPushButton("删除记录")
-        self._delete_btn.setStyleSheet(self._action_btn_style("#d9534f"))
+        self._delete_btn.setStyleSheet(self._action_btn_style(ACCENT_DANGER))
         self._delete_btn.setEnabled(False)
         bottom.addWidget(self._delete_btn)
         layout.addLayout(bottom)
@@ -442,6 +460,8 @@ class ChapterBatchView(QWidget):
 
         self._load_documents()
         self._apply_backend_connection_state()
+        self._apply_table_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_table_theme)
 
     def _configure_table(self) -> None:
         self._table.setColumnCount(7)
@@ -450,7 +470,7 @@ class ChapterBatchView(QWidget):
         )
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(self.COL_FILE_NAME, QHeaderView.ResizeMode.Stretch)
-        self._table.setColumnWidth(self.COL_CHECK, 36)
+        self._table.setColumnWidth(self.COL_CHECK, 44)
         self._table.setColumnWidth(self.COL_STANDARD, 120)
         self._table.setColumnWidth(self.COL_MODE, 90)
         self._table.setColumnWidth(self.COL_STATUS, 182)
@@ -464,50 +484,125 @@ class ChapterBatchView(QWidget):
         self._table.setAlternatingRowColors(True)
         self._table.setShowGrid(False)
         self._table.setTextElideMode(Qt.TextElideMode.ElideRight)
-        self._table.setStyleSheet(
-            """
-            QTableWidget {
-                background-color: #2b2d30;
-                alternate-background-color: #303336;
-                color: #dcdcdc;
-                border: none;
-                font-size: 13px;
-                outline: none;
-            }
-            QTableWidget::item {
-                padding: 8px 10px;
-                border: none;
-            }
-            QTableWidget::item:selected {
-                background-color: #3c3f41;
-                color: #ffffff;
-            }
-            QHeaderView::section {
-                background-color: #2b2d30;
-                color: #999;
-                border: none;
-                border-bottom: 2px solid #4a4d50;
-                padding: 8px 10px;
-                font-size: 12px;
-                font-weight: bold;
-            }
-            """
-        )
 
-    @staticmethod
-    def _action_btn_style(color: str) -> str:
+    def _action_btn_style(self, accent: str) -> str:
+        c = ThemeManager.instance().colors
         return f"""
             QPushButton {{
-                background-color: {color};
+                background-color: {accent};
                 color: white;
                 font-weight: bold;
                 border: none;
                 border-radius: 4px;
                 padding: 6px 16px;
             }}
-            QPushButton:hover {{ background-color: {color}; opacity: 0.9; }}
-            QPushButton:disabled {{ background-color: #666666; }}
+            QPushButton:hover {{ background-color: {accent}; opacity: 0.9; }}
+            QPushButton:disabled {{ background-color: {c.disabled_bg}; }}
         """
+
+    def _apply_table_theme(self) -> None:
+        c = ThemeManager.instance().colors
+        combo_popup_style = (
+            f"background-color: {c.bg_primary};"
+            f"color: {c.text_primary};"
+            f"border: 1px solid {c.border_primary};"
+            f"selection-background-color: {c.bg_selected};"
+            f"selection-color: {c.text_inverse};"
+        )
+        self.setStyleSheet(
+            FOCUS_STYLE
+            + f"""
+            #chapterBatchView {{
+                background-color: {c.bg_secondary};
+            }}
+            #chapterBatchView QLabel {{
+                color: {c.text_primary};
+            }}
+            #chapterBatchView QLineEdit,
+            #chapterBatchView QComboBox {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 7px 10px;
+            }}
+            #chapterBatchView QComboBox::drop-down {{
+                border: none;
+                width: 22px;
+            }}
+            #chapterBatchView QComboBox QAbstractItemView {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                selection-background-color: {c.bg_selected};
+                selection-color: {c.text_inverse};
+            }}
+            #chapterBatchView QPushButton {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 6px 14px;
+            }}
+            #chapterBatchView QPushButton:hover {{
+                background-color: {c.bg_hover};
+            }}
+            """
+            + scrollbar_style()
+        )
+        self._status_filter.view().setStyleSheet(combo_popup_style)
+        self._mode_filter.view().setStyleSheet(combo_popup_style)
+        self._title_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {c.text_heading};")
+        self._backend_hint.setStyleSheet(f"color: {ACCENT_DANGER}; font-size: 13px;")
+        self._selected_label.setStyleSheet(f"color: {c.text_secondary};")
+        self._select_all_cb.setStyleSheet(checkbox_style())
+        self._search_edit.setStyleSheet(
+            f"""
+            QLineEdit {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 7px 10px;
+            }}
+            """
+        )
+        self._upload_btn.setStyleSheet(self._action_btn_style(ACCENT_PRIMARY))
+        self._delete_btn.setStyleSheet(self._action_btn_style(ACCENT_DANGER))
+        self._table.setStyleSheet(
+            f"""
+            QTableWidget {{
+                background-color: {c.bg_primary};
+                alternate-background-color: {c.bg_tertiary};
+                color: {c.text_primary};
+                border: none;
+                font-size: 13px;
+                outline: none;
+            }}
+            QTableWidget::item {{
+                padding: 8px 10px;
+                border: none;
+            }}
+            QTableWidget::item:selected {{
+                background-color: {c.bg_selected};
+                color: {c.text_inverse};
+            }}
+            QHeaderView::section {{
+                background-color: {c.bg_primary};
+                color: {c.text_muted};
+                border: none;
+                border-bottom: 2px solid {c.border_primary};
+                padding: 8px 10px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+            """
+            + scrollbar_style()
+        )
+        for row in range(self._table.rowCount()):
+            checkbox = self._row_checkbox(row)
+            if isinstance(checkbox, QCheckBox):
+                checkbox.setStyleSheet(checkbox_style())
 
     @staticmethod
     def _make_item(
@@ -548,12 +643,12 @@ class ChapterBatchView(QWidget):
         self._table.setRowCount(len(self._documents))
         for row, document in enumerate(self._documents):
             checkbox = QCheckBox()
-            checkbox.setStyleSheet(CHECKBOX_STYLE)
+            checkbox.setStyleSheet(checkbox_style())
             checkbox.blockSignals(True)
             checkbox.setChecked(document.id in selected)
             checkbox.blockSignals(False)
             checkbox.toggled.connect(lambda checked, doc_id=document.id: self._on_document_checked(doc_id, checked))
-            self._table.setCellWidget(row, self.COL_CHECK, checkbox)
+            self._table.setCellWidget(row, self.COL_CHECK, self._wrap_checkbox(checkbox))
             self._table.setItem(
                 row,
                 self.COL_FILE_NAME,
@@ -697,7 +792,7 @@ class ChapterBatchView(QWidget):
     def _open_drawer_for_documents(self, documents) -> None:
         self._drawer.set_documents(list(documents[:1]))
         self._layout_drawer()
-        self._drawer.show()
+        self._drawer.expand()
         current = documents[0] if documents else None
         self._drawer.set_edit_locked(bool(current and is_document_running(current.document_status)))
         if documents and documents[0].id is not None:
@@ -711,7 +806,7 @@ class ChapterBatchView(QWidget):
         self._selected_document_ids = [doc.id for doc in self._documents if doc.id in selected]
         selected = set(self._selected_document_ids)
         for row, document in enumerate(self._documents):
-            checkbox = self._table.cellWidget(row, self.COL_CHECK)
+            checkbox = self._row_checkbox(row)
             if isinstance(checkbox, QCheckBox):
                 checkbox.blockSignals(True)
                 checkbox.setChecked(document.id in selected)
@@ -731,6 +826,27 @@ class ChapterBatchView(QWidget):
             if document.id in wanted:
                 selected.append(document)
         return selected
+
+    @staticmethod
+    def _wrap_checkbox(checkbox: QCheckBox) -> QWidget:
+        checkbox_size = checkbox.sizeHint()
+        checkbox.setFixedSize(checkbox_size)
+        container = QWidget()
+        container.setFixedSize(checkbox_size)
+        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addStretch()
+        layout.addWidget(checkbox)
+        layout.addStretch()
+        return container
+
+    def _row_checkbox(self, row: int) -> QCheckBox | None:
+        container = self._table.cellWidget(row, self.COL_CHECK)
+        if container is None:
+            return None
+        return container.findChild(QCheckBox)
 
     def _show_document_context_menu(self, pos) -> None:
         row = self._table.rowAt(pos.y())
