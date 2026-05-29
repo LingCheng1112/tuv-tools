@@ -73,6 +73,20 @@ class TestDocumentTable:
         assert not isinstance(table.cellWidget(0, table.COL_CHECK), QCheckBox)
         assert isinstance(table._row_checkbox(0), QCheckBox)
 
+    def test_checkbox_wrapper_expands_to_full_row_height(self, qapp, tmp_path):
+        path = tmp_path / "sample.docx"
+        path.write_text("x", encoding="utf-8")
+
+        table = DocumentTable()
+        table.resize(640, 240)
+        table.load_documents([_doc(1, path, "pending")])
+        table.show()
+        qapp.processEvents()
+
+        container = table.cellWidget(0, table.COL_CHECK)
+        assert container is not None
+        assert container.height() >= table.rowHeight(0) - 1
+
     def test_double_click_standard_column_starts_inline_edit(self, qapp, tmp_path, monkeypatch):
         path = tmp_path / "sample.docx"
         path.write_text("x", encoding="utf-8")

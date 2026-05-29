@@ -103,6 +103,30 @@ class TestDatabaseManager:
         assert stored == "certs/root.pem"
         assert (settings.get_app_data_root() / "certs" / "root.pem").read_text(encoding="utf-8") == "pem-data"
 
+    def test_app_settings_default_checkbox_bas_falls_back_to_repo_resources(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        settings = AppSettings(project_root=project_root)
+
+        default_bas_path = settings.get_default_checkbox_bas_path()
+
+        assert default_bas_path.exists()
+        assert default_bas_path.name == "unify_checkboxes.bas"
+        assert default_bas_path.parent == settings.get_app_data_preparing_root()
+
+    def test_app_settings_copy_checkbox_bas_to_app_data_stores_relative_path(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        settings = AppSettings(project_root=project_root)
+        settings.ensure_app_data_root_ready()
+        source_bas = tmp_path / "custom.bas"
+        source_bas.write_text("Attribute VB_Name = \"Module1\"", encoding="utf-8")
+
+        stored = settings.copy_checkbox_bas_to_app_data(source_bas)
+
+        assert stored == "preparing/custom.bas"
+        assert (settings.get_app_data_root() / "preparing" / "custom.bas").read_text(encoding="utf-8") == source_bas.read_text(encoding="utf-8")
+
     def test_clean_rules_save_and_load(self):
         db, _ = self._new_db()
         rules = [
@@ -638,10 +662,12 @@ class TestDatabaseManager:
         new_root = project_root / ".tuv-tools"
         old_root.mkdir(parents=True)
         (old_root / "certs").mkdir(parents=True)
+        (old_root / "preparing").mkdir(parents=True)
         (old_root / "chapter-batch" / "42").mkdir(parents=True)
         (old_root / "chapter-batch" / "42" / "clauses_docx").mkdir(parents=True)
         (old_root / "chapter-batch" / "42" / "clauses_docx" / "10_1.docx").write_text("docx", encoding="utf-8")
         (old_root / "certs" / "ca.pem").write_text("pem", encoding="utf-8")
+        (old_root / "preparing" / "unify_checkboxes.bas").write_text("Attribute VB_Name = \"Module1\"", encoding="utf-8")
         (old_root / ".token_cache").write_text(json.dumps({"token": "abc"}), encoding="utf-8")
         shutil.copyfile(tmp_path / "seed.db", tmp_path / "seed.db") if False else None
         (old_root / "tuv-tools.db").write_text("db-bytes", encoding="utf-8")
@@ -654,6 +680,7 @@ class TestDatabaseManager:
         assert (new_root / "tuv-tools.db").exists()
         assert (new_root / ".token_cache").exists()
         assert (new_root / "certs" / "ca.pem").exists()
+        assert (new_root / "preparing" / "unify_checkboxes.bas").exists()
         assert (new_root / "chapter-batch" / "42" / "clauses_docx" / "10_1.docx").exists()
         assert not old_root.exists()
 

@@ -41,7 +41,13 @@ def _resolve_resources_dir(project_root: Path | None = None) -> Path:
         if bundled.exists():
             return bundled
     root = _normalize_path(project_root or PROJECT_ROOT)
-    return root / "resources"
+    candidate = root / "resources"
+    if candidate.exists():
+        return candidate
+    fallback = _normalize_path(PROJECT_ROOT) / "resources"
+    if fallback.exists():
+        return fallback
+    return candidate
 
 
 def _resolve_from_root(path: str | Path, root: Path) -> Path:
@@ -70,16 +76,19 @@ DEFAULT_DB_FILE = "tuv-tools.db"
 DEFAULT_SPLITTER_OUTPUT_DIR_NAME = "doc_output"
 CHAPTER_BATCH_DIR_NAME = "chapter-batch"
 APP_DATA_CERTS_DIR_NAME = "certs"
+APP_DATA_PREPARING_DIR_NAME = "preparing"
 PACKAGING_DEFAULTS_DIR_NAME = "defaults"
 DEFAULTS_API_CONFIG_FILE = "api_config.json"
 DEFAULTS_RSA_KEY_FILE = "rsa_private.key"
 DEFAULTS_CLEAN_RULES_FILE = "inline_clean_rules.json"
+DEFAULT_CHECKBOX_BAS_FILE = "unify_checkboxes.bas"
 LEGACY_APP_DATA_ROOT = Path.home() / APP_DATA_DIR_NAME
 TRACKED_APP_DATA_ENTRIES = (
     DEFAULT_DB_FILE,
     DEFAULT_TOKEN_CACHE_FILE,
     CHAPTER_BATCH_DIR_NAME,
     APP_DATA_CERTS_DIR_NAME,
+    APP_DATA_PREPARING_DIR_NAME,
 )
 
 
@@ -144,6 +153,10 @@ def resolve_chapter_batch_root(project_root: Path | None = None) -> Path:
 
 def resolve_app_data_certs_root(project_root: Path | None = None) -> Path:
     return resolve_app_data_root(project_root) / APP_DATA_CERTS_DIR_NAME
+
+
+def resolve_app_data_preparing_root(project_root: Path | None = None) -> Path:
+    return resolve_app_data_root(project_root) / APP_DATA_PREPARING_DIR_NAME
 
 
 def normalize_token_cache_file(token_cache_file: str | None) -> str:
@@ -249,11 +262,54 @@ class AppSettings:
     def get_app_data_certs_root(self) -> Path:
         return resolve_app_data_certs_root(self.project_root)
 
+    def get_app_data_preparing_root(self) -> Path:
+        return resolve_app_data_preparing_root(self.project_root)
+
+    def get_default_checkbox_bas_path(self) -> Path:
+        self._ensure_default_checkbox_bas(self.get_app_data_root())
+        return self.get_app_data_preparing_root() / DEFAULT_CHECKBOX_BAS_FILE
+
+    def get_checkbox_bas_path(self, checkbox_bas_file: str | Path | None) -> Path:
+        normalized = str(checkbox_bas_file or "").strip()
+        if not normalized:
+            return self.get_default_checkbox_bas_path()
+        return _resolve_from_root(normalized, self.get_app_data_root())
+
     def get_token_cache_path(self, token_cache_file: str = DEFAULT_TOKEN_CACHE_FILE) -> Path:
         return resolve_token_cache_path(token_cache_file, self.project_root)
 
     def get_ca_cert_path(self, ca_cert_file: str) -> Path:
         return resolve_ca_cert_path(ca_cert_file, self.project_root)
+
+    def copy_checkbox_bas_to_app_data(
+        self,
+        checkbox_bas_file: str | Path | None,
+        *,
+        target_root: Path | None = None,
+    ) -> str:
+        normalized = str(checkbox_bas_file or "").strip()
+        if not normalized:
+            return ""
+
+        source_path = Path(normalized).expanduser().resolve()
+        if not source_path.exists():
+            raise FileNotFoundError(f"Checkbox BAS file not found: {source_path}")
+
+        target_root = _normalize_path(target_root or self.get_app_data_root())
+        target_dir = target_root / APP_DATA_PREPARING_DIR_NAME
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            relative_existing = source_path.relative_to(target_root)
+        except ValueError:
+            relative_existing = None
+
+        if relative_existing is not None:
+            return Path(relative_existing).as_posix()
+
+        target_path = target_dir / source_path.name
+        shutil.copy2(source_path, target_path)
+        return Path(APP_DATA_PREPARING_DIR_NAME, source_path.name).as_posix()
 
     def set_app_data_root(self, data_root: str | Path) -> None:
         store_bootstrap_config(_normalize_path(data_root), self.project_root)
@@ -314,6 +370,7 @@ class AppSettings:
         app_data_root.mkdir(parents=True, exist_ok=True)
         store_bootstrap_config(app_data_root, self.project_root)
         self._seed_packaging_defaults(app_data_root)
+        self._ensure_default_checkbox_bas(app_data_root)
         return app_data_root
 
     @staticmethod
@@ -374,6 +431,17 @@ class AppSettings:
             seeded = True
 
         return seeded
+
+    def _ensure_default_checkbox_bas(self, app_data_root: Path) -> None:
+        source = self.get_resources_dir() / DEFAULT_CHECKBOX_BAS_FILE
+        if not source.exists():
+            return
+        target_dir = app_data_root / APP_DATA_PREPARING_DIR_NAME
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / DEFAULT_CHECKBOX_BAS_FILE
+        if target_path.exists():
+            return
+        shutil.copy2(source, target_path)
 
     def copy_ca_cert_to_app_data(
         self,

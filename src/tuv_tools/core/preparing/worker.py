@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
-from . import _STOP, _win32com_client, create_isolated_word_application, prepare_single_doc
+from . import _STOP, _win32com_client, create_isolated_word_application, prepare_docx_file
 
 
 class PreparingWorker(QThread):
@@ -70,20 +70,12 @@ class PreparingWorker(QThread):
                     break
 
                 doc_id, file_path = item  # type: ignore[misc]
-                doc = None
                 try:
                     normalized_path = str(Path(file_path).resolve())
-                    doc = app.Documents.Open(normalized_path)
-                    prepare_single_doc(doc, app)
+                    prepare_docx_file(normalized_path, app)
                     self.doc_prepared.emit(doc_id)
                 except Exception as exc:
                     self.doc_error.emit(doc_id, str(exc))
-                finally:
-                    if doc is not None:
-                        try:
-                            doc.Close()
-                        except Exception:
-                            pass
                 if self._stop_requested:
                     break
         finally:

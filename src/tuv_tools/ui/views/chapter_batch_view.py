@@ -51,7 +51,7 @@ from tuv_tools.core.chapter_batch.service import (
     check_duplicate_candidates,
     find_duplicate_candidate_row,
 )
-from tuv_tools.core.preparing import _win32com_client, create_isolated_word_application, prepare_single_doc
+from tuv_tools.core.preparing import _win32com_client, create_isolated_word_application, prepare_docx_file
 from tuv_tools.ui.theme import ThemeManager, ACCENT_PRIMARY, ACCENT_DANGER
 from tuv_tools.ui.widgets import checkbox_style, FOCUS_STYLE, scrollbar_style
 from tuv_tools.ui.widgets.chapter_batch_drawer import ChapterBatchDrawer
@@ -177,17 +177,8 @@ class ChapterBatchProcessingWorker(QThread):
                         percent=15,
                         message="开始预处理",
                     )
-                    doc = None
-                    try:
-                        normalized_path = str(Path(document.file_path).resolve())
-                        doc = app.Documents.Open(normalized_path)
-                        prepare_single_doc(doc, app)
-                    finally:
-                        if doc is not None:
-                            try:
-                                doc.Close()
-                            except Exception:
-                                pass
+                    normalized_path = str(Path(document.file_path).resolve())
+                    prepare_docx_file(normalized_path, app)
                     self._emit_processing_progress(
                         document_id=document_id,
                         total_docs=total_docs,
@@ -469,12 +460,14 @@ class ChapterBatchView(QWidget):
             ["", "文档名", "标准", "拆分方式", "文档状态", "条款结果摘要", "更新时间"]
         )
         header = self._table.horizontalHeader()
-        header.setSectionResizeMode(self.COL_FILE_NAME, QHeaderView.ResizeMode.Stretch)
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(self.COL_FILE_NAME, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(self.COL_SUMMARY, QHeaderView.ResizeMode.Stretch)
         self._table.setColumnWidth(self.COL_CHECK, 44)
+        self._table.setColumnWidth(self.COL_FILE_NAME, 260)
         self._table.setColumnWidth(self.COL_STANDARD, 120)
         self._table.setColumnWidth(self.COL_MODE, 90)
         self._table.setColumnWidth(self.COL_STATUS, 182)
-        self._table.setColumnWidth(self.COL_SUMMARY, 220)
         self._table.setColumnWidth(self.COL_UPDATED_AT, 145)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -827,19 +820,16 @@ class ChapterBatchView(QWidget):
                 selected.append(document)
         return selected
 
-    @staticmethod
-    def _wrap_checkbox(checkbox: QCheckBox) -> QWidget:
+    def _wrap_checkbox(self, checkbox: QCheckBox) -> QWidget:
         checkbox_size = checkbox.sizeHint()
         checkbox.setFixedSize(checkbox_size)
         container = QWidget()
-        container.setFixedSize(checkbox_size)
-        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        container.setFixedHeight(max(self._table.verticalHeader().defaultSectionSize(), checkbox_size.height()))
+        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addStretch()
-        layout.addWidget(checkbox)
-        layout.addStretch()
+        layout.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignCenter)
         return container
 
     def _row_checkbox(self, row: int) -> QCheckBox | None:

@@ -185,19 +185,16 @@ class DocumentTable(QTableWidget):
         self.setItem(row, self.COL_SPLIT_AT,
                      self._make_item(display_time, split_at if split_at != "-" else ""))
 
-    @staticmethod
-    def _wrap_checkbox(checkbox: QCheckBox) -> QWidget:
+    def _wrap_checkbox(self, checkbox: QCheckBox) -> QWidget:
         checkbox_size = checkbox.sizeHint()
         checkbox.setFixedSize(checkbox_size)
         container = QWidget()
-        container.setFixedSize(checkbox_size)
-        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        container.setFixedHeight(max(self.verticalHeader().defaultSectionSize(), checkbox_size.height()))
+        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addStretch()
-        layout.addWidget(checkbox)
-        layout.addStretch()
+        layout.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignCenter)
         return container
 
     def _row_checkbox(self, row: int) -> QCheckBox | None:

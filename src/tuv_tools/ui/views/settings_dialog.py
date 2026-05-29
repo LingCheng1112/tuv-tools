@@ -121,6 +121,20 @@ class SettingsDialog(QDialog):
         output_row.addWidget(output_btn)
         layout.addRow("默认输出路径:", output_row)
 
+        checkbox_bas_path = self._db.get_config("preparing.checkbox_bas_file", "")
+        resolved_checkbox_bas = self._settings.get_checkbox_bas_path(checkbox_bas_path)
+        self._checkbox_bas_edit = QLineEdit(str(resolved_checkbox_bas))
+        self._checkbox_bas_edit.setReadOnly(True)
+        bas_row = QHBoxLayout()
+        bas_row.addWidget(self._checkbox_bas_edit)
+        bas_btn = QPushButton("选择...")
+        bas_btn.clicked.connect(self._choose_checkbox_bas_file)
+        bas_row.addWidget(bas_btn)
+        bas_reset_btn = QPushButton("恢复默认")
+        bas_reset_btn.clicked.connect(self._reset_checkbox_bas_file)
+        bas_row.addWidget(bas_reset_btn)
+        layout.addRow("复选框 BAS:", bas_row)
+
         self._auto_open_cb = QCheckBox("拆分完成后自动打开输出目录")
         self._auto_open_cb.setStyleSheet(checkbox_style())
         self._auto_open_cb.setChecked(self._db.get_config("splitter.auto_open", "false") == "true")
@@ -356,6 +370,19 @@ class SettingsDialog(QDialog):
         if path:
             self._output_edit.setText(str(Path(path).resolve()))
 
+    def _choose_checkbox_bas_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择复选框 BAS 文件",
+            self._checkbox_bas_edit.text().strip() or str(self._settings.get_default_checkbox_bas_path()),
+            "BAS Files (*.bas);;All Files (*)",
+        )
+        if path:
+            self._checkbox_bas_edit.setText(str(Path(path).resolve()))
+
+    def _reset_checkbox_bas_file(self) -> None:
+        self._checkbox_bas_edit.setText(str(self._settings.get_default_checkbox_bas_path()))
+
     def _choose_app_data_root(self) -> None:
         path = QFileDialog.getExistingDirectory(
             self,
@@ -557,11 +584,21 @@ class SettingsDialog(QDialog):
             self._settings.set_app_data_root(selected_app_data_root)
             self._db = self._get_db()
 
+        checkbox_bas_source = self._checkbox_bas_edit.text().strip()
+        if checkbox_bas_source:
+            checkbox_bas_value = self._settings.copy_checkbox_bas_to_app_data(
+                checkbox_bas_source,
+                target_root=selected_app_data_root if app_data_root_changed else None,
+            )
+        else:
+            checkbox_bas_value = ""
+
         self._db.set_config(
             "splitter.output_path",
             self._settings.normalize_splitter_output_path(self._output_edit.text().strip()),
         )
         self._db.set_config("splitter.auto_open", "true" if self._auto_open_cb.isChecked() else "false")
+        self._db.set_config("preparing.checkbox_bas_file", checkbox_bas_value)
 
         theme_value = self._theme_combo.currentData()
         ThemeManager.instance().mode = ThemeMode(theme_value)

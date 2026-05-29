@@ -369,6 +369,28 @@ def test_document_table_wraps_checkbox_column_widgets(qapp):
     assert isinstance(view._row_checkbox(0), QCheckBox)
 
 
+def test_document_name_column_keeps_readable_width(qapp):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
+    repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/TP for IEC60335-2-40_2022.doc.docx",
+            file_name="TP for IEC60335-2-40_2022.doc.docx",
+            document_status=DocumentStatus.PENDING_CONFIRM.value,
+        )
+    )
+
+    view.resize(960, 600)
+    view._load_documents()
+    view.show()
+    qapp.processEvents()
+
+    assert view._table.columnWidth(view.COL_FILE_NAME) >= 200
+
+
 def test_double_click_document_opens_drawer(qapp):
     from tuv_tools.core.chapter_batch.models import BatchImportClause, BatchImportDocument, DocumentStatus, SplitMode
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
