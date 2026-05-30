@@ -347,6 +347,80 @@ class TestBuildSections:
         with pytest.raises(SplitCancelled):
             build_sections(FIXTURE, should_cancel=should_cancel)
 
+    def test_ignored_tests_item_table_does_not_create_annex_sections(self, monkeypatch):
+        from tuv_tools.core.splitter import parsing as parsing_module
+
+        table = ET.fromstring(
+            '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>Tests item</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>☐ Annex H: switches</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>☐ Annex D: thermal motor protectors</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "</w:tbl>"
+        )
+        paragraph = ET.fromstring(
+            '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:r><w:t>7.14 RUBBING TEST FOR RATING LABEL</w:t></w:r>"
+            "</w:p>"
+        )
+        blocks = [
+            Block(
+                block_type="table",
+                index=1,
+                element=table,
+                text="Tests item | ☐ Annex H: switches\n☐ Annex D: thermal motor protectors",
+                table_index=1,
+            ),
+            Block(
+                block_type="paragraph",
+                index=2,
+                element=paragraph,
+                text="7.14 RUBBING TEST FOR RATING LABEL",
+            ),
+        ]
+
+        monkeypatch.setattr(parsing_module, "parse_document", lambda *args, **kwargs: blocks)
+
+        sections = build_sections(Path("sample.docx"))
+
+        assert [section.clause_id for section in sections] == ["7.14"]
+        assert all(not section.clause_id.startswith("Annex") for section in sections)
+
+    def test_preparing_of_tests_table_keeps_real_clause_sections(self, monkeypatch):
+        from tuv_tools.core.splitter import parsing as parsing_module
+
+        table = ET.fromstring(
+            '<w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>Preparing of tests</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>1.Rating of appliance</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "<w:tr>"
+            "<w:tc><w:p><w:r><w:t>11</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>Heating test</w:t></w:r></w:p></w:tc>"
+            "</w:tr>"
+            "</w:tbl>"
+        )
+        blocks = [
+            Block(
+                block_type="table",
+                index=1,
+                element=table,
+                text="Preparing of tests | 1.Rating of appliance\n11 Heating test",
+                table_index=1,
+            )
+        ]
+
+        monkeypatch.setattr(parsing_module, "parse_document", lambda *args, **kwargs: blocks)
+
+        sections = build_sections(Path("sample.docx"))
+
+        assert [section.clause_id for section in sections] == ["11"]
+        assert sections[0].title == "Heating test"
+
     def test_data_heavy_table_document_does_not_create_measurement_fake_sections(self):
         sample = Path(r"D:\Data\1类机械式油汀-机械式-60335-2-30.docx")
         if not sample.exists():

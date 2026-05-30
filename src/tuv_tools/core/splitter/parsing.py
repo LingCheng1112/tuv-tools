@@ -325,6 +325,12 @@ def _should_ignore_table(block: Block) -> bool:
     return any(pattern.search(preview) for pattern in IGNORED_TABLE_PATTERNS)
 
 
+def _should_drop_ignored_table_sections(block: Block) -> bool:
+    preview = block.text.splitlines()[0] if block.text else ""
+    preview = clean_text(preview).lower()
+    return preview.startswith("tests item") or preview.startswith("testing starting date")
+
+
 def _find_outer_row_border(rows: list[ET.Element], row_index: int, border_name: str) -> ET.Element | None:
     if row_index < 0 or row_index >= len(rows):
         return None
@@ -519,6 +525,7 @@ def build_sections(
                 current.add_paragraph(block.index, block.text, block.element)
             continue
 
+        is_ignored = _should_ignore_table(block)
         table_sections = _split_table_into_sections(
             block,
             progress=progress,
@@ -526,8 +533,9 @@ def build_sections(
             scanned_row_offset=scanned_row_offset,
             scanned_row_total=total_scanned_table_rows,
         )
+        if is_ignored and _should_drop_ignored_table_sections(block):
+            table_sections = []
         scanned_row_offset += len(block.element.findall("./w:tr", NS))
-        is_ignored = _should_ignore_table(block)
 
         for clause, table_slice in table_sections:
             current = Section(

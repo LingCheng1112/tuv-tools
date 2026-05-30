@@ -484,12 +484,15 @@ class TestDatabaseManager:
         assert db.get_config("migrated_from_legacy") == "1"
         assert db.get_config("api.username") == "admin"
 
-    def test_app_settings_defaults_app_data_root_to_project_dot_dir(self):
-        settings = AppSettings()
+    def test_app_settings_defaults_app_data_root_to_project_dot_dir(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        settings = AppSettings(project_root=project_root)
 
-        assert settings.get_app_data_root() == settings.project_root / ".tuv-tools"
-        assert settings.get_database_path() == settings.project_root / ".tuv-tools" / "tuv-tools.db"
-        assert settings.get_chapter_batch_root() == settings.project_root / ".tuv-tools" / "chapter-batch"
+        assert settings.get_app_data_root() == project_root / ".tuv-tools"
+        assert settings.get_database_path() == project_root / ".tuv-tools" / "tuv-tools.db"
+        assert settings.get_chapter_batch_root() == project_root / ".tuv-tools" / "chapter-batch"
+        assert settings.get_chapter_batch_output_root() == project_root / "doc_output" / "chapter-batch"
 
     def test_app_settings_defaults_splitter_output_root_to_project_doc_output(self, tmp_path):
         project_root = tmp_path / "repo"
@@ -498,6 +501,7 @@ class TestDatabaseManager:
 
         assert settings.get_default_splitter_output_root() == project_root / "doc_output"
         assert settings.get_splitter_output_root("") == project_root / "doc_output"
+        assert settings.get_chapter_batch_output_root() == project_root / "doc_output" / "chapter-batch"
 
     def test_app_settings_normalizes_splitter_output_root_relative_to_project(self, tmp_path):
         project_root = tmp_path / "repo"
@@ -559,6 +563,16 @@ class TestDatabaseManager:
         settings = AppSettings(project_root=project_root)
 
         assert settings.get_default_splitter_output_root() == output_root
+        assert settings.get_chapter_batch_output_root() == output_root / "chapter-batch"
+
+    def test_app_settings_chapter_batch_output_root_tracks_splitter_output_config(self, tmp_path):
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        settings = AppSettings(project_root=project_root)
+
+        settings._db.set_config("splitter.output_path", "custom-output")
+
+        assert settings.get_chapter_batch_output_root() == project_root / "custom-output" / "chapter-batch"
 
     def test_app_settings_reads_utf8_bom_bootstrap_file(self, tmp_path):
         project_root = tmp_path / "repo"

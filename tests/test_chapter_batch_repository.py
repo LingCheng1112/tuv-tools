@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -429,5 +430,44 @@ class TestChapterBatchRepository:
         )
 
         clause = repo.get_clauses(doc_id)[0]
+
+        assert clause.source_docx_path == str(expected_runtime_path.resolve())
+
+    def test_repository_resolves_clause_paths_under_configured_output_root_for_active_db(self, tmp_path):
+        from tuv_tools.config import AppSettings
+        from tuv_tools.core.chapter_batch.repository import ChapterBatchRepository
+
+        project_root = tmp_path / "repo"
+        project_root.mkdir(parents=True)
+        settings = AppSettings(project_root=project_root)
+        db_path = settings.get_database_path()
+        db = DatabaseManager(db_path)
+        db.set_config("splitter.output_path", "custom-output")
+
+        expected_runtime_path = project_root / "custom-output" / "chapter-batch" / "14" / "clauses_docx" / "13.2.docx"
+        expected_runtime_path.parent.mkdir(parents=True, exist_ok=True)
+        expected_runtime_path.write_text("docx", encoding="utf-8")
+
+        with patch("tuv_tools.core.chapter_batch.repository.AppSettings", return_value=settings):
+            repo = ChapterBatchRepository(db)
+            doc_id = repo.create_document(
+                BatchImportDocument(
+                    file_path="C:/docs/a.docx",
+                    file_name="a.docx",
+                )
+            )
+
+            repo.replace_clauses(
+                doc_id,
+                [
+                    BatchImportClause(
+                        sort_index=0,
+                        term="13.2",
+                        source_docx_path=str(expected_runtime_path),
+                    )
+                ],
+            )
+
+            clause = repo.get_clauses(doc_id)[0]
 
         assert clause.source_docx_path == str(expected_runtime_path.resolve())

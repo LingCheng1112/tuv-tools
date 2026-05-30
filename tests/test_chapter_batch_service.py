@@ -74,7 +74,7 @@ class TestChapterBatchService:
         assert saved.standard == "60335-2-35"
         assert saved.split_mode == SplitMode.CLAUSE.value
 
-    def test_service_defaults_output_root_to_project_app_data_dir(self, tmp_path):
+    def test_service_defaults_output_root_to_splitter_output_subdir(self, tmp_path):
         from tuv_tools.core.chapter_batch.service import ChapterBatchService
 
         project_root = tmp_path / "repo"
@@ -82,11 +82,11 @@ class TestChapterBatchService:
 
         with patch("tuv_tools.core.chapter_batch.service.AppSettings") as settings_cls:
             settings = settings_cls.return_value
-            settings.get_chapter_batch_root.return_value = project_root / ".tuv-tools" / "chapter-batch"
+            settings.get_chapter_batch_output_root.return_value = project_root / "doc_output" / "chapter-batch"
             _service, repo = _new_service()
             service = ChapterBatchService(repo)
 
-        assert service.get_output_root() == project_root / ".tuv-tools" / "chapter-batch"
+        assert service.get_output_root() == project_root / "doc_output" / "chapter-batch"
 
     def test_complete_folder_context_fills_folder_and_product_type_from_tree(self):
         service, repo = _new_service()

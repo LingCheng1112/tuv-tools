@@ -749,17 +749,101 @@ class ChapterBatchView(QWidget):
         self._import_selected_paths(files)
 
     def _choose_import_mode(self) -> str | None:
-        mode, accepted = QInputDialog.getItem(
-            self,
-            "选择拆分类型",
-            "拆分类型",
-            [SplitMode.CLAUSE.value, SplitMode.SECTION.value],
-            0,
-            False,
-        )
-        if not accepted:
+        dialog = self._build_split_mode_dialog()
+        if dialog.exec() != QInputDialog.DialogCode.Accepted:
             return None
-        return mode
+        combo = dialog.findChild(QComboBox)
+        if combo is not None:
+            mode = combo.currentText().strip()
+            if mode:
+                return mode
+        return dialog.textValue().strip() or None
+
+    def _build_split_mode_dialog(self) -> QInputDialog:
+        items = [SplitMode.CLAUSE.value, SplitMode.SECTION.value]
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("选择拆分类型")
+        dialog.setLabelText("拆分类型")
+        dialog.setComboBoxItems(items)
+        dialog.setComboBoxEditable(False)
+        dialog.setTextValue(items[0])
+        self._apply_dialog_theme(dialog)
+        return dialog
+
+    def _apply_dialog_theme(self, dialog: QWidget) -> None:
+        c = ThemeManager.instance().colors
+        combo_popup_style = (
+            f"""
+            QListView, QAbstractItemView, QFrame {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                outline: none;
+            }}
+            QListView::item, QAbstractItemView::item {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                padding: 8px 10px;
+                min-height: 24px;
+            }}
+            QListView::item:selected, QAbstractItemView::item:selected {{
+                background-color: {c.bg_selected};
+                color: {c.text_inverse};
+            }}
+            QListView::item:hover, QAbstractItemView::item:hover {{
+                background-color: {c.bg_hover};
+                color: {c.text_primary};
+            }}
+            """
+            + scrollbar_style()
+        )
+        dialog.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        dialog.setStyleSheet(
+            FOCUS_STYLE
+            + f"""
+            QDialog, QMessageBox, QInputDialog {{
+                background-color: {c.bg_secondary};
+                color: {c.text_primary};
+            }}
+            QDialog QLabel, QMessageBox QLabel, QInputDialog QLabel {{
+                color: {c.text_primary};
+            }}
+            QDialog QLineEdit, QDialog QComboBox,
+            QMessageBox QLineEdit, QMessageBox QComboBox,
+            QInputDialog QLineEdit, QInputDialog QComboBox {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 7px 10px;
+            }}
+            QDialog QComboBox::drop-down,
+            QMessageBox QComboBox::drop-down,
+            QInputDialog QComboBox::drop-down {{
+                border: none;
+                width: 22px;
+            }}
+            QDialog QPushButton,
+            QMessageBox QPushButton,
+            QInputDialog QPushButton {{
+                background-color: {c.bg_primary};
+                color: {c.text_primary};
+                border: 1px solid {c.border_primary};
+                border-radius: 6px;
+                padding: 6px 14px;
+                min-width: 82px;
+            }}
+            QDialog QPushButton:hover,
+            QMessageBox QPushButton:hover,
+            QInputDialog QPushButton:hover {{
+                background-color: {c.bg_hover};
+            }}
+            """
+        )
+        for combo in dialog.findChildren(QComboBox):
+            combo.view().setStyleSheet(combo_popup_style)
+            combo.view().window().setStyleSheet(combo_popup_style)
+            combo.view().window().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
     def _start_processing_documents(self, document_ids: list[int]) -> None:
         if not document_ids:
@@ -1170,6 +1254,7 @@ class ChapterBatchView(QWidget):
         overwrite_button = message_box.addButton("覆盖", QMessageBox.ButtonRole.AcceptRole)
         skip_button = message_box.addButton("跳过当前条款", QMessageBox.ButtonRole.RejectRole)
         skip_all_button = message_box.addButton("后续重复全部跳过", QMessageBox.ButtonRole.DestructiveRole)
+        self._apply_dialog_theme(message_box)
         message_box.exec()
         clicked = message_box.clickedButton()
         if clicked is overwrite_button:
@@ -1194,6 +1279,7 @@ class ChapterBatchView(QWidget):
         )
         overwrite_button = message_box.addButton("覆盖", QMessageBox.ButtonRole.AcceptRole)
         cancel_button = message_box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        self._apply_dialog_theme(message_box)
         message_box.exec()
         return message_box.clickedButton() is overwrite_button
 

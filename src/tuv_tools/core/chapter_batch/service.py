@@ -137,7 +137,7 @@ class ChapterBatchService:
 
     def __init__(self, repo: ChapterBatchRepository, output_root: Path | None = None):
         self._repo = repo
-        self._output_root = output_root or AppSettings().get_chapter_batch_root()
+        self._output_root = output_root or AppSettings().get_chapter_batch_output_root()
         self._folder_context_cache: dict[str, tuple[int, str, str]] = {}
 
     def get_output_root(self) -> Path:

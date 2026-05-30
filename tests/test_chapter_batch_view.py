@@ -115,12 +115,37 @@ def test_choose_import_mode_returns_user_selection(qapp, monkeypatch):
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
     view = ChapterBatchView(repo=_new_repo())
-    monkeypatch.setattr(
-        "PySide6.QtWidgets.QInputDialog.getItem",
-        lambda *args, **kwargs: (SplitMode.SECTION.value, True),
-    )
+    class FakeDialog:
+        def exec(self):
+            return 1
+
+        def findChild(self, _cls):
+            return None
+
+        def textValue(self):
+            return SplitMode.SECTION.value
+
+    monkeypatch.setattr(view, "_build_split_mode_dialog", lambda: FakeDialog())
 
     assert view._choose_import_mode() == SplitMode.SECTION.value
+
+
+def test_build_split_mode_dialog_uses_light_theme_colors(qapp):
+    from tuv_tools.ui.theme import ThemeManager, ThemeMode
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    manager = ThemeManager.instance()
+    original_mode = manager.mode
+    manager.mode = ThemeMode.LIGHT
+    try:
+        view = ChapterBatchView(repo=_new_repo())
+        dialog = view._build_split_mode_dialog()
+        style = dialog.styleSheet()
+    finally:
+        manager.mode = original_mode
+
+    assert "#eef3f8" in style
+    assert "#18212d" in style
 
 
 def test_import_selected_paths_imports_then_starts_background_processing(qapp, monkeypatch):
@@ -894,8 +919,11 @@ def test_reupload_single_clause_cancelled_by_user_does_not_start(qapp, monkeypat
 def test_ask_duplicate_decision_uses_business_buttons(qapp, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
     from tuv_tools.core.chapter_batch.models import BatchImportClause, BatchImportDocument
+    from tuv_tools.ui.theme import ThemeManager, ThemeMode
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
 
+    manager = ThemeManager.instance()
+    monkeypatch.setattr(manager, "mode", ThemeMode.LIGHT)
     view = ChapterBatchView(repo=_new_repo())
     document = BatchImportDocument(folder_name="60335-2-9", specific_product="")
     clause = BatchImportClause(term="10.1", test_content="Heating")
@@ -907,6 +935,7 @@ def test_ask_duplicate_decision_uses_business_buttons(qapp, monkeypatch):
     def fake_exec(self):
         buttons = self.buttons()
         clicked["texts"] = [button.text() for button in buttons]
+        clicked["style"] = self.styleSheet()
         clicked["button"] = buttons[1]
         return 0
 
@@ -922,6 +951,8 @@ def test_ask_duplicate_decision_uses_business_buttons(qapp, monkeypatch):
     monkeypatch.setattr(QMessageBox, "clickedButton", original_clicked)
 
     assert clicked["texts"] == ["覆盖", "跳过当前条款", "后续重复全部跳过"]
+    assert "#eef3f8" in clicked["style"]
+    assert "#18212d" in clicked["style"]
     assert decision == "skip"
 
 

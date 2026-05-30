@@ -156,6 +156,13 @@ def resolve_chapter_batch_root(project_root: Path | None = None) -> Path:
     return resolve_app_data_root(project_root) / CHAPTER_BATCH_DIR_NAME
 
 
+def resolve_chapter_batch_output_root(
+    output_path: str | Path | None,
+    project_root: Path | None = None,
+) -> Path:
+    return resolve_splitter_output_root(output_path, project_root) / CHAPTER_BATCH_DIR_NAME
+
+
 def resolve_app_data_certs_root(project_root: Path | None = None) -> Path:
     return resolve_app_data_root(project_root) / APP_DATA_CERTS_DIR_NAME
 
@@ -267,6 +274,10 @@ class AppSettings:
 
     def get_chapter_batch_root(self) -> Path:
         return resolve_chapter_batch_root(self.project_root)
+
+    def get_chapter_batch_output_root(self) -> Path:
+        output_path = self._db.get_config("splitter.output_path", "")
+        return resolve_chapter_batch_output_root(output_path, self.project_root)
 
     def get_app_data_certs_root(self) -> Path:
         return resolve_app_data_certs_root(self.project_root)

@@ -6,7 +6,9 @@ from dataclasses import fields
 from datetime import datetime
 from typing import Any
 
+from tuv_tools.config import AppSettings
 from tuv_tools.config.database import DatabaseManager
+from tuv_tools.config.settings import CHAPTER_BATCH_DIR_NAME
 from .models import (
     BatchImportClause,
     BatchImportDocument,
@@ -64,7 +66,14 @@ class ChapterBatchRepository:
 
     def __init__(self, db: DatabaseManager):
         self._db = db
-        self._chapter_batch_root = self._db._db_path.resolve().parent / "chapter-batch"
+        self._chapter_batch_root = self._resolve_chapter_batch_root()
+
+    def _resolve_chapter_batch_root(self):
+        db_path = self._db._db_path.resolve()
+        settings = AppSettings()
+        if db_path == settings.get_database_path().resolve():
+            return settings.get_chapter_batch_output_root()
+        return db_path.parent / CHAPTER_BATCH_DIR_NAME
 
     @property
     def _conn(self):

@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
+.pytest_cache/
+.ruff_cache/
 dist/
 build/
 *.egg
@@ -40,6 +42,8 @@ CLAUDE.md
 /.tuv-tools
 /resources/defaults
 /.tmp-pytest
+/.installer_smoke
+/.playwright-mcp
 *.pem
 /.pytest_tmp
 /.reasonix
