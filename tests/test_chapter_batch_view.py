@@ -394,6 +394,34 @@ def test_document_table_wraps_checkbox_column_widgets(qapp):
     assert isinstance(view._row_checkbox(0), QCheckBox)
 
 
+def test_batch_upload_checkbox_wrapper_geometry_matches_cell_rect(qapp):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    repo = _new_repo()
+    view = ChapterBatchView(repo=repo, session_manager=_connected_session())
+    repo.create_document(
+        BatchImportDocument(
+            file_path="C:/docs/geometry.docx",
+            file_name="geometry.docx",
+            document_status=DocumentStatus.PENDING_CONFIRM.value,
+        )
+    )
+
+    view.resize(960, 600)
+    view._load_documents()
+    view._sync_checkbox_geometries()
+
+    container = view._table.cellWidget(0, view.COL_CHECK)
+    assert container is not None
+
+    cell_rect = view._table.visualRect(view._table.model().index(0, view.COL_CHECK))
+    assert container.geometry().x() == cell_rect.x()
+    assert container.geometry().y() == cell_rect.y()
+    assert container.geometry().width() == cell_rect.width()
+    assert container.geometry().height() == cell_rect.height()
+
+
 def test_document_name_column_keeps_readable_width(qapp):
     from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
     from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
@@ -950,7 +978,7 @@ def test_ask_duplicate_decision_uses_business_buttons(qapp, monkeypatch):
     monkeypatch.setattr(QMessageBox, "exec", original_exec)
     monkeypatch.setattr(QMessageBox, "clickedButton", original_clicked)
 
-    assert clicked["texts"] == ["覆盖", "跳过当前条款", "后续重复全部跳过"]
+    assert clicked["texts"] == ["覆盖", "跳过", "全部跳过"]
     assert "#eef3f8" in clicked["style"]
     assert "#18212d" in clicked["style"]
     assert decision == "skip"
@@ -964,6 +992,61 @@ def test_summary_widget_is_centered_and_transparent(qapp):
 
     assert widget.styleSheet() == "background: transparent;"
     assert widget._label.alignment() == Qt.AlignmentFlag.AlignCenter
+
+
+def test_selected_summary_widget_uses_inverse_text_in_light_theme(qapp):
+    from tuv_tools.core.chapter_batch.models import BatchImportDocument, DocumentStatus
+    from tuv_tools.ui.theme import ThemeManager, ThemeMode
+    from tuv_tools.ui.views.chapter_batch_view import ChapterBatchView
+
+    manager = ThemeManager.instance()
+    original_mode = manager.mode
+    manager.mode = ThemeMode.LIGHT
+    view = None
+    try:
+        repo = _new_repo()
+        view = ChapterBatchView(repo=repo, session_manager=_connected_session())
+        repo.create_document(
+            BatchImportDocument(
+                file_path="C:/docs/summary.docx",
+                file_name="summary.docx",
+                document_status=DocumentStatus.PENDING_UPLOAD.value,
+                success_clause_count=1,
+                failed_clause_count=0,
+            )
+        )
+
+        view._load_documents()
+        view._table.selectRow(0)
+        view._sync_row_widget_selection_states()
+
+        summary_widget = view._table.cellWidget(0, view.COL_SUMMARY)
+        assert summary_widget is not None
+        assert "#ffffff" in summary_widget._label.styleSheet()
+    finally:
+        if view is not None:
+            view.close()
+        manager.mode = original_mode
+
+
+def test_apply_menu_theme_uses_light_theme_colors(qapp):
+    from tuv_tools.ui.theme import ThemeManager, ThemeMode
+    from PySide6.QtWidgets import QMenu
+    from tuv_tools.ui.widgets import apply_menu_theme
+
+    manager = ThemeManager.instance()
+    original_mode = manager.mode
+    manager.mode = ThemeMode.LIGHT
+    try:
+        menu = QMenu()
+        apply_menu_theme(menu)
+
+        assert menu.testAttribute(__import__("PySide6.QtCore").QtCore.Qt.WidgetAttribute.WA_StyledBackground)
+        assert "#ffffff" in menu.styleSheet()
+        assert "#18212d" in menu.styleSheet()
+        assert "#6f94c2" in menu.styleSheet()
+    finally:
+        manager.mode = original_mode
 
 
 def test_duplicate_lookup_queries_backend_by_clause_term_and_test_content(qapp, monkeypatch):

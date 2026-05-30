@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 
-from PySide6.QtCore import QThread, Qt, Signal, QRectF
+from PySide6.QtCore import QThread, Qt, Signal, QRectF, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -53,7 +53,7 @@ from tuv_tools.core.chapter_batch.service import (
 )
 from tuv_tools.core.preparing import _win32com_client, create_isolated_word_application, prepare_docx_file
 from tuv_tools.ui.theme import ThemeManager, ACCENT_PRIMARY, ACCENT_DANGER
-from tuv_tools.ui.widgets import checkbox_style, FOCUS_STYLE, scrollbar_style
+from tuv_tools.ui.widgets import apply_menu_theme, checkbox_style, FOCUS_STYLE, scrollbar_style
 from tuv_tools.ui.widgets.chapter_batch_drawer import ChapterBatchDrawer
 from tuv_tools.ui.widgets.standard_number_prompt_dialog import resolve_standard_number_overrides
 
@@ -272,9 +272,22 @@ class _RunningStatusWidget(QWidget):
         self._percent = max(0, min(percent, 100))
         self._label = QLabel(status_text, self)
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        c = ThemeManager.instance().colors
-        self._label.setStyleSheet(f"color: {c.text_primary}; font-size: 13px;")
+        self._selected = False
+        self._apply_theme()
+        ThemeManager.instance().theme_changed.connect(self._apply_theme)
         self.setMinimumHeight(26)
+
+    def set_selected(self, selected: bool) -> None:
+        if self._selected == selected:
+            return
+        self._selected = selected
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        c = ThemeManager.instance().colors
+        text_color = c.text_inverse if self._selected else c.text_primary
+        self._label.setStyleSheet(f"color: {text_color}; font-size: 13px;")
+        self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802
         painter = QPainter(self)
@@ -303,6 +316,7 @@ class _SummaryTextWidget(QWidget):
     def __init__(self, text: str, tooltip: str = "", parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._selected = False
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -317,11 +331,18 @@ class _SummaryTextWidget(QWidget):
             self.setToolTip(tooltip)
             self._label.setToolTip(tooltip)
 
+    def set_selected(self, selected: bool) -> None:
+        if self._selected == selected:
+            return
+        self._selected = selected
+        self._apply_theme()
+
     def _apply_theme(self) -> None:
         c = ThemeManager.instance().colors
+        text_color = c.text_inverse if self._selected else c.text_primary
         self.setStyleSheet("background: transparent;")
         self._label.setStyleSheet(
-            f"color: {c.text_primary}; font-size: 13px; padding: 0 10px; qproperty-alignment: 'AlignCenter';"
+            f"color: {text_color}; font-size: 13px; padding: 0 10px; qproperty-alignment: 'AlignCenter';"
         )
 
 
@@ -411,6 +432,13 @@ class ChapterBatchView(QWidget):
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.cellDoubleClicked.connect(self._on_table_double_clicked)
         self._table.customContextMenuRequested.connect(self._show_document_context_menu)
+        self._table.itemSelectionChanged.connect(self._sync_row_widget_selection_states)
+        self._table.verticalScrollBar().valueChanged.connect(
+            lambda _value: self._schedule_checkbox_geometry_sync()
+        )
+        self._table.horizontalScrollBar().valueChanged.connect(
+            lambda _value: self._schedule_checkbox_geometry_sync()
+        )
         layout.addWidget(self._table, stretch=1)
 
         bottom = QHBoxLayout()
@@ -596,6 +624,8 @@ class ChapterBatchView(QWidget):
             checkbox = self._row_checkbox(row)
             if isinstance(checkbox, QCheckBox):
                 checkbox.setStyleSheet(checkbox_style())
+        self._sync_row_widget_selection_states()
+        self._schedule_checkbox_geometry_sync()
 
     @staticmethod
     def _make_item(
@@ -679,6 +709,8 @@ class ChapterBatchView(QWidget):
             display_time = updated_at[:16] if len(updated_at) > 16 else updated_at
             self._table.setItem(row, self.COL_UPDATED_AT, self._make_item(display_time, updated_at))
         self._update_selected_label()
+        self._sync_row_widget_selection_states()
+        self._schedule_checkbox_geometry_sync()
 
     def _update_selected_label(self) -> None:
         checked = len(self._selected_document_ids)
@@ -908,7 +940,7 @@ class ChapterBatchView(QWidget):
         checkbox_size = checkbox.sizeHint()
         checkbox.setFixedSize(checkbox_size)
         container = QWidget()
-        container.setFixedHeight(max(self._table.verticalHeader().defaultSectionSize(), checkbox_size.height()))
+        container.setMinimumHeight(max(self._table.verticalHeader().defaultSectionSize(), checkbox_size.height()))
         container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -922,6 +954,39 @@ class ChapterBatchView(QWidget):
             return None
         return container.findChild(QCheckBox)
 
+    def _schedule_checkbox_geometry_sync(self) -> None:
+        QTimer.singleShot(0, self._sync_checkbox_geometries)
+
+    def _sync_checkbox_geometries(self) -> None:
+        if self._table.rowCount() == 0:
+            return
+        model = self._table.model()
+        if model is None:
+            return
+        for row in range(self._table.rowCount()):
+            container = self._table.cellWidget(row, self.COL_CHECK)
+            if container is None or self._table.isRowHidden(row):
+                continue
+            rect = self._table.visualRect(model.index(row, self.COL_CHECK))
+            if rect.isValid() and container.geometry() != rect:
+                container.setGeometry(rect)
+
+    def _sync_row_widget_selection_states(self) -> None:
+        selection_model = self._table.selectionModel()
+        selected_rows = (
+            {index.row() for index in selection_model.selectedRows()}
+            if selection_model is not None
+            else set()
+        )
+        for row in range(self._table.rowCount()):
+            is_selected = row in selected_rows
+            status_widget = self._table.cellWidget(row, self.COL_STATUS)
+            if isinstance(status_widget, _RunningStatusWidget):
+                status_widget.set_selected(is_selected)
+            summary_widget = self._table.cellWidget(row, self.COL_SUMMARY)
+            if isinstance(summary_widget, _SummaryTextWidget):
+                summary_widget.set_selected(is_selected)
+
     def _show_document_context_menu(self, pos) -> None:
         row = self._table.rowAt(pos.y())
         if row < 0 or row >= len(self._documents):
@@ -930,6 +995,7 @@ class ChapterBatchView(QWidget):
         if document.id is None:
             return
         menu = QMenu(self)
+        apply_menu_theme(menu)
         open_action = menu.addAction("打开详情")
         open_action.triggered.connect(lambda: self._open_drawer_for_documents([document]))
         resplit_action = menu.addAction("重新拆分")
@@ -1252,8 +1318,8 @@ class ChapterBatchView(QWidget):
             )
         )
         overwrite_button = message_box.addButton("覆盖", QMessageBox.ButtonRole.AcceptRole)
-        skip_button = message_box.addButton("跳过当前条款", QMessageBox.ButtonRole.RejectRole)
-        skip_all_button = message_box.addButton("后续重复全部跳过", QMessageBox.ButtonRole.DestructiveRole)
+        skip_button = message_box.addButton("跳过", QMessageBox.ButtonRole.RejectRole)
+        skip_all_button = message_box.addButton("全部跳过", QMessageBox.ButtonRole.DestructiveRole)
         self._apply_dialog_theme(message_box)
         message_box.exec()
         clicked = message_box.clickedButton()
@@ -1713,5 +1779,10 @@ class ChapterBatchView(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._schedule_checkbox_geometry_sync()
         if self._drawer.isVisible():
             self._layout_drawer()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._schedule_checkbox_geometry_sync()

@@ -14,7 +14,7 @@ from tuv_tools.core.splitter.ui_helpers import (
     is_selectable_document_status,
 )
 from tuv_tools.ui.theme import ThemeManager, ACCENT_PRIMARY
-from . import checkbox_style, scrollbar_style
+from . import apply_menu_theme, checkbox_style, scrollbar_style
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -299,6 +299,7 @@ class DocumentTable(QTableWidget):
             return
         doc = self._data[row]
         menu = QMenu(self)
+        apply_menu_theme(menu)
 
         if doc.get("status") == "prepare_paused":
             resume_action = QAction("继续预处理", self)

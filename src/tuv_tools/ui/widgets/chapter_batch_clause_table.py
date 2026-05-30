@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from tuv_tools.core.chapter_batch.models import ClauseStatus
 from tuv_tools.ui.theme import ThemeManager
-from tuv_tools.ui.widgets import checkbox_style, scrollbar_style
+from tuv_tools.ui.widgets import apply_menu_theme, checkbox_style, scrollbar_style
 
 
 def chapter_batch_checkbox_style() -> str:
@@ -260,6 +260,7 @@ class ChapterBatchClauseTable(QTableWidget):
             return
         editable = bool(term_item.data(Qt.ItemDataRole.UserRole + 1))
         menu = QMenu(self)
+        apply_menu_theme(menu)
         chapter_id_text = self.item(row, self.COL_CHAPTER_ID)
         chapter_id = None
         if chapter_id_text is not None:
